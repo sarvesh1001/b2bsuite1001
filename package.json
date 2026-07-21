@@ -1,0 +1,19 @@
+{
+  "name": "b2b-suite",
+  "private": true,
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "generate:api": "turbo generate:api",
+    "clean": "turbo clean"
+  },
+  "devDependencies": {
+    "prettier": "^3.0.0",
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0"
+  },
+  "packageManager": "pnpm@10.34.5",
+  "dependencies": {
+    "@tanstack/react-query": "^5.101.2"
+  }
+}

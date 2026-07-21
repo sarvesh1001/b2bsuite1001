@@ -1,0 +1,75 @@
+# --- Dependencies ---
+node_modules/
+.pnpm-store/
+
+# --- Build outputs ---
+dist/
+build/
+out/
+.next/
+.expo/
+.turbo/
+.vercel/
+
+# --- Native platforms ---
+apps/*/android/app/build/
+apps/*/ios/Pods/
+apps/*/ios/build/
+apps/*/ios/DerivedData/
+
+# --- Environment files ---
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+.env.test
+
+# --- Logs ---
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- OS metadata ---
+.DS_Store
+Thumbs.db
+
+# --- IDE / Editor ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.user
+
+# --- Testing / Coverage ---
+coverage/
+.nyc_output/
+*.test-results/
+
+# --- Temporary files ---
+*.tmp
+*.temp
+*.cache
+.eslintcache
+
+# --- TypeScript ---
+*.tsbuildinfo
+
+# --- Package manager lock files (optional) ---
+# If you want to keep lock files committed, comment out the next line:
+# pnpm-lock.yaml
+# package-lock.json
+# yarn.lock
+
+# --- Misc ---
+*.iml
+*.bak
+*.orig.git.old/
+.git.old/
