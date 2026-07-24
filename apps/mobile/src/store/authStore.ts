@@ -2,8 +2,26 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import * as SecureStore from 'expo-secure-store';
-import { User } from '../shared-types';
-import { setAuthToken } from '../api-client';
+import { setAuthToken, setDeviceId, axiosInstance } from '@b2b/api-client';
+
+// Extend User type to include role_string and is_super_admin
+export interface User {
+  user_id: string;
+  username: string;
+  full_name: string;
+  email?: string;
+  role?: string;
+  role_string?: string;
+  is_super_admin?: boolean;
+  is_active?: boolean;
+  is_verified?: boolean;
+  kyc_status?: string;
+  kyc_level?: string;
+  created_at?: string;
+  updated_at?: string;
+  last_login?: string;
+  data_region?: string;
+}
 
 // SecureStore adapter for Zustand persistence
 const secureStorage = {
@@ -19,124 +37,165 @@ const secureStorage = {
 };
 
 interface AuthState {
-  // Regular auth
   user: User | null;
   accessToken: string | null;
   refreshToken: string | null;
+  deviceId: string | null;
   isAuthenticated: boolean;
 
-  // Pending MPIN login state (cleared on logout)
   pendingAdminId: string | null;
   pendingPhone: string | null;
   pendingHasMpin: boolean | null;
 
-  // Saved MPIN login state (survives logout)
   savedAdminId: string | null;
   savedPhone: string | null;
   savedHasMpin: boolean | null;
 
-  // Actions
-  login: (accessToken: string, refreshToken: string, user: User) => void;
+  login: (accessToken: string, refreshToken: string, user: User, deviceId?: string) => void;
   logout: () => void;
   updateTokens: (accessToken: string, refreshToken: string) => void;
   setPendingMpinLogin: (adminId: string, phone: string, hasMpin: boolean) => void;
   clearPendingMpinLogin: () => void;
   setSavedAdminId: (adminId: string, phone: string, hasMpin: boolean) => void;
   clearSavedAdminId: () => void;
+
+  setDeviceIdInStore: (deviceId: string) => void;
+  validateSession: () => Promise<boolean>;
 }
 
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set) => ({
-      // Regular auth
+    (set, get) => ({
       user: null,
       accessToken: null,
       refreshToken: null,
+      deviceId: null,
       isAuthenticated: false,
 
-      // Pending MPIN login
       pendingAdminId: null,
       pendingPhone: null,
       pendingHasMpin: null,
 
-      // Saved MPIN login (survives logout)
       savedAdminId: null,
       savedPhone: null,
       savedHasMpin: null,
 
-      login: (accessToken, refreshToken, user) => {
+      login: (accessToken, refreshToken, user, deviceId) => {
+        console.log('🔐 [authStore.login] received user:', user);
+        console.log('🔐 [authStore.login] user.role:', user.role);
+        console.log('🔐 [authStore.login] user.role_string:', user.role_string);
+        console.log('🔐 [authStore.login] user.is_super_admin:', user.is_super_admin);
+
         setAuthToken(accessToken);
-        // Clear pending, but keep saved fields
+        if (deviceId) {
+          setDeviceId(deviceId);
+        }
         set({
           accessToken,
           refreshToken,
           user,
+          deviceId: deviceId || null,
           isAuthenticated: true,
           pendingAdminId: null,
           pendingPhone: null,
           pendingHasMpin: null,
         });
+
+        const state = get();
+        console.log('✅ [authStore.login] state updated – isAuthenticated:', state.isAuthenticated);
+        console.log('✅ [authStore.login] state.user:', state.user);
       },
 
       logout: () => {
+        console.log('🚪 [authStore.logout] logging out...');
         setAuthToken(null);
+        setDeviceId(null);
         set({
           user: null,
           accessToken: null,
           refreshToken: null,
+          deviceId: null,
           isAuthenticated: false,
-          // Clear pending, but DO NOT clear saved fields
           pendingAdminId: null,
           pendingPhone: null,
           pendingHasMpin: null,
         });
+        console.log('✅ [authStore.logout] state cleared');
       },
 
       updateTokens: (accessToken, refreshToken) => {
+        console.log('🔄 [authStore.updateTokens] updating tokens');
         setAuthToken(accessToken);
         set({ accessToken, refreshToken });
       },
 
       setPendingMpinLogin: (adminId, phone, hasMpin) => {
-        set({
-          pendingAdminId: adminId,
-          pendingPhone: phone,
-          pendingHasMpin: hasMpin,
-        });
+        console.log('⏳ [authStore.setPendingMpinLogin]', { adminId, phone, hasMpin });
+        set({ pendingAdminId: adminId, pendingPhone: phone, pendingHasMpin: hasMpin });
       },
 
       clearPendingMpinLogin: () => {
-        set({
-          pendingAdminId: null,
-          pendingPhone: null,
-          pendingHasMpin: null,
-        });
+        console.log('🧹 [authStore.clearPendingMpinLogin] clearing pending');
+        set({ pendingAdminId: null, pendingPhone: null, pendingHasMpin: null });
       },
 
       setSavedAdminId: (adminId, phone, hasMpin) => {
-        set({
-          savedAdminId: adminId,
-          savedPhone: phone,
-          savedHasMpin: hasMpin,
-        });
+        console.log('💾 [authStore.setSavedAdminId]', { adminId, phone, hasMpin });
+        set({ savedAdminId: adminId, savedPhone: phone, savedHasMpin: hasMpin });
       },
 
       clearSavedAdminId: () => {
-        set({
-          savedAdminId: null,
-          savedPhone: null,
-          savedHasMpin: null,
-        });
+        console.log('🧹 [authStore.clearSavedAdminId] clearing saved');
+        set({ savedAdminId: null, savedPhone: null, savedHasMpin: null });
+      },
+
+      setDeviceIdInStore: (deviceId: string) => {
+        console.log('📱 [authStore.setDeviceIdInStore]', deviceId);
+        setDeviceId(deviceId);
+        set({ deviceId });
+      },
+
+      validateSession: async (): Promise<boolean> => {
+        const token = get().accessToken;
+        const deviceId = get().deviceId;
+        console.log('🔍 [authStore.validateSession]', { hasToken: !!token, hasDeviceId: !!deviceId });
+
+        if (!token || !deviceId) {
+          console.log('❌ [authStore.validateSession] Missing token or deviceId');
+          return false;
+        }
+
+        try {
+          // ✅ FIXED: Use the correct endpoint from API spec
+          const response = await axiosInstance.get('/auth/validate');
+          const isValid = response.status === 200;
+          console.log('✅ [authStore.validateSession] valid:', isValid);
+          return isValid;
+        } catch (error: any) {
+          // If the endpoint returns 404, it might not be implemented – consider session valid
+          // If 401, token is invalid – return false
+          const status = error.response?.status;
+          console.log('❌ [authStore.validateSession] error:', error.message, 'status:', status);
+
+          // If we get 404, the endpoint might not be ready – treat as valid to avoid logout
+          if (status === 404) {
+            console.warn('⚠️ [authStore.validateSession] Validation endpoint not found (404) – treating session as valid');
+            return true;
+          }
+
+          // For 401 or other errors, session is invalid
+          return false;
+        }
       },
     }),
     {
       name: 'auth-storage',
       storage: createJSONStorage(() => secureStorage),
-      // Persist all fields
       partialize: (state) => ({
         accessToken: state.accessToken,
         refreshToken: state.refreshToken,
         user: state.user,
+        deviceId: state.deviceId,
         isAuthenticated: state.isAuthenticated,
         pendingAdminId: state.pendingAdminId,
         pendingPhone: state.pendingPhone,
@@ -145,6 +204,41 @@ export const useAuthStore = create<AuthState>()(
         savedPhone: state.savedPhone,
         savedHasMpin: state.savedHasMpin,
       }),
+      onRehydrateStorage: () => (state) => {
+        if (state?.accessToken) {
+          setAuthToken(state.accessToken);
+        }
+        if (state?.deviceId) {
+          setDeviceId(state.deviceId);
+        }
+      },
     }
   )
 );
+
+// Admin selector with logs
+export const isAdminSelector = (state: AuthState): boolean => {
+  const user = state.user;
+  console.log('🔍 [isAdminSelector] state.user:', user);
+
+  if (!user) {
+    console.log('❌ [isAdminSelector] No user – return false');
+    return false;
+  }
+
+  const isAdmin =
+    user.role === 'admin' ||
+    user.role === 'super_admin' ||
+    user.role_string === 'admin' ||
+    user.role_string === 'super_admin' ||
+    user.is_super_admin === true;
+
+  console.log('🔍 [isAdminSelector] isAdmin:', isAdmin);
+  console.log('🔍 [isAdminSelector] user.role:', user.role);
+  console.log('🔍 [isAdminSelector] user.role_string:', user.role_string);
+  console.log('🔍 [isAdminSelector] user.is_super_admin:', user.is_super_admin);
+
+  return isAdmin;
+};
+
+export const useIsAdmin = () => useAuthStore(isAdminSelector);

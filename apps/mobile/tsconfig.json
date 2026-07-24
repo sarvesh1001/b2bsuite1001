@@ -1,6 +1,13 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "strict": true
+    "strict": true,
+    "baseUrl": ".",
+    "paths": {
+      "@b2b/api-client": ["../../packages/api-client/src"],
+      "@b2b/api-client/*": ["../../packages/api-client/src/*"],
+      "@b2b/shared-types": ["../../packages/shared-types/src"],
+      "@b2b/shared-types/*": ["../../packages/shared-types/src/*"]
+    }
   }
 }

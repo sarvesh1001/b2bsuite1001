@@ -23,14 +23,6 @@ import { useAuthStore } from '../../store/authStore';
 
 type PaperTextInput = React.ElementRef<typeof TextInput>;
 
-// --- UUID generator ---
-const generateUUID = () =>
-  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-
 // --- Weak MPIN checker ---
 const isWeakMPIN = (mpin: string): boolean => {
   if (mpin.length !== 6) return true;
@@ -62,7 +54,6 @@ export default function MPINSetupScreen() {
 
   const [deviceId, setDeviceId] = useState('');
   const [fingerprint, setFingerprint] = useState('');
-  const [setupIdempotencyKey, setSetupIdempotencyKey] = useState(generateUUID);
 
   // Load device info
   useEffect(() => {
@@ -117,17 +108,11 @@ export default function MPINSetupScreen() {
 
     setLoading(true);
     try {
-      await setupMPIN(
-        adminId,
-        mpinCode,
-        deviceId,
-        fingerprint,
-        setupIdempotencyKey
-      );
+      // setupMPIN now handles idempotency internally – no key needed
+      await setupMPIN(adminId, mpinCode, deviceId, fingerprint);
 
-      // MPIN set successfully – now navigate to verification (replace current screen)
+      // MPIN set successfully – navigate to verification
       Alert.alert('Success', 'MPIN has been set. Please log in with your MPIN.');
-      // Use reset with 'as any' to bypass type checking (consistent with other files)
       (navigation as any).reset({
         index: 0,
         routes: [{ name: 'MPINVerification', params: { phone: phone || '', adminId } }],
@@ -154,8 +139,7 @@ export default function MPINSetupScreen() {
       } else {
         Alert.alert('Error', msg);
       }
-      // Regenerate key for retry
-      setSetupIdempotencyKey(generateUUID);
+      // No need to regenerate key – service manages it internally
     } finally {
       setLoading(false);
     }

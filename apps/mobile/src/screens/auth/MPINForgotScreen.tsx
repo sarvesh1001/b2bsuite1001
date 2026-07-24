@@ -24,13 +24,6 @@ import { useAuthStore } from '../../store/authStore';
 
 type PaperTextInput = React.ElementRef<typeof TextInput>;
 
-const generateUUID = () =>
-  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-
 // MPIN strength checker (same as in MPINSetup)
 const isWeakMPIN = (mpin: string): boolean => {
   if (mpin.length !== 6) return true;
@@ -63,7 +56,6 @@ export default function MPINForgotScreen() {
 
   const [deviceId, setDeviceId] = useState('');
   const [fingerprint, setFingerprint] = useState('');
-  const [idempotencyKey, setIdempotencyKey] = useState(generateUUID);
 
   const timerRef = useRef<number | null>(null);
 
@@ -106,6 +98,7 @@ export default function MPINForgotScreen() {
     }
     setLoading(true);
     try {
+      // ✅ Idempotency handled inside the service – no key required
       await forgotMPIN(phone, deviceId, fingerprint);
       Alert.alert('OTP Sent', 'A verification code has been sent to your phone.');
       setStep('verifyOtp');
@@ -139,7 +132,8 @@ export default function MPINForgotScreen() {
 
     setLoading(true);
     try {
-      await verifyForgotMPIN(phone, mpinCode, otpCode, deviceId, fingerprint, idempotencyKey);
+      // ✅ Idempotency handled inside the service – no key required
+      await verifyForgotMPIN(phone, mpinCode, otpCode, deviceId, fingerprint);
       Alert.alert('Success', 'Your MPIN has been reset successfully.');
       navigation.reset({
         index: 0,
@@ -160,7 +154,6 @@ export default function MPINForgotScreen() {
       } else {
         Alert.alert('Error', msg);
       }
-      setIdempotencyKey(generateUUID);
     } finally {
       setLoading(false);
     }
@@ -188,7 +181,6 @@ export default function MPINForgotScreen() {
     }
   };
 
-  // ✅ Fixed: renamed variable to avoid conflict with state variable
   const handleMpinChange = (text: string, index: number) => {
     const newMpinArr = [...newMpin];
     newMpinArr[index] = text;

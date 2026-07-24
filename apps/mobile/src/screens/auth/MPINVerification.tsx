@@ -1,4 +1,3 @@
-// apps/mobile/src/screens/auth/MPINVerification.tsx
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
@@ -21,15 +20,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { verifyMPIN } from '../../services/auth';
 import { getDeviceId, getDeviceFingerprint } from '../../utils/device';
 import { useAuthStore } from '../../store/authStore';
+import { User } from '../../shared-types';
 
 type PaperTextInput = React.ElementRef<typeof TextInput>;
-
-const generateUUID = () =>
-  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
 
 export default function MPINVerificationScreen() {
   const [mpin, setMpin] = useState(['', '', '', '', '', '']);
@@ -38,7 +31,6 @@ export default function MPINVerificationScreen() {
   const navigation = useNavigation();
   const route = useRoute();
 
-  // Get both pending and saved state from store
   const {
     pendingAdminId,
     pendingPhone,
@@ -50,7 +42,6 @@ export default function MPINVerificationScreen() {
     login,
   } = useAuthStore();
 
-  // Determine phone and adminId: route params > pending > saved
   const routeParams = route.params as { phone?: string; adminId?: string } | undefined;
   const phone = routeParams?.phone ?? pendingPhone ?? savedPhone ?? '';
   const adminId = routeParams?.adminId ?? pendingAdminId ?? savedAdminId ?? '';
@@ -60,11 +51,9 @@ export default function MPINVerificationScreen() {
 
   const [deviceId, setDeviceId] = useState('');
   const [fingerprint, setFingerprint] = useState('');
-  const [verifyIdempotencyKey, setVerifyIdempotencyKey] = useState(generateUUID);
 
   const timerRef = useRef<number | null>(null);
 
-  // Load device info
   useEffect(() => {
     async function loadDeviceInfo() {
       const id = await getDeviceId();
@@ -80,7 +69,6 @@ export default function MPINVerificationScreen() {
     };
   }, []);
 
-  // Cooldown timer for rate limiting
   useEffect(() => {
     if (cooldownSeconds > 0) {
       timerRef.current = setInterval(() => {
@@ -100,7 +88,6 @@ export default function MPINVerificationScreen() {
     };
   }, [cooldownSeconds]);
 
-  // Input handlers
   const handleMpinChange = (text: string, index: number) => {
     const newMpin = [...mpin];
     newMpin[index] = text;
@@ -123,7 +110,6 @@ export default function MPINVerificationScreen() {
     }
   };
 
-  // Verify MPIN
   const handleVerifyMPIN = async () => {
     const mpinCode = mpin.join('');
     if (mpinCode.length < 6) {
@@ -143,22 +129,43 @@ export default function MPINVerificationScreen() {
 
     setLoading(true);
     try {
-      const data = await verifyMPIN(
-        phone,
-        mpinCode,
-        deviceId,
-        fingerprint,
-        verifyIdempotencyKey
-      );
+      console.log('🔐 [MPINVerification] Verifying MPIN for phone:', phone);
+      // 🔥 No idempotencyKey passed – service handles it
+      const data = await verifyMPIN(phone, mpinCode, deviceId, fingerprint);
 
-      // Successful login: data should contain { admin, tokens, message }
+      console.log('📥 [MPINVerification] Response data:', data);
+
       const { admin, tokens } = data;
-      if (tokens?.access_token && admin) {
-        // Clear pending state (but keep saved for future logouts)
-        clearPendingMpinLogin();
-        login(tokens.access_token, tokens.refresh_token, admin);
 
-        // Reset navigation to Main
+      console.log('👤 [MPINVerification] admin object:', admin);
+      console.log('👤 [MPINVerification] admin.role:', admin.role);
+      console.log('👤 [MPINVerification] admin.role_string:', admin.role_string);
+      console.log('👤 [MPINVerification] admin.is_super_admin:', admin.is_super_admin);
+
+      if (tokens?.access_token && admin) {
+        const user: User = {
+          user_id: admin.admin_id || admin.user_id || '',
+          username: admin.username || '',
+          full_name: admin.full_name || '',
+          email: admin.email,
+          phone: admin.phone,
+          role: admin.role || admin.role_string || '',
+          role_string: admin.role_string || '',
+          is_super_admin:
+            admin.role === 'super_admin' ||
+            admin.role_string === 'super_admin' ||
+            admin.is_super_admin === true,
+          is_active: admin.is_active,
+        };
+
+        console.log('🧑‍💼 [MPINVerification] User object built:', user);
+        console.log('🔑 [MPINVerification] user.role:', user.role);
+        console.log('🔑 [MPINVerification] user.role_string:', user.role_string);
+        console.log('🔑 [MPINVerification] user.is_super_admin:', user.is_super_admin);
+
+        clearPendingMpinLogin();
+        login(tokens.access_token, tokens.refresh_token, user, deviceId);
+
         setTimeout(() => {
           navigation.dispatch(
             CommonActions.reset({
@@ -168,20 +175,19 @@ export default function MPINVerificationScreen() {
           );
         }, 100);
       } else {
+        console.warn('⚠️ [MPINVerification] Missing tokens or admin in response');
         Alert.alert('Error', 'Login succeeded but tokens are missing. Please try again.');
       }
     } catch (error: any) {
+      console.error('❌ [MPINVerification] Verification error:', error);
       const status = error.response?.status;
       const msg = error.response?.data?.message || error.message || 'Verification failed.';
 
-      // Rate limiting (429)
       if (status === 429) {
         const retryAfter = error.response?.data?.retry_after || 60;
         setCooldownSeconds(retryAfter);
         Alert.alert('Too Many Attempts', `Please wait ${retryAfter} seconds.`);
-      }
-      // Admin not found (400)
-      else if (status === 400 && msg.toLowerCase().includes('admin not found')) {
+      } else if (status === 400 && msg.toLowerCase().includes('admin not found')) {
         Alert.alert('Error', 'Admin account not found. Please restart the process.');
         clearPendingMpinLogin();
         clearSavedAdminId();
@@ -191,36 +197,27 @@ export default function MPINVerificationScreen() {
             routes: [{ name: 'PhoneInput' }],
           })
         );
-      }
-      // Wrong MPIN – API returns 200 with success: false
-      else if (status === 200 && error.response?.data?.success === false) {
+      } else if (status === 200 && error.response?.data?.success === false) {
         Alert.alert('Invalid MPIN', 'The MPIN you entered is incorrect. Please try again.');
-      }
-      // MPIN locked
-      else if (msg.toLowerCase().includes('locked')) {
+      } else if (msg.toLowerCase().includes('locked')) {
         Alert.alert('Account Locked', 'Your MPIN is locked due to multiple failed attempts. Please use Forgot MPIN.');
       } else {
         Alert.alert('Error', msg);
       }
-
-      // Regenerate idempotency key for retry
-      setVerifyIdempotencyKey(generateUUID);
+      // ❌ No manual key regeneration – service handles it
     } finally {
       setLoading(false);
     }
   };
 
-  // ✅ Forgot MPIN – navigate to the dedicated screen (no API call here)
   const handleForgotMPIN = () => {
     if (!phone) {
       Alert.alert('Error', 'Phone number is missing. Please restart the process.');
       return;
     }
-    // Navigate to MPINForgot screen, passing the phone number
     (navigation as any).navigate('MPINForgot', { phone });
   };
 
-  // Change phone number: clear both pending AND saved, go back to PhoneInput
   const handleChangePhone = () => {
     clearPendingMpinLogin();
     clearSavedAdminId();
@@ -306,7 +303,11 @@ export default function MPINVerificationScreen() {
                 <Text style={styles.linkText}>Forgot MPIN?</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity onPress={handleChangePhone} disabled={loading} style={styles.changePhoneButton}>
+              <TouchableOpacity
+                onPress={handleChangePhone}
+                disabled={loading}
+                style={styles.changePhoneButton}
+              >
                 <Text style={styles.linkText}>Change phone number</Text>
               </TouchableOpacity>
             </View>

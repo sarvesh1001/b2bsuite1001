@@ -17,20 +17,14 @@ import { useAuthStore } from '../../store/authStore';
 
 type PaperTextInput = React.ElementRef<typeof TextInput>;
 
-const generateUUID = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-  const r = Math.random() * 16 | 0;
-  const v = c === 'x' ? r : (r & 0x3 | 0x8);
-  return v.toString(16);
-});
-
 export default function OTPVerificationScreen() {
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [loading, setLoading] = useState(false);
+  const [resendLoading, setResendLoading] = useState(false);
   const [cooldownSeconds, setCooldownSeconds] = useState(0);
   const navigation = useNavigation();
   const route = useRoute();
 
-  // ✅ Extended route params: now includes hasMpin from PhoneInput
   const { phone, adminId: initialAdminId, hasMpin: initialHasMpin } = route.params as {
     phone: string;
     adminId?: string;
@@ -43,13 +37,8 @@ export default function OTPVerificationScreen() {
   const [deviceId, setDeviceId] = useState('');
   const [fingerprint, setFingerprint] = useState('');
 
-  // IDEMPOTENCY KEYS
-  const resendKeyRef = useRef<string | null>(null);
-  const [verifyIdempotencyKey, setVerifyIdempotencyKey] = useState(generateUUID);
-
   const timerRef = useRef<number | null>(null);
 
-  // Access the auth store actions
   const { setPendingMpinLogin, setSavedAdminId } = useAuthStore.getState();
 
   useEffect(() => {
@@ -104,81 +93,48 @@ export default function OTPVerificationScreen() {
     }
     setLoading(true);
     try {
+      // 🔥 No idempotency key passed – service handles it
       const verifyData = await verifyOTP(
         phone,
         otpCode,
         'admin_login',
         deviceId,
-        fingerprint,
-        verifyIdempotencyKey
+        fingerprint
       );
-
-      console.log('📦 verifyData after unwrap:', verifyData);
 
       const { admin_id, has_mpin } = verifyData;
 
-      console.log(`🔍 admin_id: ${admin_id}, has_mpin: ${has_mpin}`);
-
       if (admin_id) {
-        // 🔥 Store pending MPIN login data (for current session)
         setPendingMpinLogin(admin_id, phone, has_mpin);
-        // 🔥 Store saved admin ID (survives logout)
         setSavedAdminId(admin_id, phone, has_mpin);
 
         if (has_mpin === true) {
-          console.log('➡️ User has MPIN → navigate to MPINVerification');
           (navigation as any).navigate('MPINVerification', { phone, adminId: admin_id });
         } else {
-          console.log('➡️ User does NOT have MPIN → navigate to MPINSetup');
           (navigation as any).navigate('MPINSetup', { adminId: admin_id, phone });
         }
       } else {
-        console.warn('⚠️ No admin_id in response');
         Alert.alert('Verification Failed', 'Invalid OTP or expired.');
       }
     } catch (error: any) {
-      console.error('❌ Verification error:', error);
-
-      const errorMsg = error.response?.data?.message || error.message || '';
-      const isDuplicate = errorMsg.includes('already used') ||
-                          errorMsg.includes('idempotency') ||
-                          error.response?.status === 409;
-
-      if (isDuplicate && initialAdminId) {
-        console.log('🔄 OTP already used – using stored admin_id and has_mpin');
-        setPendingMpinLogin(initialAdminId, phone, initialHasMpin ?? false);
-        setSavedAdminId(initialAdminId, phone, initialHasMpin ?? false);
-        if (initialHasMpin) {
-          (navigation as any).navigate('MPINVerification', { phone, adminId: initialAdminId });
-        } else {
-          (navigation as any).navigate('MPINSetup', { adminId: initialAdminId, phone });
-        }
-        return;
-      }
-
       const msg = error.response?.data?.message || error.message || 'Verification failed.';
       Alert.alert('Error', msg);
     } finally {
       setLoading(false);
-      setVerifyIdempotencyKey(generateUUID);
     }
   };
 
-  const getOrCreateResendKey = () => {
-    if (!resendKeyRef.current) resendKeyRef.current = generateUUID();
-    return resendKeyRef.current;
-  };
-  const resetResendKey = () => { resendKeyRef.current = null; };
-
   const handleResendOTP = async () => {
     if (cooldownSeconds > 0) return;
+    setResendLoading(true);
     try {
-      const idempotencyKey = getOrCreateResendKey();
-      await sendOTP(phone, 'admin_login', deviceId, fingerprint, idempotencyKey);
-      resetResendKey();
+      // 🔥 No idempotency key – service manages it
+      await sendOTP(phone, 'admin_login', deviceId, fingerprint);
       Alert.alert('Success', 'OTP resent successfully.');
+      // Reset cooldown? We can set a small cooldown to prevent spam.
+      setCooldownSeconds(30);
     } catch (error: any) {
-      const hasRetryAfter = !!error.retryAfter;
+      const hasRetryAfter = error.retryAfter;
       if (hasRetryAfter) {
         setCooldownSeconds(error.retryAfter);
         Alert.alert('Rate Limited', `Please wait ${error.retryAfter} seconds.`);
@@ -186,6 +142,8 @@ export default function OTPVerificationScreen() {
         const msg = error.response?.data?.message || error.message || 'Failed to resend OTP.';
         Alert.alert('Error', msg);
       }
+    } finally {
+      setResendLoading(false);
     }
   };
 
@@ -228,9 +186,13 @@ export default function OTPVerificationScreen() {
 
             <View style={styles.resendContainer}>
               <Text variant="bodyMedium" style={styles.resendText}>Didn't receive the code?</Text>
-              <TouchableOpacity onPress={handleResendOTP} disabled={loading || cooldownSeconds > 0} style={styles.resendButton}>
-                <Text style={[styles.resendButtonLabel, (loading || cooldownSeconds > 0) && styles.resendDisabled]}>
-                  {cooldownSeconds > 0 ? `Wait ${cooldownSeconds}s` : 'Resend'}
+              <TouchableOpacity
+                onPress={handleResendOTP}
+                disabled={resendLoading || loading || cooldownSeconds > 0}
+                style={styles.resendButton}
+              >
+                <Text style={[styles.resendButtonLabel, (resendLoading || loading || cooldownSeconds > 0) && styles.resendDisabled]}>
+                  {cooldownSeconds > 0 ? `Wait ${cooldownSeconds}s` : resendLoading ? 'Sending...' : 'Resend'}
                 </Text>
               </TouchableOpacity>
             </View>

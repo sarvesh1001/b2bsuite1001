@@ -24,15 +24,6 @@ import { initiateLogin, sendOTP } from '../../services/auth';
 import { getDeviceId, getDeviceFingerprint } from '../../utils/device';
 import { useAuthStore } from '../../store/authStore';
 
-// Simple UUID generator (v4)
-const generateUUID = () => {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = Math.random() * 16 | 0;
-    const v = c === 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
-};
-
 export default function PhoneInputScreen() {
   const [phone, setPhone] = useState('');
   const [loading, setLoading] = useState(false);
@@ -49,22 +40,7 @@ export default function PhoneInputScreen() {
   const [deviceId, setDeviceId] = useState<string>('');
   const [fingerprint, setFingerprint] = useState<string>('');
 
-  // --- IDEMPOTENCY KEY MANAGEMENT ---
-  const idempotencyKeyRef = useRef<string | null>(null);
-
-  const getOrCreateIdempotencyKey = () => {
-    if (!idempotencyKeyRef.current) {
-      idempotencyKeyRef.current = generateUUID();
-    }
-    return idempotencyKeyRef.current;
-  };
-
-  const resetIdempotencyKey = () => {
-    idempotencyKeyRef.current = null;
-  };
-  // ----------------------------------
-
-  // Countdown timer ref – fixed type to number
+  // Countdown timer ref
   const timerRef = useRef<number | null>(null);
 
   // Auth store actions and state
@@ -108,7 +84,7 @@ export default function PhoneInputScreen() {
   }, [retryAfterSeconds]);
 
   // ============================================================
-  // handleSendOTP with savedAdminId fallback
+  // handleSendOTP – no manual idempotency handling
   // ============================================================
   const handleSendOTP = async () => {
     const cleaned = phone.replace(/[^0-9]/g, '');
@@ -142,7 +118,6 @@ export default function PhoneInputScreen() {
           'Your MPIN is locked. Please contact your administrator to unlock it.'
         );
         setLoading(false);
-        resetIdempotencyKey();
         return;
       }
 
@@ -159,7 +134,6 @@ export default function PhoneInputScreen() {
             adminId: adminId,
           });
           setLoading(false);
-          resetIdempotencyKey();
           return;
         } else {
           // No admin_id – we need OTP to get it.
@@ -173,18 +147,9 @@ export default function PhoneInputScreen() {
       // - Existing user with MPIN but device not trusted
       // - Or we need to get admin_id via OTP
       if (user_exists || !has_mpin || !device_trusted) {
-        const idempotencyKey = getOrCreateIdempotencyKey();
-        await sendOTP(
-          fullNumber,
-          'admin_login',
-          deviceId,
-          fingerprint,
-          idempotencyKey
-        );
-        // Success – reset key
-        resetIdempotencyKey();
+        // ✅ No idempotency key passed – service handles it internally
+        await sendOTP(fullNumber, 'admin_login', deviceId, fingerprint);
         Alert.alert('OTP Sent', `A verification code has been sent to ${fullNumber}`);
-        // Pass along any admin_id we have (if any) to OTP screen; if not, it will be obtained from OTP verification
         (navigation as any).navigate('OTPVerification', {
           phone: fullNumber,
           adminId: responseAdminId || undefined,
@@ -194,23 +159,9 @@ export default function PhoneInputScreen() {
       } else {
         // Fallback – should not happen
         Alert.alert('Unexpected Flow', message || 'Please contact support.');
-        resetIdempotencyKey();
       }
     } catch (error: any) {
-      // --- IDEMPOTENCY KEY DECISION ---
-      const isNetworkError =
-        error.message === 'Network Error' ||
-        error.code === 'ECONNABORTED' ||
-        error.code === 'ERR_NETWORK';
-
       const hasRetryAfter = !!error.retryAfter;
-
-      if (isNetworkError || hasRetryAfter) {
-        // Keep the key for retry
-      } else {
-        // Other errors (validation, 404, 500, etc.) – reset key
-        resetIdempotencyKey();
-      }
 
       if (hasRetryAfter) {
         setRetryAfterSeconds(error.retryAfter);
@@ -222,6 +173,7 @@ export default function PhoneInputScreen() {
         const msg = error.response?.data?.message || error.message || 'An error occurred.';
         Alert.alert('Error', msg);
       }
+      // ❌ No manual key reset – service handles key lifecycle
     } finally {
       setLoading(false);
     }
