@@ -1,5 +1,3 @@
-// apps/mobile/App.tsx
-
 import React, { useEffect, useState, useRef } from 'react';
 import { Provider as PaperProvider } from 'react-native-paper';
 import { StatusBar } from 'expo-status-bar';
@@ -7,13 +5,35 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { useFonts } from 'expo-font';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Alert } from 'react-native'; // 👈 Added for global error handler
 
 import Navigation from './src/navigation';
-import { axiosInstance, setRefreshTokenFunction } from '@b2b/api-client';
+import { axiosInstance, setRefreshTokenFunction, setUnauthorizedCallback } from '@b2b/api-client';
 import { AnimatedSplash } from './src/splash/AnimatedSplashScreen';
 import { useAuthStore } from './src/store/authStore';
 import { getDeviceId } from './src/utils/device';
 import { refreshAccessToken } from './src/services/auth';
+import { resetToAuthScreen } from './src/navigation/navigationService';
+import { ErrorBoundary } from './src/components/ErrorBoundary';
+
+// 🌍 Global error handler – catches unhandled JS errors and promise rejections
+if (__DEV__) {
+  const originalHandler = ErrorUtils.getGlobalHandler?.();
+  ErrorUtils.setGlobalHandler((error, isFatal) => {
+    console.error('🔥 GLOBAL ERROR:', error);
+    Alert.alert(
+      'Unhandled Error',
+      error?.message || 'Unknown error',
+      [
+        { text: 'OK' },
+        { text: 'Details', onPress: () => console.log(error?.stack) },
+      ],
+      { cancelable: false }
+    );
+    // Forward to the original handler (e.g., Hermes or React Native's default)
+    if (originalHandler) originalHandler(error, isFatal);
+  });
+}
 
 SplashScreen.preventAutoHideAsync();
 
@@ -30,13 +50,12 @@ export default function App() {
     deviceId,
     setDeviceIdInStore,
     validateSession,
-    logout,
-    updateTokens,      // 👈 ensure this exists in authStore
+    clearSession,
+    updateTokens,
   } = useAuthStore();
 
   const refreshTimerRef = useRef<number | null>(null);
 
-  // ✅ Load MaterialCommunityIcons font (fixes "X" icon on FAB)
   const [fontsLoaded] = useFonts({
     ...MaterialCommunityIcons.font,
   });
@@ -65,7 +84,7 @@ export default function App() {
     prepare();
   }, []);
 
-  // 2. Define the refresh function (used by both interceptor and timer)
+  // 2. Define the refresh function
   const doRefresh = async (): Promise<{ accessToken: string; refreshToken: string }> => {
     const refreshToken = useAuthStore.getState().refreshToken;
     if (!refreshToken) {
@@ -77,35 +96,45 @@ export default function App() {
       updateTokens(access_token, refresh_token);
       return { accessToken: access_token, refreshToken: refresh_token };
     } catch (error: any) {
-      // If the refresh token is invalid (401), log the user out
       if (error.response?.status === 401) {
-        logout();
+        clearSession();
+        resetToAuthScreen();
       }
       throw error;
     }
   };
 
-  // 3. Set the refresh function for the Axios interceptor
+  // 3. Set refresh function for interceptor
   useEffect(() => {
     setRefreshTokenFunction(doRefresh);
     return () => setRefreshTokenFunction(null);
   }, []);
 
-  // 4. Start/stop a proactive refresh timer every 4.5 minutes (270 seconds)
+  // 4. Set unauthorized callback
+  useEffect(() => {
+    const onUnauthorized = () => {
+      clearSession();
+      resetToAuthScreen();
+    };
+
+    setUnauthorizedCallback(onUnauthorized);
+
+    return () => {
+      setUnauthorizedCallback(null);
+    };
+  }, [clearSession]);
+
+  // 5. Proactive refresh timer
   useEffect(() => {
     const startTimer = () => {
       if (refreshTimerRef.current) {
         clearInterval(refreshTimerRef.current);
       }
-      // Refresh every 270 seconds (4.5 min) to stay ahead of the 900s expiry
       refreshTimerRef.current = setInterval(() => {
-        // Only refresh if still authenticated
         if (useAuthStore.getState().isAuthenticated) {
-          doRefresh().catch(() => {
-            // doRefresh already handles logout on 401
-          });
+          doRefresh().catch(() => {});
         }
-      }, 270000); // 270,000 ms = 270 seconds
+      }, 270000);
     };
 
     if (isAuthenticated) {
@@ -125,12 +154,11 @@ export default function App() {
     };
   }, [isAuthenticated]);
 
-  // 5. Validate session if authenticated
+  // 6. Validate session
   useEffect(() => {
     async function validate() {
       if (isAuthenticated) {
-        const isValid = await validateSession();
-        if (!isValid) logout();
+        await validateSession();
       }
       await SplashScreen.hideAsync();
     }
@@ -138,27 +166,28 @@ export default function App() {
     if (isReady && fontsLoaded) {
       validate();
     }
-  }, [isReady, fontsLoaded, isAuthenticated, validateSession, logout]);
+  }, [isReady, fontsLoaded, isAuthenticated, validateSession]);
 
   const handleSplashFinish = () => {
     setIsSplashVisible(false);
   };
 
-  // Wait for fonts and basic setup
   if (!isReady || !fontsLoaded) {
     return null;
   }
 
   return (
-    <SafeAreaProvider>
-      {isSplashVisible ? (
-        <AnimatedSplash onFinish={handleSplashFinish} />
-      ) : (
-        <PaperProvider>
-          <StatusBar style="dark" />
-          <Navigation />
-        </PaperProvider>
-      )}
-    </SafeAreaProvider>
+    <ErrorBoundary>
+      <SafeAreaProvider>
+        {isSplashVisible ? (
+          <AnimatedSplash onFinish={handleSplashFinish} />
+        ) : (
+          <PaperProvider>
+            <StatusBar style="dark" />
+            <Navigation />
+          </PaperProvider>
+        )}
+      </SafeAreaProvider>
+    </ErrorBoundary>
   );
 }

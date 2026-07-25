@@ -1,4 +1,3 @@
-// screens/admin/CompanyManagement/CompanyEmployeesScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -9,13 +8,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, ActivityIndicator, Card, Chip } from 'react-native-paper';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRoute } from '@react-navigation/native';
 
 import { getCompanyEmployees, CompanyEmployee } from '../../../services/admin';
 
 export default function CompanyEmployeesScreen() {
-  const insets = useSafeAreaInsets();
   const route = useRoute();
   const { companyId } = route.params as { companyId: string };
 
@@ -48,7 +45,7 @@ export default function CompanyEmployeesScreen() {
 
   const renderItem = ({ item }: { item: CompanyEmployee }) => (
     <Card style={styles.card}>
-      <Card.Content>
+      <Card.Content style={styles.cardContent}>
         <View style={styles.row}>
           <Text variant="titleSmall" style={styles.userId}>
             {item.user_id}
@@ -78,7 +75,7 @@ export default function CompanyEmployeesScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+      <SafeAreaView style={styles.safeArea} edges={['bottom']}>
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#7B2FBE" />
         </View>
@@ -87,7 +84,7 @@ export default function CompanyEmployeesScreen() {
   }
 
   return (
-    <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <View style={styles.header}>
         <Text variant="headlineMedium" style={styles.title}>
           Employees
@@ -124,7 +121,15 @@ const styles = StyleSheet.create({
   title: { fontWeight: 'bold', color: '#1A1A1A', fontSize: 28 },
   subtitle: { color: '#666', marginTop: 4 },
   listContent: { paddingHorizontal: 24, paddingBottom: 40 },
-  card: { marginBottom: 12, borderRadius: 12, elevation: 2 },
+  card: {
+    marginBottom: 12,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF', // force white background
+  },
+  cardContent: {
+    backgroundColor: '#FFFFFF', // force white background for content
+  },
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   userId: { fontWeight: '600', color: '#1A1A1A', flex: 1 },
   statusChip: { marginLeft: 8 },

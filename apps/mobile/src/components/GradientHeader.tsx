@@ -1,34 +1,44 @@
-// apps/mobile/src/components/GradientHeader.tsx
 import React from 'react';
 import { StyleSheet, View, TouchableOpacity } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Text } from 'react-native-paper';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import type { StackHeaderRightProps } from '@react-navigation/stack';
 
-// The props that React Navigation passes to a custom header
 interface HeaderProps {
   back?: {
     title?: string;
     href?: string;
   };
-  navigation: any; // We only use goBack, so any is fine
+  navigation: any;
   route: any;
   options: {
     title?: string;
-    headerTitle?: string | ((props: any) => React.ReactNode); // can be a string or function
+    headerTitle?: string | ((props: any) => React.ReactNode);
     headerShown?: boolean;
+    headerRight?: (props: StackHeaderRightProps) => React.ReactNode;
   };
 }
 
 export function GradientHeader({ back, navigation, route, options }: HeaderProps) {
   const insets = useSafeAreaInsets();
-  // Resolve title: prefer options.title, then headerTitle if it's a string, else route.name
   const title =
     options?.title ||
     (typeof options?.headerTitle === 'string' ? options.headerTitle : '') ||
     route?.name ||
     '';
+
+  // Get the right component, then ensure it's a valid element
+  const rawRight = options?.headerRight ? options.headerRight({} as StackHeaderRightProps) : null;
+  let rightComponent = rawRight;
+  if (typeof rightComponent === 'string') {
+    // Wrap string in a Text component
+    rightComponent = <Text style={{ color: '#FFFFFF' }}>{rightComponent}</Text>;
+  } else if (rightComponent && !React.isValidElement(rightComponent)) {
+    // If it's something else (like number, boolean), wrap in Text
+    rightComponent = <Text style={{ color: '#FFFFFF' }}>{String(rightComponent)}</Text>;
+  }
 
   return (
     <LinearGradient
@@ -44,10 +54,12 @@ export function GradientHeader({ back, navigation, route, options }: HeaderProps
           </TouchableOpacity>
         )}
         <Text style={styles.title}>{title}</Text>
+        {rightComponent && <View style={styles.rightContainer}>{rightComponent}</View>}
       </View>
     </LinearGradient>
   );
 }
+
 
 const styles = StyleSheet.create({
   header: {
@@ -67,5 +79,9 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 18,
     fontWeight: 'bold',
+    flex: 1, // pushes right content to the end
+  },
+  rightContainer: {
+    marginLeft: 'auto',
   },
 });

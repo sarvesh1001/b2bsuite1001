@@ -35,6 +35,14 @@ export const setRefreshTokenFunction = (fn: RefreshFn | null): void => {
   refreshTokenFn = fn;
 };
 
+// ---- New: Unauthorized callback ----
+let unauthorizedCallback: (() => void) | null = null;
+
+export const setUnauthorizedCallback = (cb: (() => void) | null): void => {
+  unauthorizedCallback = cb;
+};
+// -----------------------------------
+
 AXIOS_INSTANCE.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   return config;
 });
@@ -51,12 +59,18 @@ const addSubscriber = (cb: (token: string) => void) => {
   refreshSubscribers.push(cb);
 };
 
+// Helper to check if the request is the refresh endpoint
+const isRefreshRequest = (url: string | undefined): boolean => {
+  return url?.includes('/auth/refresh') ?? false;
+};
+
 AXIOS_INSTANCE.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config as AxiosRequestConfig & { _retry?: boolean };
     const status = error.response?.status;
 
+    // Handle rate limiting (already present)
     if (status === 429) {
       const retryAfter = error.response?.headers?.['retry-after'];
       if (retryAfter) {
@@ -65,8 +79,11 @@ AXIOS_INSTANCE.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    if (status === 401 && !originalRequest._retry) {
+    // If 401 and not already retrying and not the refresh endpoint itself
+    if (status === 401 && !originalRequest._retry && !isRefreshRequest(originalRequest.url)) {
       if (!refreshTokenFn) {
+        // No refresh capability – trigger unauthorized callback
+        if (unauthorizedCallback) unauthorizedCallback();
         return Promise.reject(error);
       }
 
@@ -91,11 +108,18 @@ AXIOS_INSTANCE.interceptors.response.use(
         originalRequest.headers.Authorization = `Bearer ${accessToken}`;
         return AXIOS_INSTANCE.request(originalRequest);
       } catch (refreshError) {
+        // Refresh failed – clear session and notify
         refreshSubscribers = [];
+        if (unauthorizedCallback) unauthorizedCallback();
         return Promise.reject(refreshError);
       } finally {
         isRefreshing = false;
       }
+    }
+
+    // If we get a 401 on the refresh endpoint itself, or after retry, trigger callback
+    if (status === 401 && (originalRequest._retry || isRefreshRequest(originalRequest.url))) {
+      if (unauthorizedCallback) unauthorizedCallback();
     }
 
     return Promise.reject(error);

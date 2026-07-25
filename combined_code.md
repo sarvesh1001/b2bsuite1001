@@ -1,12 +1,10 @@
 # Combined Source Code
 
-Total Files: 27
+Total Files: 28
 
 # File: apps/mobile/App.tsx
 
 ```tsx
-// apps/mobile/App.tsx
-
 import React, { useEffect, useState, useRef } from 'react';
 import { Provider as PaperProvider } from 'react-native-paper';
 import { StatusBar } from 'expo-status-bar';
@@ -14,13 +12,35 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { useFonts } from 'expo-font';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Alert } from 'react-native'; // 👈 Added for global error handler
 
 import Navigation from './src/navigation';
-import { axiosInstance, setRefreshTokenFunction } from '@b2b/api-client';
+import { axiosInstance, setRefreshTokenFunction, setUnauthorizedCallback } from '@b2b/api-client';
 import { AnimatedSplash } from './src/splash/AnimatedSplashScreen';
 import { useAuthStore } from './src/store/authStore';
 import { getDeviceId } from './src/utils/device';
 import { refreshAccessToken } from './src/services/auth';
+import { resetToAuthScreen } from './src/navigation/navigationService';
+import { ErrorBoundary } from './src/components/ErrorBoundary';
+
+// 🌍 Global error handler – catches unhandled JS errors and promise rejections
+if (__DEV__) {
+  const originalHandler = ErrorUtils.getGlobalHandler?.();
+  ErrorUtils.setGlobalHandler((error, isFatal) => {
+    console.error('🔥 GLOBAL ERROR:', error);
+    Alert.alert(
+      'Unhandled Error',
+      error?.message || 'Unknown error',
+      [
+        { text: 'OK' },
+        { text: 'Details', onPress: () => console.log(error?.stack) },
+      ],
+      { cancelable: false }
+    );
+    // Forward to the original handler (e.g., Hermes or React Native's default)
+    if (originalHandler) originalHandler(error, isFatal);
+  });
+}
 
 SplashScreen.preventAutoHideAsync();
 
@@ -37,13 +57,12 @@ export default function App() {
     deviceId,
     setDeviceIdInStore,
     validateSession,
-    logout,
-    updateTokens,      // 👈 ensure this exists in authStore
+    clearSession,
+    updateTokens,
   } = useAuthStore();
 
   const refreshTimerRef = useRef<number | null>(null);
 
-  // ✅ Load MaterialCommunityIcons font (fixes "X" icon on FAB)
   const [fontsLoaded] = useFonts({
     ...MaterialCommunityIcons.font,
   });
@@ -72,7 +91,7 @@ export default function App() {
     prepare();
   }, []);
 
-  // 2. Define the refresh function (used by both interceptor and timer)
+  // 2. Define the refresh function
   const doRefresh = async (): Promise<{ accessToken: string; refreshToken: string }> => {
     const refreshToken = useAuthStore.getState().refreshToken;
     if (!refreshToken) {
@@ -84,35 +103,45 @@ export default function App() {
       updateTokens(access_token, refresh_token);
       return { accessToken: access_token, refreshToken: refresh_token };
     } catch (error: any) {
-      // If the refresh token is invalid (401), log the user out
       if (error.response?.status === 401) {
-        logout();
+        clearSession();
+        resetToAuthScreen();
       }
       throw error;
     }
   };
 
-  // 3. Set the refresh function for the Axios interceptor
+  // 3. Set refresh function for interceptor
   useEffect(() => {
     setRefreshTokenFunction(doRefresh);
     return () => setRefreshTokenFunction(null);
   }, []);
 
-  // 4. Start/stop a proactive refresh timer every 4.5 minutes (270 seconds)
+  // 4. Set unauthorized callback
+  useEffect(() => {
+    const onUnauthorized = () => {
+      clearSession();
+      resetToAuthScreen();
+    };
+
+    setUnauthorizedCallback(onUnauthorized);
+
+    return () => {
+      setUnauthorizedCallback(null);
+    };
+  }, [clearSession]);
+
+  // 5. Proactive refresh timer
   useEffect(() => {
     const startTimer = () => {
       if (refreshTimerRef.current) {
         clearInterval(refreshTimerRef.current);
       }
-      // Refresh every 270 seconds (4.5 min) to stay ahead of the 900s expiry
       refreshTimerRef.current = setInterval(() => {
-        // Only refresh if still authenticated
         if (useAuthStore.getState().isAuthenticated) {
-          doRefresh().catch(() => {
-            // doRefresh already handles logout on 401
-          });
+          doRefresh().catch(() => {});
         }
-      }, 270000); // 270,000 ms = 270 seconds
+      }, 270000);
     };
 
     if (isAuthenticated) {
@@ -132,12 +161,11 @@ export default function App() {
     };
   }, [isAuthenticated]);
 
-  // 5. Validate session if authenticated
+  // 6. Validate session
   useEffect(() => {
     async function validate() {
       if (isAuthenticated) {
-        const isValid = await validateSession();
-        if (!isValid) logout();
+        await validateSession();
       }
       await SplashScreen.hideAsync();
     }
@@ -145,28 +173,29 @@ export default function App() {
     if (isReady && fontsLoaded) {
       validate();
     }
-  }, [isReady, fontsLoaded, isAuthenticated, validateSession, logout]);
+  }, [isReady, fontsLoaded, isAuthenticated, validateSession]);
 
   const handleSplashFinish = () => {
     setIsSplashVisible(false);
   };
 
-  // Wait for fonts and basic setup
   if (!isReady || !fontsLoaded) {
     return null;
   }
 
   return (
-    <SafeAreaProvider>
-      {isSplashVisible ? (
-        <AnimatedSplash onFinish={handleSplashFinish} />
-      ) : (
-        <PaperProvider>
-          <StatusBar style="dark" />
-          <Navigation />
-        </PaperProvider>
-      )}
-    </SafeAreaProvider>
+    <ErrorBoundary>
+      <SafeAreaProvider>
+        {isSplashVisible ? (
+          <AnimatedSplash onFinish={handleSplashFinish} />
+        ) : (
+          <PaperProvider>
+            <StatusBar style="dark" />
+            <Navigation />
+          </PaperProvider>
+        )}
+      </SafeAreaProvider>
+    </ErrorBoundary>
   );
 }
 ```
@@ -235,40 +264,127 @@ config.resolver.sourceExts = [
 module.exports = config;
 ```
 
+# File: apps/mobile/src/components/ErrorBoundary.tsx
+
+```tsx
+// src/components/ErrorBoundary.tsx
+import React, { Component, ErrorInfo, ReactNode } from 'react';
+import { Text, View, StyleSheet, ScrollView, Modal, TouchableOpacity } from 'react-native';
+
+interface Props {
+  children: ReactNode;
+}
+
+interface State {
+  hasError: boolean;
+  error: Error | null;
+  componentStack: string | null;
+}
+
+export class ErrorBoundary extends Component<Props, State> {
+  constructor(props: Props) {
+    super(props);
+    this.state = { hasError: false, error: null, componentStack: null };
+  }
+
+  static getDerivedStateFromError(error: Error): State {
+    return { hasError: true, error, componentStack: null };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('🚨 ErrorBoundary caught:', error);
+    console.error('📌 Component stack:', errorInfo.componentStack);
+    this.setState({ componentStack: errorInfo.componentStack || null });
+  }
+
+  handleReset = () => {
+    this.setState({ hasError: false, error: null, componentStack: null });
+  };
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <Modal visible={true} transparent={false} animationType="slide">
+          <View style={styles.modalContainer}>
+            <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.content}>
+              <Text style={styles.title}>❌ Rendering Error</Text>
+              <Text style={styles.errorLabel}>Error:</Text>
+              <Text style={styles.error}>{this.state.error?.message}</Text>
+              <Text style={styles.stackTitle}>Component Stack:</Text>
+              <Text style={styles.stack}>
+                {this.state.componentStack || 'No stack available'}
+              </Text>
+              <TouchableOpacity style={styles.resetButton} onPress={this.handleReset}>
+                <Text style={styles.resetText}>Try Again</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </Modal>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+const styles = StyleSheet.create({
+  modalContainer: { flex: 1, backgroundColor: '#fff', paddingTop: 40 },
+  scrollContainer: { flex: 1 },
+  content: { padding: 20 },
+  title: { fontSize: 24, fontWeight: 'bold', marginBottom: 16, color: '#ff0000' },
+  errorLabel: { fontWeight: 'bold', marginTop: 12, fontSize: 16 },
+  error: { color: '#cc0000', marginBottom: 12, fontSize: 16 },
+  stackTitle: { fontWeight: 'bold', marginTop: 12, fontSize: 16 },
+  stack: { fontSize: 12, color: '#333', fontFamily: 'monospace' },
+  resetButton: { backgroundColor: '#7B2FBE', padding: 12, borderRadius: 8, marginTop: 20, alignItems: 'center' },
+  resetText: { color: 'white', fontWeight: 'bold' },
+});
+```
+
 # File: apps/mobile/src/components/GradientHeader.tsx
 
 ```tsx
-// apps/mobile/src/components/GradientHeader.tsx
 import React from 'react';
 import { StyleSheet, View, TouchableOpacity } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Text } from 'react-native-paper';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import type { StackHeaderRightProps } from '@react-navigation/stack';
 
-// The props that React Navigation passes to a custom header
 interface HeaderProps {
   back?: {
     title?: string;
     href?: string;
   };
-  navigation: any; // We only use goBack, so any is fine
+  navigation: any;
   route: any;
   options: {
     title?: string;
-    headerTitle?: string | ((props: any) => React.ReactNode); // can be a string or function
+    headerTitle?: string | ((props: any) => React.ReactNode);
     headerShown?: boolean;
+    headerRight?: (props: StackHeaderRightProps) => React.ReactNode;
   };
 }
 
 export function GradientHeader({ back, navigation, route, options }: HeaderProps) {
   const insets = useSafeAreaInsets();
-  // Resolve title: prefer options.title, then headerTitle if it's a string, else route.name
   const title =
     options?.title ||
     (typeof options?.headerTitle === 'string' ? options.headerTitle : '') ||
     route?.name ||
     '';
+
+  // Get the right component, then ensure it's a valid element
+  const rawRight = options?.headerRight ? options.headerRight({} as StackHeaderRightProps) : null;
+  let rightComponent = rawRight;
+  if (typeof rightComponent === 'string') {
+    // Wrap string in a Text component
+    rightComponent = <Text style={{ color: '#FFFFFF' }}>{rightComponent}</Text>;
+  } else if (rightComponent && !React.isValidElement(rightComponent)) {
+    // If it's something else (like number, boolean), wrap in Text
+    rightComponent = <Text style={{ color: '#FFFFFF' }}>{String(rightComponent)}</Text>;
+  }
 
   return (
     <LinearGradient
@@ -284,10 +400,12 @@ export function GradientHeader({ back, navigation, route, options }: HeaderProps
           </TouchableOpacity>
         )}
         <Text style={styles.title}>{title}</Text>
+        {rightComponent && <View style={styles.rightContainer}>{rightComponent}</View>}
       </View>
     </LinearGradient>
   );
 }
+
 
 const styles = StyleSheet.create({
   header: {
@@ -307,6 +425,10 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 18,
     fontWeight: 'bold',
+    flex: 1, // pushes right content to the end
+  },
+  rightContainer: {
+    marginLeft: 'auto',
   },
 });
 ```
@@ -321,8 +443,9 @@ import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
-import { useAuthStore, isAdminSelector } from '../store/authStore';
+import { useAuthStore } from '../store/authStore';
 import { GradientHeader } from '../components/GradientHeader';
+import { setTopLevelNavigator } from './navigationService'; // 👈 import the ref setter
 
 // Auth Screens
 import PhoneInputScreen from '../screens/auth/PhoneInput';
@@ -330,11 +453,6 @@ import OTPVerificationScreen from '../screens/auth/OTPVerification';
 import MPINSetupScreen from '../screens/auth/MPINSetup';
 import MPINVerificationScreen from '../screens/auth/MPINVerification';
 import MPINForgotScreen from '../screens/auth/MPINForgotScreen';
-
-// Main Screens
-import DashboardScreen from '../screens/main/Dashboard';
-import AttendanceScreen from '../screens/main/Attendance';
-import ProfileScreen from '../screens/main/Profile';
 
 // Admin Screens
 import CompanyListScreen from '../screens/admin/CompanyManagement/CompanyListScreen';
@@ -347,6 +465,11 @@ import UserDetailScreen from '../screens/admin/UserManagement/UserDetailScreen';
 import DepartmentsScreen from '../screens/admin/SystemSettings/DepartmentsScreen';
 import PermissionsScreen from '../screens/admin/SystemSettings/PermissionsScreen';
 import AuditLogsScreen from '../screens/admin/AuditLogs/AuditLogsScreen';
+
+// Subscription & Department management screens
+import SubscriptionManagementScreen from '../screens/admin/Subscription/SubscriptionManagementScreen';
+import ExtendSubscriptionScreen from '../screens/admin/Subscription/ExtendSubscriptionScreen';
+import UpdateMaxDepartmentsScreen from '../screens/admin/Department/UpdateMaxDepartmentsScreen';
 
 export type RootStackParamList = {
   PhoneInput: undefined;
@@ -365,6 +488,9 @@ export type RootStackParamList = {
   Departments: undefined;
   Permissions: { moduleCode?: string };
   AuditLogs: undefined;
+  SubscriptionManagement: { companyId: string; company: any };
+  ExtendSubscription: { companyId: string };
+  UpdateMaxDepartments: { companyId: string; currentMax: number };
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -388,49 +514,24 @@ function AdminStack() {
       <Stack.Screen name="Departments" component={DepartmentsScreen} options={{ title: 'System Departments' }} />
       <Stack.Screen name="Permissions" component={PermissionsScreen} options={{ title: 'Permissions' }} />
       <Stack.Screen name="AuditLogs" component={AuditLogsScreen} options={{ title: 'Audit Logs' }} />
+      <Stack.Screen name="SubscriptionManagement" component={SubscriptionManagementScreen} options={{ title: 'Manage Subscription' }} />
+      <Stack.Screen name="ExtendSubscription" component={ExtendSubscriptionScreen} options={{ title: 'Extend Subscription' }} />
+      <Stack.Screen name="UpdateMaxDepartments" component={UpdateMaxDepartmentsScreen} options={{ title: 'Update Departments Limit' }} />
     </Stack.Navigator>
   );
 }
 
 function MainTabs() {
-  const user = useAuthStore((state) => state.user);
-  const isAdmin = useAuthStore(isAdminSelector);
-
-  // LOG: check user and isAdmin
-  console.log('🔍 [MainTabs] user:', user);
-  console.log('🔍 [MainTabs] isAdmin:', isAdmin);
-
   return (
     <Tab.Navigator
-      initialRouteName={isAdmin ? 'Admin' : 'Dashboard'}
-      screenOptions={({ route }) => ({
-        headerShown: true,
+      screenOptions={{
+        headerShown: false,
         tabBarActiveTintColor: '#00B4DB',
         tabBarInactiveTintColor: '#999999',
-        tabBarIcon: ({ focused, color, size }) => {
-          let iconName = '';
-          if (route.name === 'Admin') iconName = 'view-dashboard';
-          else if (route.name === 'Dashboard') iconName = 'home';
-          else if (route.name === 'Attendance') iconName = 'clock-check';
-          else if (route.name === 'Profile') iconName = 'account';
-          return <Icon name={iconName} size={size} color={color} />;
-        },
-      })}
+        tabBarIcon: ({ color, size }) => <Icon name="view-dashboard" size={size} color={color} />,
+      }}
     >
-      {isAdmin ? (
-        <>
-          <Tab.Screen name="Admin" component={AdminStack} options={{ headerShown: false }} />
-          <Tab.Screen name="Dashboard" component={DashboardScreen} />
-          <Tab.Screen name="Attendance" component={AttendanceScreen} />
-          <Tab.Screen name="Profile" component={ProfileScreen} />
-        </>
-      ) : (
-        <>
-          <Tab.Screen name="Dashboard" component={DashboardScreen} />
-          <Tab.Screen name="Attendance" component={AttendanceScreen} />
-          <Tab.Screen name="Profile" component={ProfileScreen} />
-        </>
-      )}
+      <Tab.Screen name="Admin" component={AdminStack} />
     </Tab.Navigator>
   );
 }
@@ -456,13 +557,8 @@ export default function Navigation() {
     initialRoute = 'MPINVerification';
   }
 
-  console.log('🚦 [Navigation] initialRoute:', initialRoute);
-  console.log('🚦 [Navigation] isAuthenticated:', isAuthenticated);
-  console.log('🚦 [Navigation] pending:', { pendingAdminId, pendingPhone, pendingHasMpin });
-  console.log('🚦 [Navigation] saved:', { savedAdminId, savedPhone, savedHasMpin });
-
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={setTopLevelNavigator}>
       <Stack.Navigator screenOptions={{ headerShown: false }} initialRouteName={initialRoute}>
         <Stack.Screen name="PhoneInput" component={PhoneInputScreen} />
         <Stack.Screen name="OTPVerification" component={OTPVerificationScreen} />
@@ -656,7 +752,6 @@ const styles = StyleSheet.create({
 # File: apps/mobile/src/screens/admin/CompanyManagement/CompanyCreateScreen.tsx
 
 ```tsx
-// screens/admin/CompanyManagement/CompanyCreateScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -671,13 +766,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, TextInput, ActivityIndicator, Chip, Button, Switch } from 'react-native-paper';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import { createCompany, getSystemDepartments, SystemDepartment } from '../../../services/admin';
-import { useIdempotency } from '../../../hooks/useIdempotency';
 
 const TIERS = [
   { label: 'Basic', value: 'basic' },
@@ -703,9 +796,7 @@ const TIMEZONES = [
 ];
 
 export default function CompanyCreateScreen() {
-  const insets = useSafeAreaInsets();
   const navigation = useNavigation();
-  const { getKey, resetKey } = useIdempotency();
 
   const [form, setForm] = useState({
     company_name: '',
@@ -732,7 +823,6 @@ export default function CompanyCreateScreen() {
   const [loadingDepts, setLoadingDepts] = useState(true);
   const [selectedDepts, setSelectedDepts] = useState<string[]>([]);
 
-  // Dropdown modals
   const [tierModalVisible, setTierModalVisible] = useState(false);
   const [regionModalVisible, setRegionModalVisible] = useState(false);
   const [timezoneModalVisible, setTimezoneModalVisible] = useState(false);
@@ -760,7 +850,6 @@ export default function CompanyCreateScreen() {
   };
 
   const handleCreate = async () => {
-    // Validation
     if (!form.company_name.trim()) {
       Alert.alert('Error', 'Company name is required');
       return;
@@ -807,10 +896,7 @@ export default function CompanyCreateScreen() {
         ...form,
         departments: selectedDepts,
       };
-      // ✅ FIX: await the key generation
-      const key = await getKey('createCompany');
-      const result = await createCompany(payload, key);
-      resetKey('createCompany');
+      const result = await createCompany(payload);
       Alert.alert(
         'Success',
         `Company "${result.company_name}" created with ID: ${result.company_id}`,
@@ -832,7 +918,6 @@ export default function CompanyCreateScreen() {
     }
   };
 
-  // Helper to render dropdown picker modal
   const renderPickerModal = (
     visible: boolean,
     setVisible: (v: boolean) => void,
@@ -883,7 +968,6 @@ export default function CompanyCreateScreen() {
     </Modal>
   );
 
-  // Helper for timezone picker (string array)
   const renderTimezonePicker = () => (
     <Modal
       transparent
@@ -943,7 +1027,7 @@ export default function CompanyCreateScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <KeyboardAvoidingView
         style={styles.container}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -1030,7 +1114,6 @@ export default function CompanyCreateScreen() {
               </View>
             </View>
 
-            {/* Subscription Tier Dropdown */}
             <TouchableOpacity
               style={styles.dropdown}
               onPress={() => setTierModalVisible(true)}
@@ -1045,7 +1128,6 @@ export default function CompanyCreateScreen() {
               </View>
             </TouchableOpacity>
 
-            {/* Data Region Dropdown */}
             <TouchableOpacity
               style={styles.dropdown}
               onPress={() => setRegionModalVisible(true)}
@@ -1177,7 +1259,6 @@ export default function CompanyCreateScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* Modals */}
       {renderPickerModal(tierModalVisible, setTierModalVisible, TIERS, form.subscription_tier, (val) => setForm({ ...form, subscription_tier: val }), 'Select Tier')}
       {renderPickerModal(regionModalVisible, setRegionModalVisible, REGIONS, form.data_region, (val) => setForm({ ...form, data_region: val }), 'Select Region')}
       {renderTimezonePicker()}
@@ -1187,7 +1268,7 @@ export default function CompanyCreateScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#FFFFFF' },
-  container: { flex: 1 },
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
   scrollContent: { paddingHorizontal: 24, paddingBottom: 40 },
   header: { marginVertical: 16 },
   title: { fontWeight: 'bold', color: '#1A1A1A', fontSize: 28 },
@@ -1211,7 +1292,7 @@ const styles = StyleSheet.create({
   sectionTitle: { fontWeight: '600', color: '#1A1A1A', marginTop: 12, marginBottom: 4 },
   deptContainer: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 16 },
   deptChip: { margin: 4, backgroundColor: '#f0f0f0' },
-  deptChipSelected: { backgroundColor: '#00B4DB' }, // blue to match gradient
+  deptChipSelected: { backgroundColor: '#00B4DB' },
   deptChipTextSelected: { color: 'white' },
   switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   switchLabel: { fontSize: 16, color: '#1A1A1A' },
@@ -1219,10 +1300,9 @@ const styles = StyleSheet.create({
   buttonGradient: { paddingVertical: 16, alignItems: 'center', justifyContent: 'center', minHeight: 54 },
   buttonDisabled: { opacity: 0.6 },
   buttonText: { color: 'white', fontSize: 16, fontWeight: '600', letterSpacing: 0.5 },
-  // Modal styles
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: 'white', borderRadius: 12, padding: 16, width: '80%', maxHeight: '60%' },
-  modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 12, textAlign: 'center' },
+  modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 12, textAlign: 'center', color: '#1A1A1A' },
   modalItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   modalItemSelected: { backgroundColor: '#E8E0F0' },
   modalItemText: { fontSize: 16, color: '#1A1A1A' },
@@ -1234,7 +1314,7 @@ const styles = StyleSheet.create({
 # File: apps/mobile/src/screens/admin/CompanyManagement/CompanyDepartmentsScreen.tsx
 
 ```tsx
-// screens/admin/CompanyManagement/CompanyDepartmentsScreen.tsx
+// apps/mobile/src/screens/admin/CompanyManagement/CompanyDepartmentsScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -1242,16 +1322,33 @@ import {
   FlatList,
   Alert,
   RefreshControl,
+  TouchableOpacity,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Text, ActivityIndicator, Card, Chip } from 'react-native-paper';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  Text,
+  ActivityIndicator,
+  Card,
+  Chip,
+  FAB,
+  Portal,
+  Provider as PaperProvider,
+  TextInput,
+  Button,
+  Modal, // ✅ import Modal from react-native-paper
+} from 'react-native-paper';
 import { useRoute } from '@react-navigation/native';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
-import { getCompanyDepartments, CompanyDepartment } from '../../../services/admin';
+import {
+  getCompanyDepartments,
+  CompanyDepartment,
+  addCompanyDepartment,
+  softDeleteDepartment,
+  activateDepartment,
+} from '../../../services/admin';
 
 export default function CompanyDepartmentsScreen() {
-  const insets = useSafeAreaInsets();
   const route = useRoute();
   const { companyId } = route.params as { companyId: string };
 
@@ -1259,6 +1356,11 @@ export default function CompanyDepartmentsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [total, setTotal] = useState(0);
+
+  // Modal state for adding department
+  const [modalVisible, setModalVisible] = useState(false);
+  const [newDeptName, setNewDeptName] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   const fetchDepartments = async () => {
     try {
@@ -1282,22 +1384,106 @@ export default function CompanyDepartmentsScreen() {
     fetchDepartments();
   };
 
+  // --- Department Actions ---
+
+  const handleAddDepartment = async () => {
+    if (!newDeptName.trim()) {
+      Alert.alert('Error', 'Department name is required');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await addCompanyDepartment(companyId, {
+        department_name: newDeptName.trim(),
+        // system_department_id can be omitted to create a custom department
+      });
+      Alert.alert('Success', 'Department added');
+      setModalVisible(false);
+      setNewDeptName('');
+      fetchDepartments();
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to add department');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleToggleActive = async (item: CompanyDepartment) => {
+    try {
+      if (item.is_active) {
+        // Soft-delete (mark inactive)
+        await softDeleteDepartment(companyId, item.department_id);
+        Alert.alert('Success', 'Department deactivated');
+      } else {
+        // Activate
+        await activateDepartment(companyId, item.department_id);
+        Alert.alert('Success', 'Department activated');
+      }
+      fetchDepartments();
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Action failed');
+    }
+  };
+
+  const handleSoftDelete = async (item: CompanyDepartment) => {
+    Alert.alert(
+      'Confirm Delete',
+      `Are you sure you want to soft-delete "${item.department_name}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await softDeleteDepartment(companyId, item.department_id);
+              Alert.alert('Success', 'Department soft-deleted');
+              fetchDepartments();
+            } catch (error: any) {
+              Alert.alert('Error', error.message || 'Delete failed');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // --- Render ---
+
   const renderItem = ({ item }: { item: CompanyDepartment }) => (
     <Card style={styles.card}>
-      <Card.Content>
+      <Card.Content style={styles.cardContent}>
         <View style={styles.row}>
           <Text variant="titleSmall" style={styles.deptName}>
             {item.department_name}
           </Text>
-          <Chip
-            style={[
-              styles.statusChip,
-              { backgroundColor: item.is_active ? '#E8F5E9' : '#FFEBEE' },
-            ]}
-            textStyle={{ color: item.is_active ? '#2E7D32' : '#C62828' }}
-          >
-            {item.is_active ? 'Active' : 'Inactive'}
-          </Chip>
+          <View style={styles.actionIcons}>
+            <Chip
+              style={[
+                styles.statusChip,
+                { backgroundColor: item.is_active ? '#E8F5E9' : '#FFEBEE' },
+              ]}
+              textStyle={{ color: item.is_active ? '#2E7D32' : '#C62828' }}
+            >
+              {item.is_active ? 'Active' : 'Inactive'}
+            </Chip>
+            <TouchableOpacity
+              onPress={() => handleToggleActive(item)}
+              style={styles.iconButton}
+            >
+              <Icon
+                name={item.is_active ? 'eye-off' : 'eye'}
+                size={20}
+                color="#7B2FBE"
+              />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => handleSoftDelete(item)}
+              style={styles.iconButton}
+            >
+              <Icon name="delete" size={20} color="#FF6B6B" />
+            </TouchableOpacity>
+          </View>
         </View>
         {item.system_department_name ? (
           <Text variant="bodySmall" style={styles.systemDept}>
@@ -1318,7 +1504,7 @@ export default function CompanyDepartmentsScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+      <SafeAreaView style={styles.safeArea} edges={['bottom']}>
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#7B2FBE" />
         </View>
@@ -1327,33 +1513,89 @@ export default function CompanyDepartmentsScreen() {
   }
 
   return (
-    <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Text variant="headlineMedium" style={styles.title}>
-          Departments
-        </Text>
-        <Text variant="bodyMedium" style={styles.subtitle}>
-          {total} departments
-        </Text>
-      </View>
+    <PaperProvider>
+      <SafeAreaView style={styles.safeArea} edges={['bottom']}>
+        <View style={styles.header}>
+          <Text variant="headlineMedium" style={styles.title}>
+            Departments
+          </Text>
+          <Text variant="bodyMedium" style={styles.subtitle}>
+            {total} departments
+          </Text>
+        </View>
 
-      <FlatList
-        data={departments}
-        renderItem={renderItem}
-        keyExtractor={(item) => item.department_id}
-        contentContainerStyle={styles.listContent}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#7B2FBE']} />
-        }
-        ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Text variant="bodyLarge" style={styles.emptyText}>
-              No departments found
-            </Text>
-          </View>
-        }
-      />
-    </SafeAreaView>
+        <FlatList
+          data={departments}
+          renderItem={renderItem}
+          keyExtractor={(item) => item.department_id}
+          contentContainerStyle={styles.listContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={['#7B2FBE']}
+            />
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <Text variant="bodyLarge" style={styles.emptyText}>
+                No departments found
+              </Text>
+            </View>
+          }
+        />
+
+        {/* FAB to add department */}
+        <FAB
+          style={styles.fab}
+          icon="plus"
+          onPress={() => setModalVisible(true)}
+          color="white"
+          theme={{ colors: { primary: '#7B2FBE' } }}
+        />
+
+        {/* ✅ Corrected Modal – wrap content in a View */}
+        <Portal>
+          <Modal
+            visible={modalVisible}
+            onDismiss={() => setModalVisible(false)}
+          >
+            <View style={styles.modal}>
+              <Text style={styles.modalTitle}>Add Department</Text>
+              <TextInput
+                mode="outlined"
+                label="Department Name"
+                value={newDeptName}
+                onChangeText={setNewDeptName}
+                style={styles.input}
+                theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
+                autoFocus
+              />
+              <View style={styles.modalButtons}>
+                <Button
+                  mode="outlined"
+                  onPress={() => setModalVisible(false)}
+                  style={styles.modalCancelButton}
+                  labelStyle={{ color: '#666' }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  mode="contained"
+                  onPress={handleAddDepartment}
+                  loading={submitting}
+                  disabled={submitting}
+                  style={styles.modalSaveButton}
+                  theme={{ colors: { primary: '#7B2FBE' } }}
+                >
+                  Add
+                </Button>
+              </View>
+            </View>
+          </Modal>
+        </Portal>
+      </SafeAreaView>
+    </PaperProvider>
   );
 }
 
@@ -1363,23 +1605,89 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 8 },
   title: { fontWeight: 'bold', color: '#1A1A1A', fontSize: 28 },
   subtitle: { color: '#666', marginTop: 4 },
-  listContent: { paddingHorizontal: 24, paddingBottom: 40 },
-  card: { marginBottom: 12, borderRadius: 12, elevation: 2 },
-  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  deptName: { fontWeight: '600', color: '#1A1A1A', flex: 1 },
-  statusChip: { marginLeft: 8 },
+  listContent: { paddingHorizontal: 24, paddingBottom: 100 }, // extra bottom for FAB
+  card: {
+    marginBottom: 12,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
+  cardContent: {
+    backgroundColor: '#FFFFFF',
+  },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  deptName: {
+    fontWeight: '600',
+    color: '#1A1A1A',
+    flex: 1,
+    marginRight: 8,
+  },
+  actionIcons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  statusChip: {
+    marginRight: 8,
+  },
+  iconButton: {
+    padding: 4,
+    marginLeft: 4,
+  },
   systemDept: { color: '#666', marginTop: 4 },
   parent: { color: '#666', marginTop: 2 },
   createdAt: { color: '#888', marginTop: 2, fontSize: 12 },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 40 },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingTop: 40,
+  },
   emptyText: { color: '#999' },
+  fab: {
+    position: 'absolute',
+    right: 24,
+    bottom: 24,
+    backgroundColor: '#7B2FBE',
+  },
+  modal: {
+    backgroundColor: 'white',
+    padding: 24,
+    margin: 24,
+    borderRadius: 12,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 16,
+    color: '#1A1A1A',
+  },
+  input: {
+    marginBottom: 16,
+    backgroundColor: 'white',
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: 8,
+  },
+  modalCancelButton: {
+    marginRight: 8,
+    borderColor: '#ccc',
+  },
+  modalSaveButton: {
+    backgroundColor: '#7B2FBE',
+  },
 });
 ```
 
 # File: apps/mobile/src/screens/admin/CompanyManagement/CompanyDetailScreen.tsx
 
 ```tsx
-// screens/admin/CompanyManagement/CompanyDetailScreen.tsx
+// apps/mobile/src/screens/admin/CompanyManagement/CompanyDetailScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -1390,8 +1698,7 @@ import {
   Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Text, ActivityIndicator, Card, Button, Chip, Divider } from 'react-native-paper';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Text, ActivityIndicator, Card, Chip, Divider } from 'react-native-paper';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRoute, useNavigation } from '@react-navigation/native';
 
@@ -1405,14 +1712,11 @@ import {
   getCompanyRoles,
   Company,
 } from '../../../services/admin';
-import { useIdempotency } from '../../../hooks/useIdempotency';
 
 export default function CompanyDetailScreen() {
-  const insets = useSafeAreaInsets();
   const route = useRoute();
   const navigation = useNavigation();
   const { companyId } = route.params as { companyId: string };
-  const { getKey, resetKey } = useIdempotency();
 
   const [company, setCompany] = useState<Company | null>(null);
   const [stats, setStats] = useState<any>(null);
@@ -1451,13 +1755,11 @@ export default function CompanyDetailScreen() {
     if (!company) return;
     try {
       setActionLoading(true);
-      const key = await getKey(`company-toggle-${companyId}`); // 👈 await
       if (company.is_active) {
-        await deactivateCompany(companyId, 'Admin action', key);
+        await deactivateCompany(companyId, 'Admin action');
       } else {
-        await reactivateCompany(companyId, key);
+        await reactivateCompany(companyId);
       }
-      resetKey(`company-toggle-${companyId}`);
       Alert.alert('Success', company.is_active ? 'Company deactivated' : 'Company reactivated');
       loadData();
     } catch (error: any) {
@@ -1477,9 +1779,18 @@ export default function CompanyDetailScreen() {
     } catch (error) {}
   };
 
+  const formatTier = (tier: string) => {
+    return tier.charAt(0).toUpperCase() + tier.slice(1);
+  };
+
+  const formatExpiry = (expiry: string | undefined) => {
+    if (!expiry) return 'N/A';
+    return new Date(expiry).toLocaleDateString();
+  };
+
   if (loading || !company) {
     return (
-      <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+      <SafeAreaView style={styles.safeArea} edges={['bottom']}>
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#7B2FBE" />
         </View>
@@ -1488,31 +1799,43 @@ export default function CompanyDetailScreen() {
   }
 
   return (
-    <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        {/* Header */}
         <View style={styles.header}>
           <Text variant="headlineMedium" style={styles.companyName}>
             {company.company_name}
           </Text>
           <View style={styles.statusRow}>
-            <Chip
+            <View
               style={[
-                styles.statusChip,
+                styles.badgeBase,
                 { backgroundColor: company.is_active ? '#E8F5E9' : '#FFEBEE' },
               ]}
-              textStyle={{ color: company.is_active ? '#2E7D32' : '#C62828' }}
             >
-              {company.is_active ? 'Active' : 'Inactive'}
-            </Chip>
-            <Chip style={styles.tierChip}>{company.subscription_tier}</Chip>
+              <Text
+                style={[
+                  styles.badgeText,
+                  { color: company.is_active ? '#2E7D32' : '#C62828' },
+                ]}
+              >
+                {company.is_active ? 'Active' : 'Inactive'}
+              </Text>
+            </View>
+            <View style={[styles.badgeBase, styles.tierBadge]}>
+              <Text style={styles.tierText}>{formatTier(company.subscription_tier)}</Text>
+            </View>
           </View>
         </View>
 
+        {/* Basic Info Card */}
         <Card style={styles.infoCard}>
-          <Card.Content>
+          <Card.Content style={styles.cardContent}>
             <View style={styles.infoRow}>
               <Text style={styles.label}>Owner ID:</Text>
-              <Text style={styles.value}>{company.owner_user_id}</Text>
+              <Text style={styles.value} numberOfLines={1} ellipsizeMode="tail">
+                {company.owner_user_id}
+              </Text>
             </View>
             <View style={styles.infoRow}>
               <Text style={styles.label}>Subscription:</Text>
@@ -1533,9 +1856,10 @@ export default function CompanyDetailScreen() {
           </Card.Content>
         </Card>
 
+        {/* Statistics Card */}
         {stats && (
           <Card style={styles.statsCard}>
-            <Card.Content>
+            <Card.Content style={styles.cardContent}>
               <Text variant="titleMedium" style={styles.statsTitle}>
                 Statistics
               </Text>
@@ -1563,6 +1887,82 @@ export default function CompanyDetailScreen() {
           </Card>
         )}
 
+        {/* Subscription Management Card */}
+        <Card style={styles.infoCard}>
+          <Card.Content>
+            <Text variant="titleMedium" style={styles.sectionTitle}>Subscription</Text>
+            <View style={styles.infoRow}>
+              <Text style={styles.label}>Tier:</Text>
+              <Text style={styles.value}>{formatTier(company.subscription_tier)}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.label}>Status:</Text>
+              <Text style={styles.value}>{company.subscription_status}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.label}>Max Employees:</Text>
+              <Text style={styles.value}>{company.max_employees}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.label}>Expires:</Text>
+              <Text style={styles.value}>{formatExpiry((company as any).subscription_expires_at)}</Text>
+            </View>
+            <View style={styles.buttonRow}>
+              <TouchableOpacity
+                style={[styles.halfButton, { marginRight: 4 }]}
+                onPress={() => (navigation as any).navigate('SubscriptionManagement', { companyId, company })}
+              >
+                <LinearGradient
+                  colors={['#00B4DB', '#7B2FBE']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.gradientButton}
+                >
+                  <Text style={styles.buttonText}>Manage</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.halfButton, { marginLeft: 4 }]}
+                onPress={() => (navigation as any).navigate('ExtendSubscription', { companyId })}
+              >
+                <LinearGradient
+                  colors={['#6C5CE7', '#A29BFE']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.gradientButton}
+                >
+                  <Text style={styles.buttonText}>Extend</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </Card.Content>
+        </Card>
+
+        {/* Max Departments Card */}
+        <Card style={styles.infoCard}>
+          <Card.Content>
+            <Text variant="titleMedium" style={styles.sectionTitle}>Departments Limit</Text>
+            <View style={styles.infoRow}>
+              <Text style={styles.label}>Current Max:</Text>
+              <Text style={styles.value}>{company.max_departments || 0}</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.fullButton}
+              onPress={() => (navigation as any).navigate('UpdateMaxDepartments', { companyId, currentMax: company.max_departments })}
+            >
+              <LinearGradient
+                colors={['#00B4DB', '#7B2FBE']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.gradientButton}
+              >
+                <Text style={styles.buttonText}>Update Limit</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </Card.Content>
+        </Card>
+
+        {/* Quick action rows */}
         <View style={styles.actionRow}>
           <TouchableOpacity
             style={styles.actionButton}
@@ -1659,14 +2059,66 @@ const styles = StyleSheet.create({
   scrollContent: { paddingHorizontal: 24, paddingBottom: 40 },
   header: { paddingTop: 16, paddingBottom: 12 },
   companyName: { fontWeight: 'bold', color: '#1A1A1A', fontSize: 26 },
-  statusRow: { flexDirection: 'row', marginTop: 8, flexWrap: 'wrap' },
-  statusChip: { marginRight: 8 },
-  tierChip: { backgroundColor: '#E8E0F0' },
-  infoCard: { marginVertical: 8, borderRadius: 12, elevation: 2 },
-  infoRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
-  label: { color: '#666', fontSize: 14 },
-  value: { color: '#1A1A1A', fontSize: 14, fontWeight: '500' },
-  statsCard: { marginVertical: 8, borderRadius: 12, elevation: 2 },
+  statusRow: {
+    flexDirection: 'row',
+    marginTop: 8,
+    flexWrap: 'wrap',
+    alignItems: 'center',
+  },
+  badgeBase: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginRight: 6,
+    alignSelf: 'flex-start',
+  },
+  badgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  tierBadge: {
+    backgroundColor: '#E8E0F0',
+  },
+  tierText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#333',
+  },
+  infoCard: {
+    marginVertical: 8,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
+  statsCard: {
+    marginVertical: 8,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
+  cardContent: {
+    backgroundColor: '#FFFFFF',
+  },
+  infoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+    flex: 1,
+  },
+  label: {
+    color: '#666',
+    fontSize: 14,
+    marginRight: 8,
+    flexShrink: 0,
+  },
+  value: {
+    color: '#1A1A1A',
+    fontSize: 14,
+    fontWeight: '500',
+    flex: 1,
+    textAlign: 'right',
+    flexShrink: 1,
+  },
   statsTitle: { fontWeight: '600', color: '#1A1A1A', marginBottom: 12 },
   statsGrid: { flexDirection: 'row', justifyContent: 'space-around' },
   statItem: { alignItems: 'center' },
@@ -1674,21 +2126,23 @@ const styles = StyleSheet.create({
   statLabel: { fontSize: 12, color: '#666', marginTop: 4 },
   actionRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 },
   actionButton: { flex: 1, marginHorizontal: 4, borderRadius: 12, overflow: 'hidden' },
-  halfButton: { flex: 0.48 },
+  halfButton: { flex: 0.48, borderRadius: 12, overflow: 'hidden' },
+  fullButton: { borderRadius: 12, overflow: 'hidden', marginTop: 8 },
   gradientButton: { paddingVertical: 14, alignItems: 'center', justifyContent: 'center' },
   buttonText: { color: 'white', fontSize: 16, fontWeight: '600', letterSpacing: 0.5 },
+  buttonRow: { flexDirection: 'row', marginTop: 8 },
   divider: { marginVertical: 16 },
   quickLinks: { marginTop: 8 },
   quickLinksTitle: { fontWeight: '600', color: '#1A1A1A', marginBottom: 12 },
   linkItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   linkText: { fontSize: 16, color: '#7B2FBE' },
+  sectionTitle: { fontWeight: '600', color: '#1A1A1A', marginBottom: 8 },
 });
 ```
 
 # File: apps/mobile/src/screens/admin/CompanyManagement/CompanyEmployeesScreen.tsx
 
 ```tsx
-// screens/admin/CompanyManagement/CompanyEmployeesScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -1699,13 +2153,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, ActivityIndicator, Card, Chip } from 'react-native-paper';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRoute } from '@react-navigation/native';
 
 import { getCompanyEmployees, CompanyEmployee } from '../../../services/admin';
 
 export default function CompanyEmployeesScreen() {
-  const insets = useSafeAreaInsets();
   const route = useRoute();
   const { companyId } = route.params as { companyId: string };
 
@@ -1738,7 +2190,7 @@ export default function CompanyEmployeesScreen() {
 
   const renderItem = ({ item }: { item: CompanyEmployee }) => (
     <Card style={styles.card}>
-      <Card.Content>
+      <Card.Content style={styles.cardContent}>
         <View style={styles.row}>
           <Text variant="titleSmall" style={styles.userId}>
             {item.user_id}
@@ -1768,7 +2220,7 @@ export default function CompanyEmployeesScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+      <SafeAreaView style={styles.safeArea} edges={['bottom']}>
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#7B2FBE" />
         </View>
@@ -1777,7 +2229,7 @@ export default function CompanyEmployeesScreen() {
   }
 
   return (
-    <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <View style={styles.header}>
         <Text variant="headlineMedium" style={styles.title}>
           Employees
@@ -1814,7 +2266,15 @@ const styles = StyleSheet.create({
   title: { fontWeight: 'bold', color: '#1A1A1A', fontSize: 28 },
   subtitle: { color: '#666', marginTop: 4 },
   listContent: { paddingHorizontal: 24, paddingBottom: 40 },
-  card: { marginBottom: 12, borderRadius: 12, elevation: 2 },
+  card: {
+    marginBottom: 12,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF', // force white background
+  },
+  cardContent: {
+    backgroundColor: '#FFFFFF', // force white background for content
+  },
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   userId: { fontWeight: '600', color: '#1A1A1A', flex: 1 },
   statusChip: { marginLeft: 8 },
@@ -1829,8 +2289,7 @@ const styles = StyleSheet.create({
 # File: apps/mobile/src/screens/admin/CompanyManagement/CompanyListScreen.tsx
 
 ```tsx
-// screens/admin/CompanyManagement/CompanyListScreen.tsx
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useLayoutEffect } from 'react';
 import {
   View,
   StyleSheet,
@@ -1842,9 +2301,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, ActivityIndicator, Searchbar, Chip, Card } from 'react-native-paper';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { useNavigation, useFocusEffect, CommonActions } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import {
@@ -1854,26 +2312,62 @@ import {
   getCompaniesByTier,
   Company,
 } from '../../../services/admin';
+import { useAuthStore } from '../../../store/authStore';
 
 type FilterType = 'all' | 'active' | 'inactive';
 type TierFilter = 'all' | 'basic' | 'premium' | 'enterprise';
 
 export default function CompanyListScreen() {
-  const insets = useSafeAreaInsets();
   const navigation = useNavigation();
+  const logout = useAuthStore((state) => state.logout);
 
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<FilterType>('all');
   const [tierFilter, setTierFilter] = useState<TierFilter>('all');
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <TouchableOpacity
+          onPress={() => {
+            Alert.alert(
+              'Logout',
+              'Are you sure you want to logout?',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Logout',
+                  style: 'destructive',
+                  onPress: () => {
+                    logout();
+                    navigation.dispatch(
+                      CommonActions.reset({
+                        index: 0,
+                        routes: [{ name: 'PhoneInput' }],
+                      })
+                    );
+                  },
+                },
+              ]
+            );
+          }}
+          style={{ marginRight: 16 }}
+        >
+          <Icon name="logout" size={24} color="#FFFFFF" />
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation, logout]);
 
   const fetchCompanies = async () => {
     try {
       let result;
-      if (searchQuery.trim()) {
-        result = await searchCompanies(searchQuery);
+      if (searchTerm.trim()) {
+        result = await searchCompanies(searchTerm);
         setCompanies(result.companies || []);
         return;
       }
@@ -1903,7 +2397,7 @@ export default function CompanyListScreen() {
   useFocusEffect(
     useCallback(() => {
       fetchCompanies();
-    }, [searchQuery, statusFilter, tierFilter])
+    }, [searchTerm, statusFilter, tierFilter])
   );
 
   const onRefresh = () => {
@@ -1911,47 +2405,79 @@ export default function CompanyListScreen() {
     fetchCompanies();
   };
 
+  const handleSearch = () => {
+    setSearchTerm(searchQuery);
+  };
+
+  const handleTextChange = (text: string) => {
+    setSearchQuery(text);
+    if (text === '') {
+      setSearchTerm('');
+    }
+  };
+
+  const handleFilterPress = (status: FilterType, tier: TierFilter) => {
+    setStatusFilter(status);
+    setTierFilter(tier);
+    setSearchQuery('');
+    setSearchTerm('');
+  };
+
   const handleCompanyPress = (companyId: string) => {
     (navigation as any).navigate('CompanyDetail', { companyId });
+  };
+
+  const formatTier = (tier: string) => {
+    return tier.charAt(0).toUpperCase() + tier.slice(1);
   };
 
   const renderItem = ({ item }: { item: Company }) => (
     <TouchableOpacity onPress={() => handleCompanyPress(item.company_id)} activeOpacity={0.7}>
       <Card style={styles.card}>
-        <Card.Content>
+        <Card.Content style={styles.cardContent}>
           <View style={styles.cardHeader}>
-            <Text variant="titleMedium" style={styles.companyName}>
+            <Text variant="titleMedium" style={styles.companyName} numberOfLines={1}>
               {item.company_name}
             </Text>
-            <View
-              style={[
-                styles.statusBadge,
-                { backgroundColor: item.is_active ? '#E8F5E9' : '#FFEBEE' },
-              ]}
-            >
-              <Text
+            <View style={styles.headerBadges}>
+              <View
                 style={[
-                  styles.statusText,
-                  { color: item.is_active ? '#2E7D32' : '#C62828' },
+                  styles.statusBadge,
+                  { backgroundColor: item.is_active ? '#E8F5E9' : '#FFEBEE' },
                 ]}
               >
-                {item.is_active ? 'Active' : 'Inactive'}
-              </Text>
+                <Text
+                  style={[
+                    styles.statusText,
+                    { color: item.is_active ? '#2E7D32' : '#C62828' },
+                  ]}
+                >
+                  {item.is_active ? 'Active' : 'Inactive'}
+                </Text>
+              </View>
+              <View style={styles.tierChipCustom}>
+                <Text style={styles.tierText}>{formatTier(item.subscription_tier)}</Text>
+              </View>
             </View>
           </View>
+
           <Text variant="bodySmall" style={styles.ownerText}>
             Owner: {item.owner_user_id}
           </Text>
+
           <View style={styles.metaRow}>
-            <Chip style={styles.tierChip} textStyle={{ fontSize: 11 }}>
-              {item.subscription_tier}
-            </Chip>
-            <Text variant="bodySmall" style={styles.metaText}>
-              Employees: {item.max_employees}
-            </Text>
-            <Text variant="bodySmall" style={styles.metaText}>
-              Created: {new Date(item.created_at).toLocaleDateString()}
-            </Text>
+            <View style={styles.metaItem}>
+              <Icon name="account-multiple" size={14} color="#888" />
+              <Text variant="bodySmall" style={styles.metaText}>
+                {item.max_employees}
+              </Text>
+            </View>
+            <View style={styles.metaItem}>
+              <Icon name="calendar" size={14} color="#888" />
+              <Text variant="bodySmall" style={styles.metaText}>
+                {new Date(item.created_at).toLocaleDateString()}
+              </Text>
+            </View>
           </View>
         </Card.Content>
       </Card>
@@ -1960,7 +2486,7 @@ export default function CompanyListScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+      <SafeAreaView style={styles.safeArea} edges={['bottom']}>
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#00B4DB" />
         </View>
@@ -1969,65 +2495,87 @@ export default function CompanyListScreen() {
   }
 
   return (
-    <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <Searchbar
         placeholder="Search companies..."
-        onChangeText={setSearchQuery}
+        onChangeText={handleTextChange}
         value={searchQuery}
         style={styles.searchBar}
         inputStyle={styles.searchInput}
-        // 🎨 Change search icon to blue
         iconColor="#00B4DB"
         theme={{ colors: { primary: '#00B4DB' } }}
+        onIconPress={handleSearch}
+        onSubmitEditing={handleSearch}
       />
 
       <View style={styles.filterRow}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
           <Chip
             selected={statusFilter === 'all' && tierFilter === 'all'}
-            onPress={() => { setStatusFilter('all'); setTierFilter('all'); }}
-            style={[styles.filterChip, statusFilter === 'all' && tierFilter === 'all' && styles.activeChip]}
-            textStyle={statusFilter === 'all' && tierFilter === 'all' ? styles.activeChipText : {}}
+            onPress={() => handleFilterPress('all', 'all')}
+            style={[
+              styles.filterChip,
+              statusFilter === 'all' && tierFilter === 'all' && styles.activeChip,
+            ]}
+            textStyle={[
+              styles.filterChipText,
+              statusFilter === 'all' && tierFilter === 'all' && styles.activeChipText,
+            ]}
           >
             All
           </Chip>
           <Chip
             selected={statusFilter === 'active'}
-            onPress={() => { setStatusFilter('active'); setTierFilter('all'); }}
+            onPress={() => handleFilterPress('active', 'all')}
             style={[styles.filterChip, statusFilter === 'active' && styles.activeChip]}
-            textStyle={statusFilter === 'active' ? styles.activeChipText : {}}
+            textStyle={[
+              styles.filterChipText,
+              statusFilter === 'active' && styles.activeChipText,
+            ]}
           >
             Active
           </Chip>
           <Chip
             selected={statusFilter === 'inactive'}
-            onPress={() => { setStatusFilter('inactive'); setTierFilter('all'); }}
+            onPress={() => handleFilterPress('inactive', 'all')}
             style={[styles.filterChip, statusFilter === 'inactive' && styles.activeChip]}
-            textStyle={statusFilter === 'inactive' ? styles.activeChipText : {}}
+            textStyle={[
+              styles.filterChipText,
+              statusFilter === 'inactive' && styles.activeChipText,
+            ]}
           >
             Inactive
           </Chip>
           <Chip
             selected={tierFilter === 'basic'}
-            onPress={() => { setStatusFilter('all'); setTierFilter('basic'); }}
+            onPress={() => handleFilterPress('all', 'basic')}
             style={[styles.filterChip, tierFilter === 'basic' && styles.activeChip]}
-            textStyle={tierFilter === 'basic' ? styles.activeChipText : {}}
+            textStyle={[
+              styles.filterChipText,
+              tierFilter === 'basic' && styles.activeChipText,
+            ]}
           >
             Basic
           </Chip>
           <Chip
             selected={tierFilter === 'premium'}
-            onPress={() => { setStatusFilter('all'); setTierFilter('premium'); }}
+            onPress={() => handleFilterPress('all', 'premium')}
             style={[styles.filterChip, tierFilter === 'premium' && styles.activeChip]}
-            textStyle={tierFilter === 'premium' ? styles.activeChipText : {}}
+            textStyle={[
+              styles.filterChipText,
+              tierFilter === 'premium' && styles.activeChipText,
+            ]}
           >
             Premium
           </Chip>
           <Chip
             selected={tierFilter === 'enterprise'}
-            onPress={() => { setStatusFilter('all'); setTierFilter('enterprise'); }}
+            onPress={() => handleFilterPress('all', 'enterprise')}
             style={[styles.filterChip, tierFilter === 'enterprise' && styles.activeChip]}
-            textStyle={tierFilter === 'enterprise' ? styles.activeChipText : {}}
+            textStyle={[
+              styles.filterChipText,
+              tierFilter === 'enterprise' && styles.activeChipText,
+            ]}
           >
             Enterprise
           </Chip>
@@ -2043,7 +2591,7 @@ export default function CompanyListScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            colors={['#00B4DB']} // 🎨 blue
+            colors={['#00B4DB']}
             tintColor="#00B4DB"
           />
         }
@@ -2077,27 +2625,102 @@ export default function CompanyListScreen() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#FFFFFF' },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  searchBar: { marginHorizontal: 24, marginVertical: 8, borderRadius: 12, elevation: 2 },
+  searchBar: {
+    marginHorizontal: 24,
+    marginVertical: 8,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
   searchInput: { fontSize: 16 },
   filterRow: { paddingHorizontal: 24, marginVertical: 4 },
   filterScroll: { flexDirection: 'row' },
-  filterChip: { marginRight: 8, backgroundColor: '#f0f0f0' },
-  // 🎨 Active chip background – blue
-  activeChip: { backgroundColor: '#00B4DB' },
-  activeChipText: { color: 'white' },
+  filterChip: {
+    marginRight: 8,
+    backgroundColor: '#d0d0d0', // darker gray for unselected
+  },
+  filterChipText: {
+    color: '#333', // dark text for unselected
+  },
+  activeChip: {
+    backgroundColor: '#00B4DB',
+  },
+  activeChipText: {
+    color: '#FFFFFF',
+  },
   listContent: { paddingHorizontal: 24, paddingTop: 8, paddingBottom: 100 },
-  card: { marginBottom: 12, borderRadius: 12, elevation: 2 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  companyName: { fontWeight: '600', color: '#1A1A1A', flex: 1 },
-  statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, marginLeft: 8 },
-  statusText: { fontSize: 12, fontWeight: '600' },
-  ownerText: { color: '#666', marginTop: 2 },
-  metaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6, flexWrap: 'wrap' },
-  tierChip: { height: 24, backgroundColor: '#E8E0F0', marginRight: 8 },
-  metaText: { color: '#888', fontSize: 12, marginRight: 12 },
+  card: {
+    marginBottom: 12,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
+  cardContent: {
+    backgroundColor: '#FFFFFF',
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  companyName: {
+    fontWeight: '600',
+    color: '#1A1A1A',
+    flex: 1,
+    flexShrink: 1,
+    marginRight: 8,
+    fontSize: 16,
+  },
+  headerBadges: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+    overflow: 'visible',
+  },
+  statusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginRight: 6,
+  },
+  statusText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  tierChipCustom: {
+    backgroundColor: '#E8E0F0',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+  },
+  tierText: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#333',
+  },
+  ownerText: {
+    color: '#666',
+    marginTop: 4,
+    fontSize: 13,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    marginTop: 6,
+    flexWrap: 'wrap',
+  },
+  metaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 16,
+  },
+  metaText: {
+    color: '#888',
+    fontSize: 12,
+    marginLeft: 4,
+  },
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 40 },
   emptyText: { color: '#999' },
-  // Custom FAB
   fabWrapper: {
     position: 'absolute',
     right: 24,
@@ -2116,6 +2739,661 @@ const styles = StyleSheet.create({
     borderRadius: 30,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+});
+```
+
+# File: apps/mobile/src/screens/admin/Department/UpdateMaxDepartmentsScreen.tsx
+
+```tsx
+// apps/mobile/src/screens/admin/Department/UpdateMaxDepartmentsScreen.tsx
+import React, { useState } from 'react';
+import {
+  View,
+  StyleSheet,
+  Alert,
+  TouchableOpacity,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Text, TextInput, ActivityIndicator } from 'react-native-paper';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useNavigation, useRoute } from '@react-navigation/native';
+
+import { updateMaxDepartments } from '../../../services/admin';
+
+export default function UpdateMaxDepartmentsScreen() {
+  const route = useRoute();
+  const navigation = useNavigation();
+
+  const { companyId, currentMax } = route.params as {
+    companyId: string;
+    currentMax: number;
+  };
+
+  const [maxDepartments, setMaxDepartments] = useState(
+    String(currentMax || 0)
+  );
+  const [loading, setLoading] = useState(false);
+
+  const handleUpdate = async () => {
+    const newMax = parseInt(maxDepartments, 10);
+    if (isNaN(newMax) || newMax < 1) {
+      Alert.alert('Invalid Input', 'Max departments must be at least 1.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await updateMaxDepartments(companyId, newMax);
+      Alert.alert('Success', 'Max departments limit updated successfully.', [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
+    } catch (error: any) {
+      const msg =
+        error.response?.data?.message || error.message || 'Update failed.';
+      Alert.alert('Error', msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <Text variant="headlineMedium" style={styles.title}>
+            Update Departments Limit
+          </Text>
+          <Text variant="bodyMedium" style={styles.subtitle}>
+            Set the maximum number of departments allowed for this company.
+          </Text>
+        </View>
+
+        <View style={styles.inputContainer}>
+          <Text style={styles.inputLabel}>Max Departments</Text>
+          <TextInput
+            mode="outlined"
+            value={maxDepartments}
+            onChangeText={setMaxDepartments}
+            keyboardType="number-pad"
+            style={styles.input}
+            theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
+          />
+          <Text style={styles.hint}>Current value: {currentMax}</Text>
+        </View>
+
+        <TouchableOpacity
+          onPress={handleUpdate}
+          disabled={loading}
+          activeOpacity={0.8}
+          style={styles.buttonWrapper}
+        >
+          <LinearGradient
+            colors={['#00B4DB', '#7B2FBE']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={[styles.buttonGradient, loading && styles.buttonDisabled]}
+          >
+            {loading ? (
+              <ActivityIndicator color="white" size="small" />
+            ) : (
+              <Text style={styles.buttonText}>Update Limit</Text>
+            )}
+          </LinearGradient>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.cancelButton}
+        >
+          <Text style={styles.cancelText}>Cancel</Text>
+        </TouchableOpacity>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  container: {
+    paddingHorizontal: 24,
+    paddingVertical: 24,
+    flex: 1,
+  },
+  header: {
+    marginBottom: 24,
+  },
+  title: {
+    fontWeight: 'bold',
+    color: '#1A1A1A',
+    fontSize: 28,
+  },
+  subtitle: {
+    color: '#666',
+    marginTop: 4,
+  },
+  inputContainer: {
+    marginBottom: 24,
+  },
+  inputLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: 'white',
+  },
+  hint: {
+    marginTop: 8,
+    fontSize: 14,
+    color: '#888',
+  },
+  buttonWrapper: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginTop: 8,
+  },
+  buttonGradient: {
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 54,
+  },
+  buttonDisabled: {
+    opacity: 0.6,
+  },
+  buttonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+  },
+  cancelButton: {
+    alignItems: 'center',
+    paddingVertical: 12,
+    marginTop: 12,
+  },
+  cancelText: {
+    color: '#7B2FBE',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+});
+```
+
+# File: apps/mobile/src/screens/admin/Subscription/ExtendSubscriptionScreen.tsx
+
+```tsx
+import React, { useState } from 'react';
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  Alert,
+  TouchableOpacity,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Text, TextInput, ActivityIndicator } from 'react-native-paper';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useNavigation, useRoute } from '@react-navigation/native';
+
+import { extendSubscription } from '../../../services/admin';
+
+export default function ExtendSubscriptionScreen() {
+  const route = useRoute();
+  const navigation = useNavigation();
+
+  const { companyId } = route.params as { companyId: string };
+
+  const [months, setMonths] = useState('');
+  const [days, setDays] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleExtend = async () => {
+    const additionalMonths = parseInt(months, 10) || 0;
+    const additionalDays = parseInt(days, 10) || 0;
+
+    if (additionalMonths === 0 && additionalDays === 0) {
+      Alert.alert('Invalid Input', 'Please add at least one month or day.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await extendSubscription(companyId, {
+        additional_months: additionalMonths,
+        additional_days: additionalDays,
+      });
+      Alert.alert('Success', 'Subscription extended successfully.', [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
+    } catch (error: any) {
+      const msg =
+        error.response?.data?.message || error.message || 'Extension failed.';
+      Alert.alert('Error', msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.header}>
+          <Text variant="headlineMedium" style={styles.title}>
+            Extend Subscription
+          </Text>
+          <Text variant="bodyMedium" style={styles.subtitle}>
+            Add extra months or days to the current subscription period.
+          </Text>
+        </View>
+
+        <View style={styles.inputContainer}>
+          <Text style={styles.inputLabel}>Additional Months</Text>
+          <TextInput
+            mode="outlined"
+            value={months}
+            onChangeText={setMonths}
+            keyboardType="number-pad"
+            placeholder="0"
+            style={styles.input}
+            theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
+          />
+        </View>
+
+        <View style={styles.inputContainer}>
+          <Text style={styles.inputLabel}>Additional Days</Text>
+          <TextInput
+            mode="outlined"
+            value={days}
+            onChangeText={setDays}
+            keyboardType="number-pad"
+            placeholder="0"
+            style={styles.input}
+            theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
+          />
+        </View>
+
+        <TouchableOpacity
+          onPress={handleExtend}
+          disabled={loading}
+          activeOpacity={0.8}
+          style={styles.buttonWrapper}
+        >
+          <LinearGradient
+            colors={['#00B4DB', '#7B2FBE']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={[styles.buttonGradient, loading && styles.buttonDisabled]}
+          >
+            {loading ? (
+              <ActivityIndicator color="white" size="small" />
+            ) : (
+              <Text style={styles.buttonText}>Extend Subscription</Text>
+            )}
+          </LinearGradient>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.cancelButton}
+        >
+          <Text style={styles.cancelText}>Cancel</Text>
+        </TouchableOpacity>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  scrollContent: {
+    paddingHorizontal: 24,
+    paddingVertical: 24,
+  },
+  header: {
+    marginBottom: 24,
+  },
+  title: {
+    fontWeight: 'bold',
+    color: '#1A1A1A',
+    fontSize: 28,
+  },
+  subtitle: {
+    color: '#666',
+    marginTop: 4,
+  },
+  inputContainer: {
+    marginBottom: 20,
+  },
+  inputLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: 'white',
+  },
+  buttonWrapper: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginTop: 8,
+  },
+  buttonGradient: {
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 54,
+  },
+  buttonDisabled: {
+    opacity: 0.6,
+  },
+  buttonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+  },
+  cancelButton: {
+    alignItems: 'center',
+    paddingVertical: 12,
+    marginTop: 12,
+  },
+  cancelText: {
+    color: '#7B2FBE',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+});
+```
+
+# File: apps/mobile/src/screens/admin/Subscription/SubscriptionManagementScreen.tsx
+
+```tsx
+import React, { useState } from 'react';
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  Alert,
+  TouchableOpacity,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Text, TextInput, ActivityIndicator } from 'react-native-paper';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useNavigation, useRoute } from '@react-navigation/native';
+
+import { updateSubscription } from '../../../services/admin';
+
+// Tier options
+const TIERS = [
+  { label: 'Basic', value: 'basic' },
+  { label: 'Premium', value: 'premium' },
+  { label: 'Enterprise', value: 'enterprise' },
+];
+
+// Status options
+const STATUSES = [
+  { label: 'Active', value: 'active' },
+  { label: 'Inactive', value: 'inactive' },
+  { label: 'Expired', value: 'expired' },
+];
+
+export default function SubscriptionManagementScreen() {
+  const route = useRoute();
+  const navigation = useNavigation();
+
+  // Expect companyId and company object from navigation params
+  const { companyId, company } = route.params as {
+    companyId: string;
+    company: any;
+  };
+
+  // Local state
+  const [tier, setTier] = useState(company.subscription_tier || 'basic');
+  const [status, setStatus] = useState(company.subscription_status || 'active');
+  const [maxEmployees, setMaxEmployees] = useState(
+    String(company.max_employees || 100)
+  );
+  const [loading, setLoading] = useState(false);
+
+  const handleUpdate = async () => {
+    const maxEmpNum = parseInt(maxEmployees, 10);
+    if (isNaN(maxEmpNum) || maxEmpNum < 1) {
+      Alert.alert('Invalid Input', 'Max employees must be a positive number.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await updateSubscription(companyId, {
+        tier,
+        status,
+        max_employees: maxEmpNum,
+      });
+      Alert.alert('Success', 'Subscription updated successfully.', [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
+    } catch (error: any) {
+      const msg =
+        error.response?.data?.message || error.message || 'Update failed.';
+      Alert.alert('Error', msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Helper: render chip selector
+  const renderChipSelector = (
+    options: { label: string; value: string }[],
+    selectedValue: string,
+    onSelect: (value: string) => void,
+    label: string
+  ) => (
+    <View style={styles.selectorContainer}>
+      <Text style={styles.selectorLabel}>{label}</Text>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.chipScroll}
+      >
+        {options.map((opt) => (
+          <TouchableOpacity
+            key={opt.value}
+            style={[
+              styles.chip,
+              selectedValue === opt.value && styles.chipSelected,
+            ]}
+            onPress={() => onSelect(opt.value)}
+          >
+            <Text
+              style={[
+                styles.chipText,
+                selectedValue === opt.value && styles.chipTextSelected,
+              ]}
+            >
+              {opt.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+    </View>
+  );
+
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.header}>
+          <Text variant="headlineMedium" style={styles.title}>
+            Manage Subscription
+          </Text>
+          <Text variant="bodyMedium" style={styles.subtitle}>
+            Update tier, status, or employee limit for {company.company_name}
+          </Text>
+        </View>
+
+        {/* Tier Selector */}
+        {renderChipSelector(TIERS, tier, setTier, 'Subscription Tier')}
+
+        {/* Status Selector */}
+        {renderChipSelector(STATUSES, status, setStatus, 'Status')}
+
+        {/* Max Employees Input */}
+        <View style={styles.inputContainer}>
+          <Text style={styles.inputLabel}>Max Employees</Text>
+          <TextInput
+            mode="outlined"
+            value={maxEmployees}
+            onChangeText={setMaxEmployees}
+            keyboardType="number-pad"
+            style={styles.input}
+            theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
+          />
+        </View>
+
+        {/* Update Button */}
+        <TouchableOpacity
+          onPress={handleUpdate}
+          disabled={loading}
+          activeOpacity={0.8}
+          style={styles.buttonWrapper}
+        >
+          <LinearGradient
+            colors={['#00B4DB', '#7B2FBE']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={[styles.buttonGradient, loading && styles.buttonDisabled]}
+          >
+            {loading ? (
+              <ActivityIndicator color="white" size="small" />
+            ) : (
+              <Text style={styles.buttonText}>Update Subscription</Text>
+            )}
+          </LinearGradient>
+        </TouchableOpacity>
+
+        {/* Cancel / Go Back */}
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.cancelButton}
+        >
+          <Text style={styles.cancelText}>Cancel</Text>
+        </TouchableOpacity>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  scrollContent: {
+    paddingHorizontal: 24,
+    paddingVertical: 24,
+  },
+  header: {
+    marginBottom: 24,
+  },
+  title: {
+    fontWeight: 'bold',
+    color: '#1A1A1A',
+    fontSize: 28,
+  },
+  subtitle: {
+    color: '#666',
+    marginTop: 4,
+  },
+  selectorContainer: {
+    marginBottom: 20,
+  },
+  selectorLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+  },
+  chipScroll: {
+    flexDirection: 'row',
+  },
+  chip: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#ccc',
+    marginRight: 8,
+    backgroundColor: '#f5f5f5',
+  },
+  chipSelected: {
+    backgroundColor: '#7B2FBE',
+    borderColor: '#7B2FBE',
+  },
+  chipText: {
+    color: '#333',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  chipTextSelected: {
+    color: 'white',
+  },
+  inputContainer: {
+    marginBottom: 24,
+  },
+  inputLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: 'white',
+  },
+  buttonWrapper: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginBottom: 12,
+  },
+  buttonGradient: {
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 54,
+  },
+  buttonDisabled: {
+    opacity: 0.6,
+  },
+  buttonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+  },
+  cancelButton: {
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  cancelText: {
+    color: '#7B2FBE',
+    fontSize: 16,
+    fontWeight: '500',
   },
 });
 ```
@@ -2490,7 +3768,6 @@ const styles = StyleSheet.create({
 # File: apps/mobile/src/screens/admin/UserManagement/UserDetailScreen.tsx
 
 ```tsx
-// screens/admin/UserManagement/UserDetailScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -2501,7 +3778,6 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, ActivityIndicator, Card, Chip, TextInput, Button } from 'react-native-paper';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRoute, useNavigation } from '@react-navigation/native';
 
@@ -2513,14 +3789,11 @@ import {
   advancedUserSearch,
   User,
 } from '../../../services/admin';
-import { useIdempotency } from '../../../hooks/useIdempotency';
 
 export default function UserDetailScreen() {
-  const insets = useSafeAreaInsets();
   const route = useRoute();
   const navigation = useNavigation();
   const { userId } = route.params as { userId: string };
-  const { getKey, resetKey } = useIdempotency();
 
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -2538,7 +3811,6 @@ export default function UserDetailScreen() {
   const loadUser = async () => {
     setLoading(true);
     try {
-      // Use advanced search with user_id filter to get the user
       const result = await advancedUserSearch({ user_id: userId });
       const users = result.users || [];
       if (users.length === 0) {
@@ -2570,9 +3842,7 @@ export default function UserDetailScreen() {
   const handleUpdateUser = async () => {
     setUpdating(true);
     try {
-      const key = await getKey(`update-user-${userId}`);  // 👈 await
-      await updateUser(userId, form, key);
-      resetKey(`update-user-${userId}`);
+      await updateUser(userId, form);
       Alert.alert('Success', 'User updated');
       setEditMode(false);
       loadUser();
@@ -2586,9 +3856,7 @@ export default function UserDetailScreen() {
   const handleUpdateKyc = async () => {
     setUpdating(true);
     try {
-      const key = await getKey(`update-kyc-${userId}`);  // 👈 await
-      await updateUserKyc(userId, { status: kycStatus, level: kycLevel }, key);
-      resetKey(`update-kyc-${userId}`);
+      await updateUserKyc(userId, { status: kycStatus, level: kycLevel });
       Alert.alert('Success', 'KYC updated');
       loadUser();
     } catch (error: any) {
@@ -2602,13 +3870,11 @@ export default function UserDetailScreen() {
     if (!user) return;
     setUpdating(true);
     try {
-      const key = await getKey(`ban-${userId}`);  // 👈 await
       if (user.is_active) {
-        await banUser(userId, 'Admin action', key);
+        await banUser(userId, 'Admin action');
       } else {
-        await unbanUser(userId, 'Admin action', key);
+        await unbanUser(userId, 'Admin action');
       }
-      resetKey(`ban-${userId}`);
       Alert.alert('Success', user.is_active ? 'User banned' : 'User unbanned');
       loadUser();
     } catch (error: any) {
@@ -2620,7 +3886,7 @@ export default function UserDetailScreen() {
 
   if (loading || !user) {
     return (
-      <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+      <SafeAreaView style={styles.safeArea} edges={['bottom']}>
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#7B2FBE" />
         </View>
@@ -2629,7 +3895,7 @@ export default function UserDetailScreen() {
   }
 
   return (
-    <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <Text variant="headlineMedium" style={styles.title}>
@@ -2650,7 +3916,7 @@ export default function UserDetailScreen() {
         </View>
 
         <Card style={styles.card}>
-          <Card.Content>
+          <Card.Content style={styles.cardContent}>
             <View style={styles.infoRow}>
               <Text style={styles.label}>User ID:</Text>
               <Text style={styles.value}>{user.user_id}</Text>
@@ -2688,7 +3954,7 @@ export default function UserDetailScreen() {
 
         {editMode ? (
           <Card style={styles.card}>
-            <Card.Content>
+            <Card.Content style={styles.cardContent}>
               <Text variant="titleMedium" style={styles.sectionTitle}>
                 Edit User
               </Text>
@@ -2763,7 +4029,7 @@ export default function UserDetailScreen() {
         )}
 
         <Card style={styles.card}>
-          <Card.Content>
+          <Card.Content style={styles.cardContent}>
             <Text variant="titleMedium" style={styles.sectionTitle}>
               Update KYC
             </Text>
@@ -2834,7 +4100,15 @@ const styles = StyleSheet.create({
   statusRow: { flexDirection: 'row', marginTop: 8, flexWrap: 'wrap' },
   statusChip: { marginRight: 8 },
   roleChip: { backgroundColor: '#E8E0F0' },
-  card: { marginVertical: 8, borderRadius: 12, elevation: 2 },
+  card: {
+    marginVertical: 8,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
+  cardContent: {
+    backgroundColor: '#FFFFFF',
+  },
   infoRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
   label: { color: '#666', fontSize: 14 },
   value: { color: '#1A1A1A', fontSize: 14, fontWeight: '500' },
@@ -2854,7 +4128,6 @@ const styles = StyleSheet.create({
 # File: apps/mobile/src/screens/admin/UserManagement/UserSearchScreen.tsx
 
 ```tsx
-// screens/admin/UserManagement/UserSearchScreen.tsx
 import React, { useState } from 'react';
 import {
   View,
@@ -2866,7 +4139,6 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, TextInput, ActivityIndicator, Card, Chip, Button } from 'react-native-paper';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 
@@ -2878,12 +4150,11 @@ import {
   getBannedUsers,
   User,
 } from '../../../services/admin';
-import { useIdempotency } from '../../../hooks/useIdempotency';
+// ❌ Removed unused import: useIdempotency
 
 type SearchType = 'advanced' | 'username' | 'fullname' | 'kyc' | 'banned';
 
 export default function UserSearchScreen() {
-  const insets = useSafeAreaInsets();
   const navigation = useNavigation();
 
   const [users, setUsers] = useState<User[]>([]);
@@ -2940,11 +4211,11 @@ export default function UserSearchScreen() {
   const renderUserCard = (item: User) => (
     <TouchableOpacity
       key={item.user_id}
-      onPress={() => (navigation as any).navigate('UserDetail', { userId: item.user_id })} // ✅ cast to any
+      onPress={() => (navigation as any).navigate('UserDetail', { userId: item.user_id })}
       activeOpacity={0.7}
     >
       <Card style={styles.card}>
-        <Card.Content>
+        <Card.Content style={styles.cardContent}>
           <View style={styles.row}>
             <Text variant="titleSmall" style={styles.username}>
               {item.username}
@@ -3054,7 +4325,7 @@ export default function UserSearchScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <View style={styles.header}>
         <Text variant="headlineMedium" style={styles.title}>
           User Search
@@ -3131,14 +4402,22 @@ const styles = StyleSheet.create({
   typeChip: { marginRight: 8, backgroundColor: '#f0f0f0' },
   activeChip: { backgroundColor: '#7B2FBE' },
   activeChipText: { color: 'white' },
-  scrollContent: { paddingHorizontal: 24, paddingBottom: 40 },
+  scrollContent: { paddingHorizontal: 24, paddingBottom: 40, backgroundColor: '#FFFFFF' },
   filterGroup: { marginBottom: 12 },
   input: { marginBottom: 12, backgroundColor: 'white' },
   buttonWrapper: { borderRadius: 12, overflow: 'hidden', marginBottom: 16 },
   buttonGradient: { paddingVertical: 14, alignItems: 'center', justifyContent: 'center', minHeight: 50 },
   buttonDisabled: { opacity: 0.6 },
   buttonText: { color: 'white', fontSize: 16, fontWeight: '600', letterSpacing: 0.5 },
-  card: { marginBottom: 12, borderRadius: 12, elevation: 2 },
+  card: {
+    marginBottom: 12,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
+  cardContent: {
+    backgroundColor: '#FFFFFF',
+  },
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   username: { fontWeight: '600', color: '#1A1A1A', flex: 1 },
   statusChip: { marginLeft: 8 },
@@ -3180,13 +4459,6 @@ import { useAuthStore } from '../../store/authStore';
 
 type PaperTextInput = React.ElementRef<typeof TextInput>;
 
-const generateUUID = () =>
-  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-
 // MPIN strength checker (same as in MPINSetup)
 const isWeakMPIN = (mpin: string): boolean => {
   if (mpin.length !== 6) return true;
@@ -3219,7 +4491,6 @@ export default function MPINForgotScreen() {
 
   const [deviceId, setDeviceId] = useState('');
   const [fingerprint, setFingerprint] = useState('');
-  const [idempotencyKey, setIdempotencyKey] = useState(generateUUID);
 
   const timerRef = useRef<number | null>(null);
 
@@ -3262,6 +4533,7 @@ export default function MPINForgotScreen() {
     }
     setLoading(true);
     try {
+      // ✅ Idempotency handled inside the service – no key required
       await forgotMPIN(phone, deviceId, fingerprint);
       Alert.alert('OTP Sent', 'A verification code has been sent to your phone.');
       setStep('verifyOtp');
@@ -3295,7 +4567,8 @@ export default function MPINForgotScreen() {
 
     setLoading(true);
     try {
-      await verifyForgotMPIN(phone, mpinCode, otpCode, deviceId, fingerprint, idempotencyKey);
+      // ✅ Idempotency handled inside the service – no key required
+      await verifyForgotMPIN(phone, mpinCode, otpCode, deviceId, fingerprint);
       Alert.alert('Success', 'Your MPIN has been reset successfully.');
       navigation.reset({
         index: 0,
@@ -3316,7 +4589,6 @@ export default function MPINForgotScreen() {
       } else {
         Alert.alert('Error', msg);
       }
-      setIdempotencyKey(generateUUID);
     } finally {
       setLoading(false);
     }
@@ -3344,7 +4616,6 @@ export default function MPINForgotScreen() {
     }
   };
 
-  // ✅ Fixed: renamed variable to avoid conflict with state variable
   const handleMpinChange = (text: string, index: number) => {
     const newMpinArr = [...newMpin];
     newMpinArr[index] = text;
@@ -3569,14 +4840,6 @@ import { useAuthStore } from '../../store/authStore';
 
 type PaperTextInput = React.ElementRef<typeof TextInput>;
 
-// --- UUID generator ---
-const generateUUID = () =>
-  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-
 // --- Weak MPIN checker ---
 const isWeakMPIN = (mpin: string): boolean => {
   if (mpin.length !== 6) return true;
@@ -3608,7 +4871,6 @@ export default function MPINSetupScreen() {
 
   const [deviceId, setDeviceId] = useState('');
   const [fingerprint, setFingerprint] = useState('');
-  const [setupIdempotencyKey, setSetupIdempotencyKey] = useState(generateUUID);
 
   // Load device info
   useEffect(() => {
@@ -3663,17 +4925,11 @@ export default function MPINSetupScreen() {
 
     setLoading(true);
     try {
-      await setupMPIN(
-        adminId,
-        mpinCode,
-        deviceId,
-        fingerprint,
-        setupIdempotencyKey
-      );
+      // setupMPIN now handles idempotency internally – no key needed
+      await setupMPIN(adminId, mpinCode, deviceId, fingerprint);
 
-      // MPIN set successfully – now navigate to verification (replace current screen)
+      // MPIN set successfully – navigate to verification
       Alert.alert('Success', 'MPIN has been set. Please log in with your MPIN.');
-      // Use reset with 'as any' to bypass type checking (consistent with other files)
       (navigation as any).reset({
         index: 0,
         routes: [{ name: 'MPINVerification', params: { phone: phone || '', adminId } }],
@@ -3700,8 +4956,7 @@ export default function MPINSetupScreen() {
       } else {
         Alert.alert('Error', msg);
       }
-      // Regenerate key for retry
-      setSetupIdempotencyKey(generateUUID);
+      // No need to regenerate key – service manages it internally
     } finally {
       setLoading(false);
     }
@@ -3862,7 +5117,6 @@ const styles = StyleSheet.create({
 # File: apps/mobile/src/screens/auth/MPINVerification.tsx
 
 ```tsx
-// apps/mobile/src/screens/auth/MPINVerification.tsx
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
@@ -3888,13 +5142,6 @@ import { useAuthStore } from '../../store/authStore';
 import { User } from '../../shared-types';
 
 type PaperTextInput = React.ElementRef<typeof TextInput>;
-
-const generateUUID = () =>
-  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
 
 export default function MPINVerificationScreen() {
   const [mpin, setMpin] = useState(['', '', '', '', '', '']);
@@ -3923,7 +5170,6 @@ export default function MPINVerificationScreen() {
 
   const [deviceId, setDeviceId] = useState('');
   const [fingerprint, setFingerprint] = useState('');
-  const [verifyIdempotencyKey, setVerifyIdempotencyKey] = useState(generateUUID);
 
   const timerRef = useRef<number | null>(null);
 
@@ -4003,13 +5249,8 @@ export default function MPINVerificationScreen() {
     setLoading(true);
     try {
       console.log('🔐 [MPINVerification] Verifying MPIN for phone:', phone);
-      const data = await verifyMPIN(
-        phone,
-        mpinCode,
-        deviceId,
-        fingerprint,
-        verifyIdempotencyKey
-      );
+      // 🔥 No idempotencyKey passed – service handles it
+      const data = await verifyMPIN(phone, mpinCode, deviceId, fingerprint);
 
       console.log('📥 [MPINVerification] Response data:', data);
 
@@ -4021,7 +5262,6 @@ export default function MPINVerificationScreen() {
       console.log('👤 [MPINVerification] admin.is_super_admin:', admin.is_super_admin);
 
       if (tokens?.access_token && admin) {
-        // Build user object preserving ALL fields, especially role_string
         const user: User = {
           user_id: admin.admin_id || admin.user_id || '',
           username: admin.username || '',
@@ -4043,9 +5283,6 @@ export default function MPINVerificationScreen() {
         console.log('🔑 [MPINVerification] user.is_super_admin:', user.is_super_admin);
 
         clearPendingMpinLogin();
-
-        // Pass deviceId as 4th argument
-        console.log('🔐 [MPINVerification] Calling login with user:', user);
         login(tokens.access_token, tokens.refresh_token, user, deviceId);
 
         setTimeout(() => {
@@ -4086,8 +5323,7 @@ export default function MPINVerificationScreen() {
       } else {
         Alert.alert('Error', msg);
       }
-
-      setVerifyIdempotencyKey(generateUUID);
+      // ❌ No manual key regeneration – service handles it
     } finally {
       setLoading(false);
     }
@@ -4300,7 +5536,6 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { verifyOTP, sendOTP } from '../../services/auth';
 import { getDeviceId, getDeviceFingerprint } from '../../utils/device';
 import { useAuthStore } from '../../store/authStore';
-import { useIdempotency } from '../../hooks/useIdempotency'; // 👈 import the hook
 
 type PaperTextInput = React.ElementRef<typeof TextInput>;
 
@@ -4323,19 +5558,6 @@ export default function OTPVerificationScreen() {
 
   const [deviceId, setDeviceId] = useState('');
   const [fingerprint, setFingerprint] = useState('');
-
-  // 👇 Use the hook for resend (a dedicated operation)
-  const { getKey: getResendKey, resetKey: resetResendKey } = useIdempotency();
-
-  // For verification, we keep a local state (we still want to retry the same key on failure)
-  const [verifyIdempotencyKey, setVerifyIdempotencyKey] = useState(() => 
-    // Generate a UUID for verification (we'll regenerate on each new attempt)
-    'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-      const r = Math.random() * 16 | 0;
-      const v = c === 'x' ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    })
-  );
 
   const timerRef = useRef<number | null>(null);
 
@@ -4393,13 +5615,13 @@ export default function OTPVerificationScreen() {
     }
     setLoading(true);
     try {
+      // 🔥 No idempotency key passed – service handles it
       const verifyData = await verifyOTP(
         phone,
         otpCode,
         'admin_login',
         deviceId,
-        fingerprint,
-        verifyIdempotencyKey
+        fingerprint
       );
 
       const { admin_id, has_mpin } = verifyData;
@@ -4417,60 +5639,30 @@ export default function OTPVerificationScreen() {
         Alert.alert('Verification Failed', 'Invalid OTP or expired.');
       }
     } catch (error: any) {
-      const errorMsg = error.response?.data?.message || error.message || '';
-      const isDuplicate = errorMsg.includes('already used') ||
-                          errorMsg.includes('idempotency') ||
-                          error.response?.status === 409;
-
-      if (isDuplicate && initialAdminId) {
-        setPendingMpinLogin(initialAdminId, phone, initialHasMpin ?? false);
-        setSavedAdminId(initialAdminId, phone, initialHasMpin ?? false);
-        if (initialHasMpin) {
-          (navigation as any).navigate('MPINVerification', { phone, adminId: initialAdminId });
-        } else {
-          (navigation as any).navigate('MPINSetup', { adminId: initialAdminId, phone });
-        }
-        return;
-      }
-
       const msg = error.response?.data?.message || error.message || 'Verification failed.';
       Alert.alert('Error', msg);
     } finally {
       setLoading(false);
-      // Generate a new key for the next verification attempt
-      setVerifyIdempotencyKey(
-        'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-          const r = Math.random() * 16 | 0;
-          const v = c === 'x' ? r : (r & 0x3 | 0x8);
-          return v.toString(16);
-        })
-      );
     }
   };
 
-  // 👇 Use the hook for resend – we get a key, send, then reset to force a new key next time
   const handleResendOTP = async () => {
     if (cooldownSeconds > 0) return;
     setResendLoading(true);
     try {
-      const idempotencyKey = getResendKey('resendOTP'); // 👈 get a key (first call generates, subsequent calls reuse until reset)
-      await sendOTP(phone, 'admin_login', deviceId, fingerprint, idempotencyKey);
-      // Success – reset the key so that a future resend generates a new one
-      resetResendKey('resendOTP');
+      // 🔥 No idempotency key – service manages it
+      await sendOTP(phone, 'admin_login', deviceId, fingerprint);
       Alert.alert('Success', 'OTP resent successfully.');
+      // Reset cooldown? We can set a small cooldown to prevent spam.
+      setCooldownSeconds(30);
     } catch (error: any) {
-      const hasRetryAfter = !!error.retryAfter;
+      const hasRetryAfter = error.retryAfter;
       if (hasRetryAfter) {
         setCooldownSeconds(error.retryAfter);
         Alert.alert('Rate Limited', `Please wait ${error.retryAfter} seconds.`);
       } else {
         const msg = error.response?.data?.message || error.message || 'Failed to resend OTP.';
         Alert.alert('Error', msg);
-        // For non‑retryable errors (like validation), also reset the key
-        if (error.response?.status !== 429) {
-          resetResendKey('resendOTP');
-        }
-        // For 429, we keep the key so that the user can retry after cooldown
       }
     } finally {
       setResendLoading(false);
@@ -4583,7 +5775,6 @@ import { CountryPicker, CountryItem } from 'react-native-country-codes-picker';
 import { initiateLogin, sendOTP } from '../../services/auth';
 import { getDeviceId, getDeviceFingerprint } from '../../utils/device';
 import { useAuthStore } from '../../store/authStore';
-import { useIdempotency } from '../../hooks/useIdempotency'; // 👈 import the hook
 
 export default function PhoneInputScreen() {
   const [phone, setPhone] = useState('');
@@ -4600,9 +5791,6 @@ export default function PhoneInputScreen() {
   // Device identifiers – loaded once
   const [deviceId, setDeviceId] = useState<string>('');
   const [fingerprint, setFingerprint] = useState<string>('');
-
-  // 👇 Use the hook for the OTP send
-  const { getKey, resetKey } = useIdempotency();
 
   // Countdown timer ref
   const timerRef = useRef<number | null>(null);
@@ -4648,7 +5836,7 @@ export default function PhoneInputScreen() {
   }, [retryAfterSeconds]);
 
   // ============================================================
-  // handleSendOTP with savedAdminId fallback – using useIdempotency
+  // handleSendOTP – no manual idempotency handling
   // ============================================================
   const handleSendOTP = async () => {
     const cleaned = phone.replace(/[^0-9]/g, '');
@@ -4682,7 +5870,6 @@ export default function PhoneInputScreen() {
           'Your MPIN is locked. Please contact your administrator to unlock it.'
         );
         setLoading(false);
-        resetKey('sendOTP'); // clear the key
         return;
       }
 
@@ -4699,7 +5886,6 @@ export default function PhoneInputScreen() {
             adminId: adminId,
           });
           setLoading(false);
-          resetKey('sendOTP'); // clear the key
           return;
         } else {
           // No admin_id – we need OTP to get it.
@@ -4713,19 +5899,9 @@ export default function PhoneInputScreen() {
       // - Existing user with MPIN but device not trusted
       // - Or we need to get admin_id via OTP
       if (user_exists || !has_mpin || !device_trusted) {
-        // 👇 Get a key (first call generates, subsequent calls reuse until reset)
-        const idempotencyKey = getKey('sendOTP');
-        await sendOTP(
-          fullNumber,
-          'admin_login',
-          deviceId,
-          fingerprint,
-          idempotencyKey
-        );
-        // Success – reset the key so a new one is generated next time
-        resetKey('sendOTP');
+        // ✅ No idempotency key passed – service handles it internally
+        await sendOTP(fullNumber, 'admin_login', deviceId, fingerprint);
         Alert.alert('OTP Sent', `A verification code has been sent to ${fullNumber}`);
-        // Pass along any admin_id we have (if any) to OTP screen
         (navigation as any).navigate('OTPVerification', {
           phone: fullNumber,
           adminId: responseAdminId || undefined,
@@ -4735,23 +5911,9 @@ export default function PhoneInputScreen() {
       } else {
         // Fallback – should not happen
         Alert.alert('Unexpected Flow', message || 'Please contact support.');
-        resetKey('sendOTP');
       }
     } catch (error: any) {
-      // --- IDEMPOTENCY KEY DECISION ---
-      const isNetworkError =
-        error.message === 'Network Error' ||
-        error.code === 'ECONNABORTED' ||
-        error.code === 'ERR_NETWORK';
-
       const hasRetryAfter = !!error.retryAfter;
-
-      if (isNetworkError || hasRetryAfter) {
-        // Keep the key for retry – do not reset
-      } else {
-        // Other errors (validation, 404, 500, etc.) – reset key
-        resetKey('sendOTP');
-      }
 
       if (hasRetryAfter) {
         setRetryAfterSeconds(error.retryAfter);
@@ -4763,6 +5925,7 @@ export default function PhoneInputScreen() {
         const msg = error.response?.data?.message || error.message || 'An error occurred.';
         Alert.alert('Error', msg);
       }
+      // ❌ No manual key reset – service handles key lifecycle
     } finally {
       setLoading(false);
     }
@@ -5038,88 +6201,6 @@ const styles = StyleSheet.create({
     color: '#999',
     textAlign: 'center',
   },
-});
-```
-
-# File: apps/mobile/src/screens/main/Attendance.tsx
-
-```tsx
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-
-export default function AttendanceScreen() {
-  return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Attendance</Text>
-      <Text>Mark attendance here.</Text>
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  title: { fontSize: 24, fontWeight: 'bold', marginBottom: 16 },
-});
-```
-
-# File: apps/mobile/src/screens/main/Dashboard.tsx
-
-```tsx
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-
-export default function DashboardScreen() {
-  return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Dashboard</Text>
-      <Text>Welcome to the admin dashboard!</Text>
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  title: { fontSize: 24, fontWeight: 'bold', marginBottom: 16 },
-});
-```
-
-# File: apps/mobile/src/screens/main/Profile.tsx
-
-```tsx
-// apps/mobile/src/screens/main/Profile.tsx
-import React from 'react';
-import { View, Text, StyleSheet, Button } from 'react-native';
-import { useNavigation, CommonActions } from '@react-navigation/native';
-import { useAuthStore } from '../../store/authStore';
-
-export default function ProfileScreen() {
-  const navigation = useNavigation();
-  const { user, logout } = useAuthStore();
-
-  const handleLogout = () => {
-    logout();
-    // Reset the navigation stack to PhoneInput
-    navigation.dispatch(
-      CommonActions.reset({
-        index: 0,
-        routes: [{ name: 'PhoneInput' }],
-      })
-    );
-  };
-
-  return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Profile</Text>
-      <Text>Name: {user?.full_name || 'Admin'}</Text>
-      <Text>Email: {user?.email || 'N/A'}</Text>
-      <Button title="Logout" onPress={handleLogout} />
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  title: { fontSize: 24, fontWeight: 'bold', marginBottom: 16 },
 });
 ```
 

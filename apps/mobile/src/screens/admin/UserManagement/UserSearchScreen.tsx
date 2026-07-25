@@ -1,4 +1,3 @@
-// screens/admin/UserManagement/UserSearchScreen.tsx
 import React, { useState } from 'react';
 import {
   View,
@@ -10,7 +9,6 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, TextInput, ActivityIndicator, Card, Chip, Button } from 'react-native-paper';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 
@@ -22,12 +20,11 @@ import {
   getBannedUsers,
   User,
 } from '../../../services/admin';
-import { useIdempotency } from '../../../hooks/useIdempotency';
+// ❌ Removed unused import: useIdempotency
 
 type SearchType = 'advanced' | 'username' | 'fullname' | 'kyc' | 'banned';
 
 export default function UserSearchScreen() {
-  const insets = useSafeAreaInsets();
   const navigation = useNavigation();
 
   const [users, setUsers] = useState<User[]>([]);
@@ -84,11 +81,11 @@ export default function UserSearchScreen() {
   const renderUserCard = (item: User) => (
     <TouchableOpacity
       key={item.user_id}
-      onPress={() => (navigation as any).navigate('UserDetail', { userId: item.user_id })} // ✅ cast to any
+      onPress={() => (navigation as any).navigate('UserDetail', { userId: item.user_id })}
       activeOpacity={0.7}
     >
       <Card style={styles.card}>
-        <Card.Content>
+        <Card.Content style={styles.cardContent}>
           <View style={styles.row}>
             <Text variant="titleSmall" style={styles.username}>
               {item.username}
@@ -198,7 +195,7 @@ export default function UserSearchScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <View style={styles.header}>
         <Text variant="headlineMedium" style={styles.title}>
           User Search
@@ -275,14 +272,22 @@ const styles = StyleSheet.create({
   typeChip: { marginRight: 8, backgroundColor: '#f0f0f0' },
   activeChip: { backgroundColor: '#7B2FBE' },
   activeChipText: { color: 'white' },
-  scrollContent: { paddingHorizontal: 24, paddingBottom: 40 },
+  scrollContent: { paddingHorizontal: 24, paddingBottom: 40, backgroundColor: '#FFFFFF' },
   filterGroup: { marginBottom: 12 },
   input: { marginBottom: 12, backgroundColor: 'white' },
   buttonWrapper: { borderRadius: 12, overflow: 'hidden', marginBottom: 16 },
   buttonGradient: { paddingVertical: 14, alignItems: 'center', justifyContent: 'center', minHeight: 50 },
   buttonDisabled: { opacity: 0.6 },
   buttonText: { color: 'white', fontSize: 16, fontWeight: '600', letterSpacing: 0.5 },
-  card: { marginBottom: 12, borderRadius: 12, elevation: 2 },
+  card: {
+    marginBottom: 12,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
+  cardContent: {
+    backgroundColor: '#FFFFFF',
+  },
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   username: { fontWeight: '600', color: '#1A1A1A', flex: 1 },
   statusChip: { marginLeft: 8 },

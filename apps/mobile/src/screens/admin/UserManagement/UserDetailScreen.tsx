@@ -1,4 +1,3 @@
-// apps/mobile/src/screens/admin/UserManagement/UserDetailScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -9,7 +8,6 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, ActivityIndicator, Card, Chip, TextInput, Button } from 'react-native-paper';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRoute, useNavigation } from '@react-navigation/native';
 
@@ -23,7 +21,6 @@ import {
 } from '../../../services/admin';
 
 export default function UserDetailScreen() {
-  const insets = useSafeAreaInsets();
   const route = useRoute();
   const navigation = useNavigation();
   const { userId } = route.params as { userId: string };
@@ -119,7 +116,7 @@ export default function UserDetailScreen() {
 
   if (loading || !user) {
     return (
-      <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+      <SafeAreaView style={styles.safeArea} edges={['bottom']}>
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#7B2FBE" />
         </View>
@@ -128,7 +125,7 @@ export default function UserDetailScreen() {
   }
 
   return (
-    <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <Text variant="headlineMedium" style={styles.title}>
@@ -149,7 +146,7 @@ export default function UserDetailScreen() {
         </View>
 
         <Card style={styles.card}>
-          <Card.Content>
+          <Card.Content style={styles.cardContent}>
             <View style={styles.infoRow}>
               <Text style={styles.label}>User ID:</Text>
               <Text style={styles.value}>{user.user_id}</Text>
@@ -187,7 +184,7 @@ export default function UserDetailScreen() {
 
         {editMode ? (
           <Card style={styles.card}>
-            <Card.Content>
+            <Card.Content style={styles.cardContent}>
               <Text variant="titleMedium" style={styles.sectionTitle}>
                 Edit User
               </Text>
@@ -262,7 +259,7 @@ export default function UserDetailScreen() {
         )}
 
         <Card style={styles.card}>
-          <Card.Content>
+          <Card.Content style={styles.cardContent}>
             <Text variant="titleMedium" style={styles.sectionTitle}>
               Update KYC
             </Text>
@@ -333,7 +330,15 @@ const styles = StyleSheet.create({
   statusRow: { flexDirection: 'row', marginTop: 8, flexWrap: 'wrap' },
   statusChip: { marginRight: 8 },
   roleChip: { backgroundColor: '#E8E0F0' },
-  card: { marginVertical: 8, borderRadius: 12, elevation: 2 },
+  card: {
+    marginVertical: 8,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
+  cardContent: {
+    backgroundColor: '#FFFFFF',
+  },
   infoRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
   label: { color: '#666', fontSize: 14 },
   value: { color: '#1A1A1A', fontSize: 14, fontWeight: '500' },

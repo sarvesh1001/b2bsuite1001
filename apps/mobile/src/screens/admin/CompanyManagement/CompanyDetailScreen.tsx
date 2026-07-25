@@ -1,4 +1,4 @@
-// screens/admin/CompanyManagement/CompanyDetailScreen.tsx
+// apps/mobile/src/screens/admin/CompanyManagement/CompanyDetailScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -10,7 +10,6 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, ActivityIndicator, Card, Chip, Divider } from 'react-native-paper';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRoute, useNavigation } from '@react-navigation/native';
 
@@ -26,7 +25,6 @@ import {
 } from '../../../services/admin';
 
 export default function CompanyDetailScreen() {
-  const insets = useSafeAreaInsets();
   const route = useRoute();
   const navigation = useNavigation();
   const { companyId } = route.params as { companyId: string };
@@ -92,9 +90,18 @@ export default function CompanyDetailScreen() {
     } catch (error) {}
   };
 
+  const formatTier = (tier: string) => {
+    return tier.charAt(0).toUpperCase() + tier.slice(1);
+  };
+
+  const formatExpiry = (expiry: string | undefined) => {
+    if (!expiry) return 'N/A';
+    return new Date(expiry).toLocaleDateString();
+  };
+
   if (loading || !company) {
     return (
-      <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+      <SafeAreaView style={styles.safeArea} edges={['bottom']}>
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#7B2FBE" />
         </View>
@@ -103,31 +110,43 @@ export default function CompanyDetailScreen() {
   }
 
   return (
-    <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        {/* Header */}
         <View style={styles.header}>
           <Text variant="headlineMedium" style={styles.companyName}>
             {company.company_name}
           </Text>
           <View style={styles.statusRow}>
-            <Chip
+            <View
               style={[
-                styles.statusChip,
+                styles.badgeBase,
                 { backgroundColor: company.is_active ? '#E8F5E9' : '#FFEBEE' },
               ]}
-              textStyle={{ color: company.is_active ? '#2E7D32' : '#C62828' }}
             >
-              {company.is_active ? 'Active' : 'Inactive'}
-            </Chip>
-            <Chip style={styles.tierChip}>{company.subscription_tier}</Chip>
+              <Text
+                style={[
+                  styles.badgeText,
+                  { color: company.is_active ? '#2E7D32' : '#C62828' },
+                ]}
+              >
+                {company.is_active ? 'Active' : 'Inactive'}
+              </Text>
+            </View>
+            <View style={[styles.badgeBase, styles.tierBadge]}>
+              <Text style={styles.tierText}>{formatTier(company.subscription_tier)}</Text>
+            </View>
           </View>
         </View>
 
+        {/* Basic Info Card */}
         <Card style={styles.infoCard}>
-          <Card.Content>
+          <Card.Content style={styles.cardContent}>
             <View style={styles.infoRow}>
               <Text style={styles.label}>Owner ID:</Text>
-              <Text style={styles.value}>{company.owner_user_id}</Text>
+              <Text style={styles.value} numberOfLines={1} ellipsizeMode="tail">
+                {company.owner_user_id}
+              </Text>
             </View>
             <View style={styles.infoRow}>
               <Text style={styles.label}>Subscription:</Text>
@@ -148,9 +167,10 @@ export default function CompanyDetailScreen() {
           </Card.Content>
         </Card>
 
+        {/* Statistics Card */}
         {stats && (
           <Card style={styles.statsCard}>
-            <Card.Content>
+            <Card.Content style={styles.cardContent}>
               <Text variant="titleMedium" style={styles.statsTitle}>
                 Statistics
               </Text>
@@ -178,6 +198,82 @@ export default function CompanyDetailScreen() {
           </Card>
         )}
 
+        {/* Subscription Management Card */}
+        <Card style={styles.infoCard}>
+          <Card.Content>
+            <Text variant="titleMedium" style={styles.sectionTitle}>Subscription</Text>
+            <View style={styles.infoRow}>
+              <Text style={styles.label}>Tier:</Text>
+              <Text style={styles.value}>{formatTier(company.subscription_tier)}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.label}>Status:</Text>
+              <Text style={styles.value}>{company.subscription_status}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.label}>Max Employees:</Text>
+              <Text style={styles.value}>{company.max_employees}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.label}>Expires:</Text>
+              <Text style={styles.value}>{formatExpiry((company as any).subscription_expires_at)}</Text>
+            </View>
+            <View style={styles.buttonRow}>
+              <TouchableOpacity
+                style={[styles.halfButton, { marginRight: 4 }]}
+                onPress={() => (navigation as any).navigate('SubscriptionManagement', { companyId, company })}
+              >
+                <LinearGradient
+                  colors={['#00B4DB', '#7B2FBE']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.gradientButton}
+                >
+                  <Text style={styles.buttonText}>Manage</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.halfButton, { marginLeft: 4 }]}
+                onPress={() => (navigation as any).navigate('ExtendSubscription', { companyId })}
+              >
+                <LinearGradient
+                  colors={['#6C5CE7', '#A29BFE']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.gradientButton}
+                >
+                  <Text style={styles.buttonText}>Extend</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </Card.Content>
+        </Card>
+
+        {/* Max Departments Card */}
+        <Card style={styles.infoCard}>
+          <Card.Content>
+            <Text variant="titleMedium" style={styles.sectionTitle}>Departments Limit</Text>
+            <View style={styles.infoRow}>
+              <Text style={styles.label}>Current Max:</Text>
+              <Text style={styles.value}>{company.max_departments || 0}</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.fullButton}
+              onPress={() => (navigation as any).navigate('UpdateMaxDepartments', { companyId, currentMax: company.max_departments })}
+            >
+              <LinearGradient
+                colors={['#00B4DB', '#7B2FBE']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.gradientButton}
+              >
+                <Text style={styles.buttonText}>Update Limit</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </Card.Content>
+        </Card>
+
+        {/* Quick action rows */}
         <View style={styles.actionRow}>
           <TouchableOpacity
             style={styles.actionButton}
@@ -274,14 +370,66 @@ const styles = StyleSheet.create({
   scrollContent: { paddingHorizontal: 24, paddingBottom: 40 },
   header: { paddingTop: 16, paddingBottom: 12 },
   companyName: { fontWeight: 'bold', color: '#1A1A1A', fontSize: 26 },
-  statusRow: { flexDirection: 'row', marginTop: 8, flexWrap: 'wrap' },
-  statusChip: { marginRight: 8 },
-  tierChip: { backgroundColor: '#E8E0F0' },
-  infoCard: { marginVertical: 8, borderRadius: 12, elevation: 2 },
-  infoRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
-  label: { color: '#666', fontSize: 14 },
-  value: { color: '#1A1A1A', fontSize: 14, fontWeight: '500' },
-  statsCard: { marginVertical: 8, borderRadius: 12, elevation: 2 },
+  statusRow: {
+    flexDirection: 'row',
+    marginTop: 8,
+    flexWrap: 'wrap',
+    alignItems: 'center',
+  },
+  badgeBase: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginRight: 6,
+    alignSelf: 'flex-start',
+  },
+  badgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  tierBadge: {
+    backgroundColor: '#E8E0F0',
+  },
+  tierText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#333',
+  },
+  infoCard: {
+    marginVertical: 8,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
+  statsCard: {
+    marginVertical: 8,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
+  cardContent: {
+    backgroundColor: '#FFFFFF',
+  },
+  infoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+    flex: 1,
+  },
+  label: {
+    color: '#666',
+    fontSize: 14,
+    marginRight: 8,
+    flexShrink: 0,
+  },
+  value: {
+    color: '#1A1A1A',
+    fontSize: 14,
+    fontWeight: '500',
+    flex: 1,
+    textAlign: 'right',
+    flexShrink: 1,
+  },
   statsTitle: { fontWeight: '600', color: '#1A1A1A', marginBottom: 12 },
   statsGrid: { flexDirection: 'row', justifyContent: 'space-around' },
   statItem: { alignItems: 'center' },
@@ -289,12 +437,15 @@ const styles = StyleSheet.create({
   statLabel: { fontSize: 12, color: '#666', marginTop: 4 },
   actionRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 },
   actionButton: { flex: 1, marginHorizontal: 4, borderRadius: 12, overflow: 'hidden' },
-  halfButton: { flex: 0.48 },
+  halfButton: { flex: 0.48, borderRadius: 12, overflow: 'hidden' },
+  fullButton: { borderRadius: 12, overflow: 'hidden', marginTop: 8 },
   gradientButton: { paddingVertical: 14, alignItems: 'center', justifyContent: 'center' },
   buttonText: { color: 'white', fontSize: 16, fontWeight: '600', letterSpacing: 0.5 },
+  buttonRow: { flexDirection: 'row', marginTop: 8 },
   divider: { marginVertical: 16 },
   quickLinks: { marginTop: 8 },
   quickLinksTitle: { fontWeight: '600', color: '#1A1A1A', marginBottom: 12 },
   linkItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   linkText: { fontSize: 16, color: '#7B2FBE' },
+  sectionTitle: { fontWeight: '600', color: '#1A1A1A', marginBottom: 8 },
 });

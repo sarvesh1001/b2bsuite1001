@@ -5,8 +5,9 @@ import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
-import { useAuthStore, isAdminSelector } from '../store/authStore';
+import { useAuthStore } from '../store/authStore';
 import { GradientHeader } from '../components/GradientHeader';
+import { setTopLevelNavigator } from './navigationService'; // 👈 import the ref setter
 
 // Auth Screens
 import PhoneInputScreen from '../screens/auth/PhoneInput';
@@ -14,11 +15,6 @@ import OTPVerificationScreen from '../screens/auth/OTPVerification';
 import MPINSetupScreen from '../screens/auth/MPINSetup';
 import MPINVerificationScreen from '../screens/auth/MPINVerification';
 import MPINForgotScreen from '../screens/auth/MPINForgotScreen';
-
-// Main Screens
-import DashboardScreen from '../screens/main/Dashboard';
-import AttendanceScreen from '../screens/main/Attendance';
-import ProfileScreen from '../screens/main/Profile';
 
 // Admin Screens
 import CompanyListScreen from '../screens/admin/CompanyManagement/CompanyListScreen';
@@ -31,6 +27,11 @@ import UserDetailScreen from '../screens/admin/UserManagement/UserDetailScreen';
 import DepartmentsScreen from '../screens/admin/SystemSettings/DepartmentsScreen';
 import PermissionsScreen from '../screens/admin/SystemSettings/PermissionsScreen';
 import AuditLogsScreen from '../screens/admin/AuditLogs/AuditLogsScreen';
+
+// Subscription & Department management screens
+import SubscriptionManagementScreen from '../screens/admin/Subscription/SubscriptionManagementScreen';
+import ExtendSubscriptionScreen from '../screens/admin/Subscription/ExtendSubscriptionScreen';
+import UpdateMaxDepartmentsScreen from '../screens/admin/Department/UpdateMaxDepartmentsScreen';
 
 export type RootStackParamList = {
   PhoneInput: undefined;
@@ -49,6 +50,9 @@ export type RootStackParamList = {
   Departments: undefined;
   Permissions: { moduleCode?: string };
   AuditLogs: undefined;
+  SubscriptionManagement: { companyId: string; company: any };
+  ExtendSubscription: { companyId: string };
+  UpdateMaxDepartments: { companyId: string; currentMax: number };
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -72,49 +76,24 @@ function AdminStack() {
       <Stack.Screen name="Departments" component={DepartmentsScreen} options={{ title: 'System Departments' }} />
       <Stack.Screen name="Permissions" component={PermissionsScreen} options={{ title: 'Permissions' }} />
       <Stack.Screen name="AuditLogs" component={AuditLogsScreen} options={{ title: 'Audit Logs' }} />
+      <Stack.Screen name="SubscriptionManagement" component={SubscriptionManagementScreen} options={{ title: 'Manage Subscription' }} />
+      <Stack.Screen name="ExtendSubscription" component={ExtendSubscriptionScreen} options={{ title: 'Extend Subscription' }} />
+      <Stack.Screen name="UpdateMaxDepartments" component={UpdateMaxDepartmentsScreen} options={{ title: 'Update Departments Limit' }} />
     </Stack.Navigator>
   );
 }
 
 function MainTabs() {
-  const user = useAuthStore((state) => state.user);
-  const isAdmin = useAuthStore(isAdminSelector);
-
-  // LOG: check user and isAdmin
-  console.log('🔍 [MainTabs] user:', user);
-  console.log('🔍 [MainTabs] isAdmin:', isAdmin);
-
   return (
     <Tab.Navigator
-      initialRouteName={isAdmin ? 'Admin' : 'Dashboard'}
-      screenOptions={({ route }) => ({
-        headerShown: true,
+      screenOptions={{
+        headerShown: false,
         tabBarActiveTintColor: '#00B4DB',
         tabBarInactiveTintColor: '#999999',
-        tabBarIcon: ({ focused, color, size }) => {
-          let iconName = '';
-          if (route.name === 'Admin') iconName = 'view-dashboard';
-          else if (route.name === 'Dashboard') iconName = 'home';
-          else if (route.name === 'Attendance') iconName = 'clock-check';
-          else if (route.name === 'Profile') iconName = 'account';
-          return <Icon name={iconName} size={size} color={color} />;
-        },
-      })}
+        tabBarIcon: ({ color, size }) => <Icon name="view-dashboard" size={size} color={color} />,
+      }}
     >
-      {isAdmin ? (
-        <>
-          <Tab.Screen name="Admin" component={AdminStack} options={{ headerShown: false }} />
-          <Tab.Screen name="Dashboard" component={DashboardScreen} />
-          <Tab.Screen name="Attendance" component={AttendanceScreen} />
-          <Tab.Screen name="Profile" component={ProfileScreen} />
-        </>
-      ) : (
-        <>
-          <Tab.Screen name="Dashboard" component={DashboardScreen} />
-          <Tab.Screen name="Attendance" component={AttendanceScreen} />
-          <Tab.Screen name="Profile" component={ProfileScreen} />
-        </>
-      )}
+      <Tab.Screen name="Admin" component={AdminStack} />
     </Tab.Navigator>
   );
 }
@@ -140,13 +119,8 @@ export default function Navigation() {
     initialRoute = 'MPINVerification';
   }
 
-  console.log('🚦 [Navigation] initialRoute:', initialRoute);
-  console.log('🚦 [Navigation] isAuthenticated:', isAuthenticated);
-  console.log('🚦 [Navigation] pending:', { pendingAdminId, pendingPhone, pendingHasMpin });
-  console.log('🚦 [Navigation] saved:', { savedAdminId, savedPhone, savedHasMpin });
-
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={setTopLevelNavigator}>
       <Stack.Navigator screenOptions={{ headerShown: false }} initialRouteName={initialRoute}>
         <Stack.Screen name="PhoneInput" component={PhoneInputScreen} />
         <Stack.Screen name="OTPVerification" component={OTPVerificationScreen} />

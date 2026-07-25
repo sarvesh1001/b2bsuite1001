@@ -1,4 +1,3 @@
-// screens/admin/CompanyManagement/CompanyCreateScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -13,13 +12,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, TextInput, ActivityIndicator, Chip, Button, Switch } from 'react-native-paper';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import { createCompany, getSystemDepartments, SystemDepartment } from '../../../services/admin';
-// ❌ Remove: import { useIdempotency } from '../../../hooks/useIdempotency';
 
 const TIERS = [
   { label: 'Basic', value: 'basic' },
@@ -45,9 +42,7 @@ const TIMEZONES = [
 ];
 
 export default function CompanyCreateScreen() {
-  const insets = useSafeAreaInsets();
   const navigation = useNavigation();
-  // ❌ Remove: const { getKey, resetKey } = useIdempotency();
 
   const [form, setForm] = useState({
     company_name: '',
@@ -74,7 +69,6 @@ export default function CompanyCreateScreen() {
   const [loadingDepts, setLoadingDepts] = useState(true);
   const [selectedDepts, setSelectedDepts] = useState<string[]>([]);
 
-  // Dropdown modals
   const [tierModalVisible, setTierModalVisible] = useState(false);
   const [regionModalVisible, setRegionModalVisible] = useState(false);
   const [timezoneModalVisible, setTimezoneModalVisible] = useState(false);
@@ -102,7 +96,6 @@ export default function CompanyCreateScreen() {
   };
 
   const handleCreate = async () => {
-    // Validation (unchanged)
     if (!form.company_name.trim()) {
       Alert.alert('Error', 'Company name is required');
       return;
@@ -149,7 +142,6 @@ export default function CompanyCreateScreen() {
         ...form,
         departments: selectedDepts,
       };
-      // ✅ Simply call the service – idempotency is handled internally
       const result = await createCompany(payload);
       Alert.alert(
         'Success',
@@ -172,7 +164,6 @@ export default function CompanyCreateScreen() {
     }
   };
 
-  // Helper to render dropdown picker modal (unchanged)
   const renderPickerModal = (
     visible: boolean,
     setVisible: (v: boolean) => void,
@@ -223,7 +214,6 @@ export default function CompanyCreateScreen() {
     </Modal>
   );
 
-  // Helper for timezone picker (unchanged)
   const renderTimezonePicker = () => (
     <Modal
       transparent
@@ -283,7 +273,7 @@ export default function CompanyCreateScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <KeyboardAvoidingView
         style={styles.container}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -299,7 +289,6 @@ export default function CompanyCreateScreen() {
           </View>
 
           <View style={styles.form}>
-            {/* All form fields remain unchanged */}
             <TextInput
               mode="outlined"
               label="Company Name *"
@@ -371,7 +360,6 @@ export default function CompanyCreateScreen() {
               </View>
             </View>
 
-            {/* Subscription Tier Dropdown */}
             <TouchableOpacity
               style={styles.dropdown}
               onPress={() => setTierModalVisible(true)}
@@ -386,7 +374,6 @@ export default function CompanyCreateScreen() {
               </View>
             </TouchableOpacity>
 
-            {/* Data Region Dropdown */}
             <TouchableOpacity
               style={styles.dropdown}
               onPress={() => setRegionModalVisible(true)}
@@ -518,7 +505,6 @@ export default function CompanyCreateScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* Modals */}
       {renderPickerModal(tierModalVisible, setTierModalVisible, TIERS, form.subscription_tier, (val) => setForm({ ...form, subscription_tier: val }), 'Select Tier')}
       {renderPickerModal(regionModalVisible, setRegionModalVisible, REGIONS, form.data_region, (val) => setForm({ ...form, data_region: val }), 'Select Region')}
       {renderTimezonePicker()}
@@ -527,9 +513,8 @@ export default function CompanyCreateScreen() {
 }
 
 const styles = StyleSheet.create({
-  // ... (styles unchanged – keep as is)
   safeArea: { flex: 1, backgroundColor: '#FFFFFF' },
-  container: { flex: 1 },
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
   scrollContent: { paddingHorizontal: 24, paddingBottom: 40 },
   header: { marginVertical: 16 },
   title: { fontWeight: 'bold', color: '#1A1A1A', fontSize: 28 },
@@ -563,7 +548,7 @@ const styles = StyleSheet.create({
   buttonText: { color: 'white', fontSize: 16, fontWeight: '600', letterSpacing: 0.5 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: 'white', borderRadius: 12, padding: 16, width: '80%', maxHeight: '60%' },
-  modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 12, textAlign: 'center' },
+  modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 12, textAlign: 'center', color: '#1A1A1A' },
   modalItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   modalItemSelected: { backgroundColor: '#E8E0F0' },
   modalItemText: { fontSize: 16, color: '#1A1A1A' },

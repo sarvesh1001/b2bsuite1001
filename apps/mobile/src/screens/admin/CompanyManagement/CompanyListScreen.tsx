@@ -1,5 +1,4 @@
-// screens/admin/CompanyManagement/CompanyListScreen.tsx
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useLayoutEffect } from 'react';
 import {
   View,
   StyleSheet,
@@ -11,9 +10,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, ActivityIndicator, Searchbar, Chip, Card } from 'react-native-paper';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { useNavigation, useFocusEffect, CommonActions } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import {
@@ -23,26 +21,62 @@ import {
   getCompaniesByTier,
   Company,
 } from '../../../services/admin';
+import { useAuthStore } from '../../../store/authStore';
 
 type FilterType = 'all' | 'active' | 'inactive';
 type TierFilter = 'all' | 'basic' | 'premium' | 'enterprise';
 
 export default function CompanyListScreen() {
-  const insets = useSafeAreaInsets();
   const navigation = useNavigation();
+  const logout = useAuthStore((state) => state.logout);
 
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<FilterType>('all');
   const [tierFilter, setTierFilter] = useState<TierFilter>('all');
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <TouchableOpacity
+          onPress={() => {
+            Alert.alert(
+              'Logout',
+              'Are you sure you want to logout?',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Logout',
+                  style: 'destructive',
+                  onPress: () => {
+                    logout();
+                    navigation.dispatch(
+                      CommonActions.reset({
+                        index: 0,
+                        routes: [{ name: 'PhoneInput' }],
+                      })
+                    );
+                  },
+                },
+              ]
+            );
+          }}
+          style={{ marginRight: 16 }}
+        >
+          <Icon name="logout" size={24} color="#FFFFFF" />
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation, logout]);
 
   const fetchCompanies = async () => {
     try {
       let result;
-      if (searchQuery.trim()) {
-        result = await searchCompanies(searchQuery);
+      if (searchTerm.trim()) {
+        result = await searchCompanies(searchTerm);
         setCompanies(result.companies || []);
         return;
       }
@@ -72,7 +106,7 @@ export default function CompanyListScreen() {
   useFocusEffect(
     useCallback(() => {
       fetchCompanies();
-    }, [searchQuery, statusFilter, tierFilter])
+    }, [searchTerm, statusFilter, tierFilter])
   );
 
   const onRefresh = () => {
@@ -80,47 +114,79 @@ export default function CompanyListScreen() {
     fetchCompanies();
   };
 
+  const handleSearch = () => {
+    setSearchTerm(searchQuery);
+  };
+
+  const handleTextChange = (text: string) => {
+    setSearchQuery(text);
+    if (text === '') {
+      setSearchTerm('');
+    }
+  };
+
+  const handleFilterPress = (status: FilterType, tier: TierFilter) => {
+    setStatusFilter(status);
+    setTierFilter(tier);
+    setSearchQuery('');
+    setSearchTerm('');
+  };
+
   const handleCompanyPress = (companyId: string) => {
     (navigation as any).navigate('CompanyDetail', { companyId });
+  };
+
+  const formatTier = (tier: string) => {
+    return tier.charAt(0).toUpperCase() + tier.slice(1);
   };
 
   const renderItem = ({ item }: { item: Company }) => (
     <TouchableOpacity onPress={() => handleCompanyPress(item.company_id)} activeOpacity={0.7}>
       <Card style={styles.card}>
-        <Card.Content>
+        <Card.Content style={styles.cardContent}>
           <View style={styles.cardHeader}>
-            <Text variant="titleMedium" style={styles.companyName}>
+            <Text variant="titleMedium" style={styles.companyName} numberOfLines={1}>
               {item.company_name}
             </Text>
-            <View
-              style={[
-                styles.statusBadge,
-                { backgroundColor: item.is_active ? '#E8F5E9' : '#FFEBEE' },
-              ]}
-            >
-              <Text
+            <View style={styles.headerBadges}>
+              <View
                 style={[
-                  styles.statusText,
-                  { color: item.is_active ? '#2E7D32' : '#C62828' },
+                  styles.statusBadge,
+                  { backgroundColor: item.is_active ? '#E8F5E9' : '#FFEBEE' },
                 ]}
               >
-                {item.is_active ? 'Active' : 'Inactive'}
-              </Text>
+                <Text
+                  style={[
+                    styles.statusText,
+                    { color: item.is_active ? '#2E7D32' : '#C62828' },
+                  ]}
+                >
+                  {item.is_active ? 'Active' : 'Inactive'}
+                </Text>
+              </View>
+              <View style={styles.tierChipCustom}>
+                <Text style={styles.tierText}>{formatTier(item.subscription_tier)}</Text>
+              </View>
             </View>
           </View>
+
           <Text variant="bodySmall" style={styles.ownerText}>
             Owner: {item.owner_user_id}
           </Text>
+
           <View style={styles.metaRow}>
-            <Chip style={styles.tierChip} textStyle={{ fontSize: 11 }}>
-              {item.subscription_tier}
-            </Chip>
-            <Text variant="bodySmall" style={styles.metaText}>
-              Employees: {item.max_employees}
-            </Text>
-            <Text variant="bodySmall" style={styles.metaText}>
-              Created: {new Date(item.created_at).toLocaleDateString()}
-            </Text>
+            <View style={styles.metaItem}>
+              <Icon name="account-multiple" size={14} color="#888" />
+              <Text variant="bodySmall" style={styles.metaText}>
+                {item.max_employees}
+              </Text>
+            </View>
+            <View style={styles.metaItem}>
+              <Icon name="calendar" size={14} color="#888" />
+              <Text variant="bodySmall" style={styles.metaText}>
+                {new Date(item.created_at).toLocaleDateString()}
+              </Text>
+            </View>
           </View>
         </Card.Content>
       </Card>
@@ -129,7 +195,7 @@ export default function CompanyListScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+      <SafeAreaView style={styles.safeArea} edges={['bottom']}>
         <View style={styles.centered}>
           <ActivityIndicator size="large" color="#00B4DB" />
         </View>
@@ -138,65 +204,87 @@ export default function CompanyListScreen() {
   }
 
   return (
-    <SafeAreaView style={[styles.safeArea, { paddingTop: insets.top }]}>
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <Searchbar
         placeholder="Search companies..."
-        onChangeText={setSearchQuery}
+        onChangeText={handleTextChange}
         value={searchQuery}
         style={styles.searchBar}
         inputStyle={styles.searchInput}
-        // 🎨 Change search icon to blue
         iconColor="#00B4DB"
         theme={{ colors: { primary: '#00B4DB' } }}
+        onIconPress={handleSearch}
+        onSubmitEditing={handleSearch}
       />
 
       <View style={styles.filterRow}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
           <Chip
             selected={statusFilter === 'all' && tierFilter === 'all'}
-            onPress={() => { setStatusFilter('all'); setTierFilter('all'); }}
-            style={[styles.filterChip, statusFilter === 'all' && tierFilter === 'all' && styles.activeChip]}
-            textStyle={statusFilter === 'all' && tierFilter === 'all' ? styles.activeChipText : {}}
+            onPress={() => handleFilterPress('all', 'all')}
+            style={[
+              styles.filterChip,
+              statusFilter === 'all' && tierFilter === 'all' && styles.activeChip,
+            ]}
+            textStyle={[
+              styles.filterChipText,
+              statusFilter === 'all' && tierFilter === 'all' && styles.activeChipText,
+            ]}
           >
             All
           </Chip>
           <Chip
             selected={statusFilter === 'active'}
-            onPress={() => { setStatusFilter('active'); setTierFilter('all'); }}
+            onPress={() => handleFilterPress('active', 'all')}
             style={[styles.filterChip, statusFilter === 'active' && styles.activeChip]}
-            textStyle={statusFilter === 'active' ? styles.activeChipText : {}}
+            textStyle={[
+              styles.filterChipText,
+              statusFilter === 'active' && styles.activeChipText,
+            ]}
           >
             Active
           </Chip>
           <Chip
             selected={statusFilter === 'inactive'}
-            onPress={() => { setStatusFilter('inactive'); setTierFilter('all'); }}
+            onPress={() => handleFilterPress('inactive', 'all')}
             style={[styles.filterChip, statusFilter === 'inactive' && styles.activeChip]}
-            textStyle={statusFilter === 'inactive' ? styles.activeChipText : {}}
+            textStyle={[
+              styles.filterChipText,
+              statusFilter === 'inactive' && styles.activeChipText,
+            ]}
           >
             Inactive
           </Chip>
           <Chip
             selected={tierFilter === 'basic'}
-            onPress={() => { setStatusFilter('all'); setTierFilter('basic'); }}
+            onPress={() => handleFilterPress('all', 'basic')}
             style={[styles.filterChip, tierFilter === 'basic' && styles.activeChip]}
-            textStyle={tierFilter === 'basic' ? styles.activeChipText : {}}
+            textStyle={[
+              styles.filterChipText,
+              tierFilter === 'basic' && styles.activeChipText,
+            ]}
           >
             Basic
           </Chip>
           <Chip
             selected={tierFilter === 'premium'}
-            onPress={() => { setStatusFilter('all'); setTierFilter('premium'); }}
+            onPress={() => handleFilterPress('all', 'premium')}
             style={[styles.filterChip, tierFilter === 'premium' && styles.activeChip]}
-            textStyle={tierFilter === 'premium' ? styles.activeChipText : {}}
+            textStyle={[
+              styles.filterChipText,
+              tierFilter === 'premium' && styles.activeChipText,
+            ]}
           >
             Premium
           </Chip>
           <Chip
             selected={tierFilter === 'enterprise'}
-            onPress={() => { setStatusFilter('all'); setTierFilter('enterprise'); }}
+            onPress={() => handleFilterPress('all', 'enterprise')}
             style={[styles.filterChip, tierFilter === 'enterprise' && styles.activeChip]}
-            textStyle={tierFilter === 'enterprise' ? styles.activeChipText : {}}
+            textStyle={[
+              styles.filterChipText,
+              tierFilter === 'enterprise' && styles.activeChipText,
+            ]}
           >
             Enterprise
           </Chip>
@@ -212,7 +300,7 @@ export default function CompanyListScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            colors={['#00B4DB']} // 🎨 blue
+            colors={['#00B4DB']}
             tintColor="#00B4DB"
           />
         }
@@ -246,27 +334,102 @@ export default function CompanyListScreen() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#FFFFFF' },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  searchBar: { marginHorizontal: 24, marginVertical: 8, borderRadius: 12, elevation: 2 },
+  searchBar: {
+    marginHorizontal: 24,
+    marginVertical: 8,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
   searchInput: { fontSize: 16 },
   filterRow: { paddingHorizontal: 24, marginVertical: 4 },
   filterScroll: { flexDirection: 'row' },
-  filterChip: { marginRight: 8, backgroundColor: '#f0f0f0' },
-  // 🎨 Active chip background – blue
-  activeChip: { backgroundColor: '#00B4DB' },
-  activeChipText: { color: 'white' },
+  filterChip: {
+    marginRight: 8,
+    backgroundColor: '#d0d0d0', // darker gray for unselected
+  },
+  filterChipText: {
+    color: '#333', // dark text for unselected
+  },
+  activeChip: {
+    backgroundColor: '#00B4DB',
+  },
+  activeChipText: {
+    color: '#FFFFFF',
+  },
   listContent: { paddingHorizontal: 24, paddingTop: 8, paddingBottom: 100 },
-  card: { marginBottom: 12, borderRadius: 12, elevation: 2 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  companyName: { fontWeight: '600', color: '#1A1A1A', flex: 1 },
-  statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, marginLeft: 8 },
-  statusText: { fontSize: 12, fontWeight: '600' },
-  ownerText: { color: '#666', marginTop: 2 },
-  metaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6, flexWrap: 'wrap' },
-  tierChip: { height: 24, backgroundColor: '#E8E0F0', marginRight: 8 },
-  metaText: { color: '#888', fontSize: 12, marginRight: 12 },
+  card: {
+    marginBottom: 12,
+    borderRadius: 12,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
+  cardContent: {
+    backgroundColor: '#FFFFFF',
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  companyName: {
+    fontWeight: '600',
+    color: '#1A1A1A',
+    flex: 1,
+    flexShrink: 1,
+    marginRight: 8,
+    fontSize: 16,
+  },
+  headerBadges: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+    overflow: 'visible',
+  },
+  statusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginRight: 6,
+  },
+  statusText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  tierChipCustom: {
+    backgroundColor: '#E8E0F0',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+  },
+  tierText: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#333',
+  },
+  ownerText: {
+    color: '#666',
+    marginTop: 4,
+    fontSize: 13,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    marginTop: 6,
+    flexWrap: 'wrap',
+  },
+  metaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 16,
+  },
+  metaText: {
+    color: '#888',
+    fontSize: 12,
+    marginLeft: 4,
+  },
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 40 },
   emptyText: { color: '#999' },
-  // Custom FAB
   fabWrapper: {
     position: 'absolute',
     right: 24,

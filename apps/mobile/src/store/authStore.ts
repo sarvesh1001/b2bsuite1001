@@ -1,4 +1,3 @@
-// apps/mobile/src/store/authStore.ts
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import * as SecureStore from 'expo-secure-store';
@@ -53,6 +52,7 @@ interface AuthState {
 
   login: (accessToken: string, refreshToken: string, user: User, deviceId?: string) => void;
   logout: () => void;
+  clearSession: () => void;
   updateTokens: (accessToken: string, refreshToken: string) => void;
   setPendingMpinLogin: (adminId: string, phone: string, hasMpin: boolean) => void;
   clearPendingMpinLogin: () => void;
@@ -119,8 +119,23 @@ export const useAuthStore = create<AuthState>()(
           pendingAdminId: null,
           pendingPhone: null,
           pendingHasMpin: null,
+          savedAdminId: null,
+          savedPhone: null,
+          savedHasMpin: null,
         });
         console.log('✅ [authStore.logout] state cleared');
+      },
+
+      clearSession: () => {
+        console.log('🧹 [authStore.clearSession] clearing tokens only (keeping saved credentials)');
+        setAuthToken(null);
+        set({
+          accessToken: null,
+          refreshToken: null,
+          isAuthenticated: false,
+          // Preserve savedAdminId, savedPhone, savedHasMpin
+        });
+        console.log('✅ [authStore.clearSession] session cleared, saved credentials intact');
       },
 
       updateTokens: (accessToken, refreshToken) => {
@@ -160,30 +175,42 @@ export const useAuthStore = create<AuthState>()(
         const deviceId = get().deviceId;
         console.log('🔍 [authStore.validateSession]', { hasToken: !!token, hasDeviceId: !!deviceId });
 
+        // Helper to clear session and reset navigation (dynamic import to avoid circular dependency)
+        const handleInvalidSession = () => {
+          get().clearSession();
+          try {
+            // Dynamic import to break circular dependency
+            const { resetToAuthScreen } = require('../../navigation/navigationService');
+            resetToAuthScreen();
+          } catch (e) {
+            console.warn('⚠️ Could not reset navigation – navigator not ready');
+          }
+        };
+
         if (!token || !deviceId) {
           console.log('❌ [authStore.validateSession] Missing token or deviceId');
+          handleInvalidSession();
           return false;
         }
 
         try {
-          // ✅ FIXED: Use the correct endpoint from API spec
           const response = await axiosInstance.get('/auth/validate');
           const isValid = response.status === 200;
           console.log('✅ [authStore.validateSession] valid:', isValid);
+          if (!isValid) {
+            handleInvalidSession();
+          }
           return isValid;
         } catch (error: any) {
-          // If the endpoint returns 404, it might not be implemented – consider session valid
-          // If 401, token is invalid – return false
           const status = error.response?.status;
           console.log('❌ [authStore.validateSession] error:', error.message, 'status:', status);
 
-          // If we get 404, the endpoint might not be ready – treat as valid to avoid logout
           if (status === 404) {
             console.warn('⚠️ [authStore.validateSession] Validation endpoint not found (404) – treating session as valid');
             return true;
           }
 
-          // For 401 or other errors, session is invalid
+          handleInvalidSession();
           return false;
         }
       },

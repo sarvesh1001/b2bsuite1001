@@ -5,5 +5,6 @@ export {
   customAxiosInstance, 
   setAuthToken,
   setDeviceId,
-  setRefreshTokenFunction   // ✅ now exported
+  setRefreshTokenFunction,
+  setUnauthorizedCallback,  
 } from './axios-instance';

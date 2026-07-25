@@ -15,7 +15,7 @@ const isRetryableError = (error: any): boolean => {
 };
 
 /**
- * Generic idempotent request for any method (POST, PUT, PATCH, etc.)
+ * Generic idempotent request for any method (POST, PUT, PATCH, DELETE, etc.)
  */
 export async function idempotentRequest<T = any>(
   method: Method,
@@ -74,6 +74,14 @@ export const idempotentPatch = <T = any>(
   operation: string,
   config?: AxiosRequestConfig
 ) => idempotentRequest<T>('PATCH', url, data, operation, config);
+
+// Add DELETE wrapper
+export const idempotentDelete = <T = any>(
+  url: string,
+  data?: any,          // optional, some DELETE endpoints may have a body
+  operation: string = 'delete',
+  config?: AxiosRequestConfig
+) => idempotentRequest<T>('DELETE', url, data, operation, config);
 
 export const resetIdempotencyKey = (operation: string) => keyMap.delete(operation);
 export const resetAllIdempotencyKeys = () => keyMap.clear();

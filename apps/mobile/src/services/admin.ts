@@ -1,7 +1,12 @@
 // apps/mobile/src/services/admin.ts
 import { axiosInstance } from '@b2b/api-client';
 import { Platform } from 'react-native';
-import { idempotentPost, idempotentPut, idempotentPatch } from '../utils/idempotencyRequest';
+import {
+  idempotentPost,
+  idempotentPut,
+  idempotentPatch,
+  idempotentDelete,   // new helper for DELETE
+} from '../utils/idempotencyRequest';
 
 // ---------- Type Definitions (unchanged) ----------
 export interface SystemDepartment { system_department_id: string; name: string; module_code: string; description: string; bitmask: number; }
@@ -19,6 +24,8 @@ export interface UpdateUserPayload { username?: string; full_name?: string; data
 export interface UpdateKycPayload { status: string; level: string; reason?: string; }
 export interface UserSearchFilters { username?: string; full_name?: string; kyc_status?: string; is_active?: boolean; data_region?: string; phone_hash?: string; user_id?: string; }
 export interface AuditFilters { user_id?: string; action?: string; resource_type?: string; resource_id?: string; from_date?: string; to_date?: string; }
+export interface AddDepartmentPayload { department_name: string; system_department_id?: string; parent_department_id?: string; }
+export interface UpdateMaxDepartmentsPayload { max_departments: number; }
 
 // ---------- System Endpoints (GET – unchanged) ----------
 export const getSystemDepartments = async (): Promise<SystemDepartment[]> => {
@@ -188,6 +195,63 @@ export const getExpiringCompanies = async (days = 30, limit = 50): Promise<{ com
 export const searchCompaniesByOwner = async (userId: string, q: string, limit = 20): Promise<any> => {
   const response = await axiosInstance.get(`/admin/companies/owner/${userId}/search`, { params: { q, limit } });
   return response.data?.data ?? response.data;
+};
+
+// ---------- Department Management (new, idempotent) ----------
+
+/**
+ * Update Company's Max Departments Limit (PUT, idempotent)
+ */
+export const updateMaxDepartments = async (
+  companyId: string,
+  maxDepartments: number
+): Promise<any> => {
+  const result = await idempotentPut(
+    `/admin/companies/${companyId}/max-departments`,
+    { max_departments: maxDepartments },
+    'updateMaxDepartments'
+  );
+  return result?.data ?? result;
+};
+
+/**
+ * Soft Delete Department (Mark as inactive) (DELETE, idempotent)
+ */
+export const softDeleteDepartment = async (companyId: string, deptId: string): Promise<any> => {
+  const result = await idempotentDelete(
+    `/companies/${companyId}/departments/${deptId}/soft`,
+    undefined,
+    'softDeleteDepartment'
+  );
+  return result?.data ?? result;
+};
+
+/**
+ * Activate Department (PATCH, idempotent)
+ */
+export const activateDepartment = async (companyId: string, deptId: string): Promise<any> => {
+  const result = await idempotentPatch(
+    `/companies/${companyId}/departments/${deptId}/activate`,
+    {},
+    'activateDepartment'
+  );
+  return result?.data ?? result;
+};
+
+/**
+ * Add New Department at Root Level (POST, idempotent)
+ * Endpoint: POST /admin/companies/{companyId}/departments
+ */
+export const addCompanyDepartment = async (
+  companyId: string,
+  payload: AddDepartmentPayload
+): Promise<any> => {
+  const result = await idempotentPost(
+    `/admin/companies/${companyId}/departments`,
+    payload,
+    'addCompanyDepartment'
+  );
+  return result?.data ?? result;
 };
 
 // ---------- User Management ----------
