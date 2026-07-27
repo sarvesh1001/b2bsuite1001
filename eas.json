@@ -8,6 +8,7 @@
       "developmentClient": true,
       "distribution": "internal",
       "corepack": true,
+      "app": "apps/mobile",          
       "env": {
         "EXPO_PUBLIC_API_BASE_URL": "https://agrologic-roger-frostily.ngrok-free.dev/api/v1"
       }
@@ -15,6 +16,7 @@
     "preview": {
       "distribution": "internal",
       "corepack": true,
+      "app": "apps/mobile",          
       "env": {
         "EXPO_PUBLIC_API_BASE_URL": "https://agrologic-roger-frostily.ngrok-free.dev/api/v1"
       }
@@ -22,6 +24,7 @@
     "production": {
       "autoIncrement": true,
       "corepack": true,
+      "app": "apps/mobile",          
       "env": {
         "EXPO_PUBLIC_API_BASE_URL": "https://agrologic-roger-frostily.ngrok-free.dev/api/v1"
       }
