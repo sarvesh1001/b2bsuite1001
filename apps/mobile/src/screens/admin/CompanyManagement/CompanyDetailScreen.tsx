@@ -367,6 +367,13 @@ export default function CompanyDetailScreen() {
           >
             <Text style={styles.linkText}>Audit Logs</Text>
           </TouchableOpacity>
+          {/* 🆕 New Quick Link: Upload KYC Document */}
+          <TouchableOpacity
+            style={styles.linkItem}
+            onPress={() => (navigation as any).navigate('KYCUpload')}
+          >
+            <Text style={styles.linkText}>Upload KYC Document</Text>
+          </TouchableOpacity>
         </View>
       </ScrollView>
     </SafeAreaView>

@@ -7,7 +7,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import { useAuthStore } from '../store/authStore';
 import { GradientHeader } from '../components/GradientHeader';
-import { setTopLevelNavigator } from './navigationService'; // 👈 import the ref setter
+import { setTopLevelNavigator } from './navigationService';
 
 // Auth Screens
 import PhoneInputScreen from '../screens/auth/PhoneInput';
@@ -33,6 +33,9 @@ import SubscriptionManagementScreen from '../screens/admin/Subscription/Subscrip
 import ExtendSubscriptionScreen from '../screens/admin/Subscription/ExtendSubscriptionScreen';
 import UpdateMaxDepartmentsScreen from '../screens/admin/Department/UpdateMaxDepartmentsScreen';
 
+// 🆕 KYC Upload Screen
+import KYCUploadScreen from '../screens/user/KYCUploadScreen';
+
 export type RootStackParamList = {
   PhoneInput: undefined;
   OTPVerification: { phone: string; adminId?: string; hasMpin?: boolean; flowState?: string };
@@ -53,6 +56,8 @@ export type RootStackParamList = {
   SubscriptionManagement: { companyId: string; company: any };
   ExtendSubscription: { companyId: string };
   UpdateMaxDepartments: { companyId: string; currentMax: number };
+  // 🆕
+  KYCUpload: undefined;
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -79,6 +84,8 @@ function AdminStack() {
       <Stack.Screen name="SubscriptionManagement" component={SubscriptionManagementScreen} options={{ title: 'Manage Subscription' }} />
       <Stack.Screen name="ExtendSubscription" component={ExtendSubscriptionScreen} options={{ title: 'Extend Subscription' }} />
       <Stack.Screen name="UpdateMaxDepartments" component={UpdateMaxDepartmentsScreen} options={{ title: 'Update Departments Limit' }} />
+      {/* 🆕 KYC Upload screen */}
+      <Stack.Screen name="KYCUpload" component={KYCUploadScreen} options={{ title: 'Upload KYC Document' }} />
     </Stack.Navigator>
   );
 }
