@@ -20,6 +20,16 @@ import {
   User,
 } from '../../../services/admin';
 
+// Import KYC constants
+import {
+  KYC_STATUSES,
+  KYC_LEVELS,
+  KYC_TRANSITIONS,
+  ALL_KYC_LEVELS,
+  KYCStatus,
+  KYCLevel,
+} from '../../../constants/kyc';
+
 export default function UserDetailScreen() {
   const route = useRoute();
   const navigation = useNavigation();
@@ -35,8 +45,11 @@ export default function UserDetailScreen() {
     email: '',
     data_region: '',
   });
-  const [kycStatus, setKycStatus] = useState('');
-  const [kycLevel, setKycLevel] = useState('');
+
+  // KYC state with proper types
+  const [kycStatus, setKycStatus] = useState<KYCStatus>(KYC_STATUSES.PENDING);
+  const [kycLevel, setKycLevel] = useState<KYCLevel>(KYC_LEVELS.BASIC);
+  const [availableStatuses, setAvailableStatuses] = useState<KYCStatus[]>([]);
 
   const loadUser = async () => {
     setLoading(true);
@@ -56,8 +69,13 @@ export default function UserDetailScreen() {
         email: foundUser.email || '',
         data_region: foundUser.data_region || '',
       });
-      setKycStatus(foundUser.kyc_status || 'pending');
-      setKycLevel(foundUser.kyc_level || 'basic');
+
+      // Set KYC values, fallback to defaults
+      const currentStatus = (foundUser.kyc_status || KYC_STATUSES.PENDING) as KYCStatus;
+      setKycStatus(currentStatus);
+      setKycLevel((foundUser.kyc_level || KYC_LEVELS.BASIC) as KYCLevel);
+      // Compute allowed transitions based on current status
+      setAvailableStatuses(KYC_TRANSITIONS[currentStatus] || []);
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load user');
     } finally {
@@ -68,6 +86,12 @@ export default function UserDetailScreen() {
   useEffect(() => {
     loadUser();
   }, [userId]);
+
+  // When status changes manually, update the available transitions
+  const handleStatusChange = (newStatus: KYCStatus) => {
+    setKycStatus(newStatus);
+    setAvailableStatuses(KYC_TRANSITIONS[newStatus] || []);
+  };
 
   const handleUpdateUser = async () => {
     setUpdating(true);
@@ -258,30 +282,62 @@ export default function UserDetailScreen() {
           </TouchableOpacity>
         )}
 
+        {/* Updated KYC Card with Chip Selectors */}
         <Card style={styles.card}>
           <Card.Content style={styles.cardContent}>
             <Text variant="titleMedium" style={styles.sectionTitle}>
               Update KYC
             </Text>
-            <TextInput
-              mode="outlined"
-              label="KYC Status"
-              value={kycStatus}
-              onChangeText={setKycStatus}
-              style={styles.input}
-              theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
-            />
-            <TextInput
-              mode="outlined"
-              label="KYC Level"
-              value={kycLevel}
-              onChangeText={setKycLevel}
-              style={styles.input}
-              theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
-            />
+
+            {/* Status selector */}
+            <View style={styles.pickerContainer}>
+              <Text style={styles.pickerLabel}>New Status</Text>
+              <View style={styles.chipContainer}>
+                {availableStatuses.length === 0 ? (
+                  <Text style={styles.noTransitionText}>No further transitions allowed</Text>
+                ) : (
+                  availableStatuses.map((status) => (
+                    <Chip
+                      key={status}
+                      selected={kycStatus === status}
+                      onPress={() => handleStatusChange(status)}
+                      style={[
+                        styles.chip,
+                        kycStatus === status && styles.activeChip,
+                      ]}
+                      textStyle={kycStatus === status ? styles.activeChipText : {}}
+                    >
+                      {status.replace('_', ' ').toUpperCase()}
+                    </Chip>
+                  ))
+                )}
+              </View>
+            </View>
+
+            {/* Level selector */}
+            <View style={styles.pickerContainer}>
+              <Text style={styles.pickerLabel}>KYC Level</Text>
+              <View style={styles.chipContainer}>
+                {ALL_KYC_LEVELS.map((level) => (
+                  <Chip
+                    key={level}
+                    selected={kycLevel === level}
+                    onPress={() => setKycLevel(level)}
+                    style={[
+                      styles.chip,
+                      kycLevel === level && styles.activeChip,
+                    ]}
+                    textStyle={kycLevel === level ? styles.activeChipText : {}}
+                  >
+                    {level.toUpperCase()}
+                  </Chip>
+                ))}
+              </View>
+            </View>
+
             <TouchableOpacity
               onPress={handleUpdateKyc}
-              disabled={updating}
+              disabled={updating || availableStatuses.length === 0}
               activeOpacity={0.8}
               style={styles.buttonWrapper}
             >
@@ -289,7 +345,10 @@ export default function UserDetailScreen() {
                 colors={['#6C5CE7', '#A29BFE']}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 0 }}
-                style={[styles.gradientButton, updating && styles.buttonDisabled]}
+                style={[
+                  styles.gradientButton,
+                  (updating || availableStatuses.length === 0) && styles.buttonDisabled,
+                ]}
               >
                 <Text style={styles.buttonText}>
                   {updating ? 'Updating...' : 'Update KYC'}
@@ -352,4 +411,13 @@ const styles = StyleSheet.create({
   gradientButton: { paddingVertical: 14, alignItems: 'center', justifyContent: 'center', minHeight: 50 },
   buttonDisabled: { opacity: 0.6 },
   buttonText: { color: 'white', fontSize: 16, fontWeight: '600', letterSpacing: 0.5 },
+
+  // New styles for KYC pickers
+  pickerContainer: { marginBottom: 16 },
+  pickerLabel: { fontSize: 14, fontWeight: '500', color: '#333', marginBottom: 6 },
+  chipContainer: { flexDirection: 'row', flexWrap: 'wrap' },
+  chip: { marginRight: 8, marginBottom: 8, backgroundColor: '#f0f0f0' },
+  activeChip: { backgroundColor: '#7B2FBE' },
+  activeChipText: { color: 'white' },
+  noTransitionText: { color: '#888', fontStyle: 'italic' },
 });

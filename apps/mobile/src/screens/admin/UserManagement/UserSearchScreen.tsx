@@ -20,7 +20,9 @@ import {
   getBannedUsers,
   User,
 } from '../../../services/admin';
-// ❌ Removed unused import: useIdempotency
+
+// Import KYC constants
+import { ALL_KYC_STATUSES, KYCStatus } from '../../../constants/kyc';
 
 type SearchType = 'advanced' | 'username' | 'fullname' | 'kyc' | 'banned';
 
@@ -31,15 +33,20 @@ export default function UserSearchScreen() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [searchType, setSearchType] = useState<SearchType>('advanced');
+
+  // Advanced filters
   const [filters, setFilters] = useState({
     username: '',
     full_name: '',
-    kyc_status: '',
+    kyc_status: '' as KYCStatus | '', // allow empty for "All"
     is_active: true,
   });
+
+  // Simple searches
   const [usernameSearch, setUsernameSearch] = useState('');
   const [fullNameSearch, setFullNameSearch] = useState('');
-  const [kycStatus, setKycStatus] = useState('pending');
+  const [kycStatus, setKycStatus] = useState<KYCStatus>('pending');
+
   const [total, setTotal] = useState(0);
 
   const performSearch = async () => {
@@ -121,6 +128,33 @@ export default function UserSearchScreen() {
     </TouchableOpacity>
   );
 
+  // Helper to render a chip group for KYC status selection
+  const renderKycChipGroup = (
+    selectedStatus: string,
+    onSelect: (status: string) => void,
+    includeAll: boolean = true
+  ) => {
+    const statuses = includeAll ? ['', ...ALL_KYC_STATUSES] : ALL_KYC_STATUSES;
+    return (
+      <View style={styles.chipContainer}>
+        {statuses.map((status) => (
+          <Chip
+            key={status || 'all'}
+            selected={selectedStatus === status}
+            onPress={() => onSelect(status)}
+            style={[
+              styles.chip,
+              selectedStatus === status && styles.activeChip,
+            ]}
+            textStyle={selectedStatus === status ? styles.activeChipText : {}}
+          >
+            {status ? status.replace('_', ' ').toUpperCase() : 'All'}
+          </Chip>
+        ))}
+      </View>
+    );
+  };
+
   const renderSearchControls = () => {
     switch (searchType) {
       case 'advanced':
@@ -142,14 +176,12 @@ export default function UserSearchScreen() {
               style={styles.input}
               theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
             />
-            <TextInput
-              mode="outlined"
-              label="KYC Status"
-              value={filters.kyc_status}
-              onChangeText={(text) => setFilters({ ...filters, kyc_status: text })}
-              style={styles.input}
-              theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
-            />
+            <View style={styles.labelContainer}>
+              <Text style={styles.label}>KYC Status</Text>
+              {renderKycChipGroup(filters.kyc_status, (status) =>
+                setFilters({ ...filters, kyc_status: status as KYCStatus | '' })
+              )}
+            </View>
           </View>
         );
       case 'username':
@@ -177,14 +209,10 @@ export default function UserSearchScreen() {
       case 'kyc':
         return (
           <View style={styles.filterGroup}>
-            <TextInput
-              mode="outlined"
-              label="KYC Status"
-              value={kycStatus}
-              onChangeText={setKycStatus}
-              style={styles.input}
-              theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
-            />
+            <View style={styles.labelContainer}>
+              <Text style={styles.label}>KYC Status</Text>
+              {renderKycChipGroup(kycStatus, (status) => setKycStatus(status as KYCStatus), false)}
+            </View>
           </View>
         );
       case 'banned':
@@ -275,6 +303,10 @@ const styles = StyleSheet.create({
   scrollContent: { paddingHorizontal: 24, paddingBottom: 40, backgroundColor: '#FFFFFF' },
   filterGroup: { marginBottom: 12 },
   input: { marginBottom: 12, backgroundColor: 'white' },
+  labelContainer: { marginBottom: 12 },
+  label: { fontSize: 14, fontWeight: '500', color: '#333', marginBottom: 6 },
+  chipContainer: { flexDirection: 'row', flexWrap: 'wrap' },
+  chip: { marginRight: 8, marginBottom: 8, backgroundColor: '#f0f0f0' },
   buttonWrapper: { borderRadius: 12, overflow: 'hidden', marginBottom: 16 },
   buttonGradient: { paddingVertical: 14, alignItems: 'center', justifyContent: 'center', minHeight: 50 },
   buttonDisabled: { opacity: 0.6 },

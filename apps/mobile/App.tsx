@@ -1,11 +1,11 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Provider as PaperProvider } from 'react-native-paper';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { useFonts } from 'expo-font';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Alert } from 'react-native'; // 👈 Added for global error handler
+import { Alert, AppState, AppStateStatus } from 'react-native';
 
 import Navigation from './src/navigation';
 import { axiosInstance, setRefreshTokenFunction, setUnauthorizedCallback } from '@b2b/api-client';
@@ -16,7 +16,6 @@ import { refreshAccessToken } from './src/services/auth';
 import { resetToAuthScreen } from './src/navigation/navigationService';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 
-// 🌍 Global error handler – catches unhandled JS errors and promise rejections
 if (__DEV__) {
   const originalHandler = ErrorUtils.getGlobalHandler?.();
   ErrorUtils.setGlobalHandler((error, isFatal) => {
@@ -30,7 +29,6 @@ if (__DEV__) {
       ],
       { cancelable: false }
     );
-    // Forward to the original handler (e.g., Hermes or React Native's default)
     if (originalHandler) originalHandler(error, isFatal);
   });
 }
@@ -51,10 +49,13 @@ export default function App() {
     setDeviceIdInStore,
     validateSession,
     clearSession,
+    logout,               // 👈 added logout
     updateTokens,
   } = useAuthStore();
 
   const refreshTimerRef = useRef<number | null>(null);
+  const isFirstForeground = useRef(true);
+  const hasRefreshedOnLaunch = useRef(false);
 
   const [fontsLoaded] = useFonts({
     ...MaterialCommunityIcons.font,
@@ -84,8 +85,8 @@ export default function App() {
     prepare();
   }, []);
 
-  // 2. Define the refresh function
-  const doRefresh = async (): Promise<{ accessToken: string; refreshToken: string }> => {
+  // 2. Define the refresh function (memoized)
+  const doRefresh = useCallback(async (): Promise<{ accessToken: string; refreshToken: string }> => {
     const refreshToken = useAuthStore.getState().refreshToken;
     if (!refreshToken) {
       throw new Error('No refresh token');
@@ -96,19 +97,20 @@ export default function App() {
       updateTokens(access_token, refresh_token);
       return { accessToken: access_token, refreshToken: refresh_token };
     } catch (error: any) {
+      // If the server says the refresh token is invalid, clear session (keep saved credentials)
       if (error.response?.status === 401) {
         clearSession();
         resetToAuthScreen();
       }
       throw error;
     }
-  };
+  }, [updateTokens, clearSession]);
 
   // 3. Set refresh function for interceptor
   useEffect(() => {
     setRefreshTokenFunction(doRefresh);
     return () => setRefreshTokenFunction(null);
-  }, []);
+  }, [doRefresh]);
 
   // 4. Set unauthorized callback
   useEffect(() => {
@@ -124,7 +126,7 @@ export default function App() {
     };
   }, [clearSession]);
 
-  // 5. Proactive refresh timer
+  // 5. Proactive refresh timer (every 4.5 minutes)
   useEffect(() => {
     const startTimer = () => {
       if (refreshTimerRef.current) {
@@ -152,21 +154,62 @@ export default function App() {
         refreshTimerRef.current = null;
       }
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, doRefresh]);
 
-  // 6. Validate session
+  // 6. 🚀 Proactive Refresh on Launch – with differentiated logout
   useEffect(() => {
-    async function validate() {
-      if (isAuthenticated) {
-        await validateSession();
+    async function refreshOnLaunch() {
+      if (hasRefreshedOnLaunch.current) return;
+
+      // If no refresh token exists, we don't even try – just logout completely
+      const refreshToken = useAuthStore.getState().refreshToken;
+      if (!refreshToken) {
+        console.log('🔑 No refresh token – logging out completely');
+        logout();               // clears everything, including saved credentials
+        resetToAuthScreen();
+        hasRefreshedOnLaunch.current = true;
+        await SplashScreen.hideAsync();
+        return;
       }
-      await SplashScreen.hideAsync();
+
+      // Refresh token exists – attempt proactive refresh
+      try {
+        await doRefresh();
+        console.log('✅ Proactive refresh succeeded on launch');
+      } catch (error) {
+        console.warn('❌ Proactive refresh failed on launch:', error);
+        // Refresh token existed but refresh failed → clear session but keep saved credentials
+        clearSession();         // keeps savedAdminId, savedPhone, savedHasMpin
+        resetToAuthScreen();
+      } finally {
+        hasRefreshedOnLaunch.current = true;
+        await SplashScreen.hideAsync();
+      }
     }
 
     if (isReady && fontsLoaded) {
-      validate();
+      refreshOnLaunch();
     }
-  }, [isReady, fontsLoaded, isAuthenticated, validateSession]);
+  }, [isReady, fontsLoaded, isAuthenticated, doRefresh, clearSession, logout]);
+
+  // 7. Re-validate when app comes to foreground
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active' && isAuthenticated) {
+        if (isFirstForeground.current) {
+          isFirstForeground.current = false;
+          return;
+        }
+        validateSession().catch(() => {});
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+
+    return () => {
+      subscription.remove();
+    };
+  }, [isAuthenticated, validateSession]);
 
   const handleSplashFinish = () => {
     setIsSplashVisible(false);

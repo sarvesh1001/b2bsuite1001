@@ -1,5 +1,5 @@
 // apps/mobile/src/screens/admin/CompanyManagement/CompanyDepartmentsScreen.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   StyleSheet,
@@ -19,7 +19,9 @@ import {
   Provider as PaperProvider,
   TextInput,
   Button,
-  Modal, // ✅ import Modal from react-native-paper
+  Modal,
+  SegmentedButtons,
+  Searchbar,
 } from 'react-native-paper';
 import { useRoute } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -30,22 +32,49 @@ import {
   addCompanyDepartment,
   softDeleteDepartment,
   activateDepartment,
+  getSystemDepartments,
+  getDeactivatedDepartments,
+  SystemDepartment,
 } from '../../../services/admin';
 
 export default function CompanyDepartmentsScreen() {
   const route = useRoute();
   const { companyId } = route.params as { companyId: string };
 
+  // Active departments
   const [departments, setDepartments] = useState<CompanyDepartment[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [total, setTotal] = useState(0);
 
-  // Modal state for adding department
+  // Inactive departments
+  const [showInactive, setShowInactive] = useState(false);
+  const [inactiveDepartments, setInactiveDepartments] = useState<CompanyDepartment[]>([]);
+  const [loadingInactive, setLoadingInactive] = useState(false);
+
+  // Add modal state
   const [modalVisible, setModalVisible] = useState(false);
+  const [selectedSystemDeptId, setSelectedSystemDeptId] = useState<string | null>(null);
   const [newDeptName, setNewDeptName] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
+  // System departments
+  const [systemDepartments, setSystemDepartments] = useState<SystemDepartment[]>([]);
+  const [loadingSystemDepts, setLoadingSystemDepts] = useState(true);
+
+  // Filtered system depts based on search
+  const filteredSystemDepts = useMemo(() => {
+    if (!searchQuery.trim()) return systemDepartments;
+    const q = searchQuery.toLowerCase();
+    return systemDepartments.filter(
+      (d) =>
+        d.name.toLowerCase().includes(q) ||
+        d.module_code.toLowerCase().includes(q)
+    );
+  }, [systemDepartments, searchQuery]);
+
+  // Fetch active departments
   const fetchDepartments = async () => {
     try {
       const result = await getCompanyDepartments(companyId, 100);
@@ -59,32 +88,75 @@ export default function CompanyDepartmentsScreen() {
     }
   };
 
+  // Fetch inactive departments
+  const fetchInactiveDepartments = async () => {
+    setLoadingInactive(true);
+    try {
+      const data = await getDeactivatedDepartments(companyId);
+      setInactiveDepartments(data || []);
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to load inactive departments');
+    } finally {
+      setLoadingInactive(false);
+    }
+  };
+
+  // Fetch system departments
+  const fetchSystemDepartments = async () => {
+    setLoadingSystemDepts(true);
+    try {
+      const data = await getSystemDepartments();
+      setSystemDepartments(data);
+    } catch (error: any) {
+      Alert.alert('Error', 'Failed to load system departments');
+    } finally {
+      setLoadingSystemDepts(false);
+    }
+  };
+
   useEffect(() => {
     fetchDepartments();
+    fetchSystemDepartments();
   }, [companyId]);
+
+  useEffect(() => {
+    if (showInactive) {
+      fetchInactiveDepartments();
+    }
+  }, [showInactive]);
 
   const onRefresh = () => {
     setRefreshing(true);
     fetchDepartments();
+    if (showInactive) fetchInactiveDepartments();
   };
 
   // --- Department Actions ---
 
   const handleAddDepartment = async () => {
-    if (!newDeptName.trim()) {
-      Alert.alert('Error', 'Department name is required');
+    if (!selectedSystemDeptId) {
+      Alert.alert('Error', 'Please select a system department.');
       return;
     }
+    if (!newDeptName.trim()) {
+      Alert.alert('Error', 'Please enter a department name.');
+      return;
+    }
+
     setSubmitting(true);
     try {
       await addCompanyDepartment(companyId, {
+        system_department_id: selectedSystemDeptId,
         department_name: newDeptName.trim(),
-        // system_department_id can be omitted to create a custom department
       });
       Alert.alert('Success', 'Department added');
+      // Reset and close
       setModalVisible(false);
+      setSelectedSystemDeptId(null);
       setNewDeptName('');
+      setSearchQuery('');
       fetchDepartments();
+      if (showInactive) fetchInactiveDepartments();
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to add department');
     } finally {
@@ -95,15 +167,14 @@ export default function CompanyDepartmentsScreen() {
   const handleToggleActive = async (item: CompanyDepartment) => {
     try {
       if (item.is_active) {
-        // Soft-delete (mark inactive)
         await softDeleteDepartment(companyId, item.department_id);
         Alert.alert('Success', 'Department deactivated');
       } else {
-        // Activate
         await activateDepartment(companyId, item.department_id);
-        Alert.alert('Success', 'Department activated');
+        Alert.alert('Success', 'Department reactivated');
       }
       fetchDepartments();
+      if (showInactive) fetchInactiveDepartments();
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Action failed');
     }
@@ -123,6 +194,7 @@ export default function CompanyDepartmentsScreen() {
               await softDeleteDepartment(companyId, item.department_id);
               Alert.alert('Success', 'Department soft-deleted');
               fetchDepartments();
+              if (showInactive) fetchInactiveDepartments();
             } catch (error: any) {
               Alert.alert('Error', error.message || 'Delete failed');
             }
@@ -132,9 +204,9 @@ export default function CompanyDepartmentsScreen() {
     );
   };
 
-  // --- Render ---
+  // --- Render Helpers ---
 
-  const renderItem = ({ item }: { item: CompanyDepartment }) => (
+  const renderDepartmentItem = (item: CompanyDepartment, isInactive: boolean = false) => (
     <Card style={styles.card}>
       <Card.Content style={styles.cardContent}>
         <View style={styles.row}>
@@ -151,22 +223,29 @@ export default function CompanyDepartmentsScreen() {
             >
               {item.is_active ? 'Active' : 'Inactive'}
             </Chip>
-            <TouchableOpacity
-              onPress={() => handleToggleActive(item)}
-              style={styles.iconButton}
-            >
-              <Icon
-                name={item.is_active ? 'eye-off' : 'eye'}
-                size={20}
-                color="#7B2FBE"
-              />
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => handleSoftDelete(item)}
-              style={styles.iconButton}
-            >
-              <Icon name="delete" size={20} color="#FF6B6B" />
-            </TouchableOpacity>
+            {isInactive ? (
+              <TouchableOpacity
+                onPress={() => handleToggleActive(item)}
+                style={styles.iconButton}
+              >
+                <Icon name="eye" size={20} color="#2E7D32" />
+              </TouchableOpacity>
+            ) : (
+              <>
+                <TouchableOpacity
+                  onPress={() => handleToggleActive(item)}
+                  style={styles.iconButton}
+                >
+                  <Icon name="eye-off" size={20} color="#7B2FBE" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => handleSoftDelete(item)}
+                  style={styles.iconButton}
+                >
+                  <Icon name="delete" size={20} color="#FF6B6B" />
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </View>
         {item.system_department_name ? (
@@ -186,6 +265,8 @@ export default function CompanyDepartmentsScreen() {
     </Card>
   );
 
+  // --- Main Render ---
+
   if (loading) {
     return (
       <SafeAreaView style={styles.safeArea} edges={['bottom']}>
@@ -200,22 +281,33 @@ export default function CompanyDepartmentsScreen() {
     <PaperProvider>
       <SafeAreaView style={styles.safeArea} edges={['bottom']}>
         <View style={styles.header}>
-          <Text variant="headlineMedium" style={styles.title}>
-            Departments
-          </Text>
-          <Text variant="bodyMedium" style={styles.subtitle}>
-            {total} departments
-          </Text>
+          <View style={styles.headerRow}>
+            <Text variant="headlineMedium" style={styles.title}>
+              Departments
+            </Text>
+            <Text variant="bodyMedium" style={styles.subtitle}>
+              {showInactive ? `${inactiveDepartments.length} inactive` : `${total} active`}
+            </Text>
+          </View>
+          <SegmentedButtons
+            value={showInactive ? 'inactive' : 'active'}
+            onValueChange={(val) => setShowInactive(val === 'inactive')}
+            buttons={[
+              { value: 'active', label: 'Active' },
+              { value: 'inactive', label: 'Inactive' },
+            ]}
+            style={styles.segmented}
+          />
         </View>
 
         <FlatList
-          data={departments}
-          renderItem={renderItem}
+          data={showInactive ? inactiveDepartments : departments}
+          renderItem={({ item }) => renderDepartmentItem(item, showInactive)}
           keyExtractor={(item) => item.department_id}
           contentContainerStyle={styles.listContent}
           refreshControl={
             <RefreshControl
-              refreshing={refreshing}
+              refreshing={refreshing || (showInactive && loadingInactive)}
               onRefresh={onRefresh}
               colors={['#7B2FBE']}
             />
@@ -223,7 +315,7 @@ export default function CompanyDepartmentsScreen() {
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <Text variant="bodyLarge" style={styles.emptyText}>
-                No departments found
+                {showInactive ? 'No inactive departments' : 'No departments found'}
               </Text>
             </View>
           }
@@ -233,19 +325,70 @@ export default function CompanyDepartmentsScreen() {
         <FAB
           style={styles.fab}
           icon="plus"
-          onPress={() => setModalVisible(true)}
+          onPress={() => {
+            setModalVisible(true);
+            if (systemDepartments.length === 0) fetchSystemDepartments();
+            // Reset selection when opening
+            setSelectedSystemDeptId(null);
+            setNewDeptName('');
+            setSearchQuery('');
+          }}
           color="white"
           theme={{ colors: { primary: '#7B2FBE' } }}
         />
 
-        {/* ✅ Corrected Modal – wrap content in a View */}
+        {/* Add Department Modal – inline system department list */}
         <Portal>
           <Modal
             visible={modalVisible}
             onDismiss={() => setModalVisible(false)}
+            contentContainerStyle={styles.modalContainer}
           >
             <View style={styles.modal}>
               <Text style={styles.modalTitle}>Add Department</Text>
+
+              {/* Step 1: Select system department */}
+              <Text style={styles.stepLabel}>1. Select a system department</Text>
+              <Searchbar
+                placeholder="Search system departments..."
+                onChangeText={setSearchQuery}
+                value={searchQuery}
+                style={styles.searchBar}
+                inputStyle={styles.searchInput}
+                iconColor="#7B2FBE"
+                theme={{ colors: { primary: '#7B2FBE' } }}
+              />
+              {loadingSystemDepts ? (
+                <ActivityIndicator style={{ marginVertical: 12 }} size="small" color="#7B2FBE" />
+              ) : (
+                <FlatList
+                  data={filteredSystemDepts}
+                  keyExtractor={(item) => item.system_department_id}
+                  style={styles.systemList}
+                  renderItem={({ item }) => (
+                    <TouchableOpacity
+                      style={[
+                        styles.systemCard,
+                        selectedSystemDeptId === item.system_department_id && styles.systemCardSelected,
+                      ]}
+                      onPress={() => {
+                        setSelectedSystemDeptId(item.system_department_id);
+                        // Pre-fill name with the department's name (editable)
+                        setNewDeptName(item.name);
+                      }}
+                    >
+                      <Text style={styles.systemCardName}>{item.name}</Text>
+                      <Text style={styles.systemCardModule}>{item.module_code}</Text>
+                    </TouchableOpacity>
+                  )}
+                  ListEmptyComponent={
+                    <Text style={styles.emptyListText}>No system departments found</Text>
+                  }
+                />
+              )}
+
+              {/* Step 2: Enter custom name (auto-filled) */}
+              <Text style={[styles.stepLabel, { marginTop: 12 }]}>2. Customize department name</Text>
               <TextInput
                 mode="outlined"
                 label="Department Name"
@@ -253,8 +396,10 @@ export default function CompanyDepartmentsScreen() {
                 onChangeText={setNewDeptName}
                 style={styles.input}
                 theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
-                autoFocus
+                editable={!!selectedSystemDeptId}
+                autoFocus={!!selectedSystemDeptId}
               />
+
               <View style={styles.modalButtons}>
                 <Button
                   mode="outlined"
@@ -268,7 +413,7 @@ export default function CompanyDepartmentsScreen() {
                   mode="contained"
                   onPress={handleAddDepartment}
                   loading={submitting}
-                  disabled={submitting}
+                  disabled={submitting || !selectedSystemDeptId || !newDeptName.trim()}
                   style={styles.modalSaveButton}
                   theme={{ colors: { primary: '#7B2FBE' } }}
                 >
@@ -287,9 +432,11 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#FFFFFF' },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   header: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 8 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   title: { fontWeight: 'bold', color: '#1A1A1A', fontSize: 28 },
   subtitle: { color: '#666', marginTop: 4 },
-  listContent: { paddingHorizontal: 24, paddingBottom: 100 }, // extra bottom for FAB
+  segmented: { marginTop: 8 },
+  listContent: { paddingHorizontal: 24, paddingBottom: 100 },
   card: {
     marginBottom: 12,
     borderRadius: 12,
@@ -337,17 +484,67 @@ const styles = StyleSheet.create({
     bottom: 24,
     backgroundColor: '#7B2FBE',
   },
+  modalContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
   modal: {
     backgroundColor: 'white',
     padding: 24,
     margin: 24,
     borderRadius: 12,
+    maxHeight: '80%',
   },
   modalTitle: {
     fontSize: 20,
     fontWeight: 'bold',
     marginBottom: 16,
     color: '#1A1A1A',
+  },
+  stepLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#555',
+    marginBottom: 8,
+  },
+  searchBar: {
+    marginBottom: 8,
+    borderRadius: 8,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
+  searchInput: { fontSize: 14 },
+  systemList: {
+    maxHeight: 200,
+    marginBottom: 8,
+  },
+  systemCard: {
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#eee',
+    borderRadius: 8,
+    marginBottom: 6,
+    backgroundColor: '#fafafa',
+  },
+  systemCardSelected: {
+    borderColor: '#7B2FBE',
+    backgroundColor: '#EDE7F6',
+  },
+  systemCardName: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#1A1A1A',
+  },
+  systemCardModule: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 2,
+  },
+  emptyListText: {
+    textAlign: 'center',
+    color: '#999',
+    paddingVertical: 12,
   },
   input: {
     marginBottom: 16,

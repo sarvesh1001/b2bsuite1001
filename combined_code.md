@@ -5,14 +5,14 @@ Total Files: 28
 # File: apps/mobile/App.tsx
 
 ```tsx
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Provider as PaperProvider } from 'react-native-paper';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { useFonts } from 'expo-font';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Alert } from 'react-native'; // 👈 Added for global error handler
+import { Alert, AppState, AppStateStatus } from 'react-native';
 
 import Navigation from './src/navigation';
 import { axiosInstance, setRefreshTokenFunction, setUnauthorizedCallback } from '@b2b/api-client';
@@ -23,7 +23,6 @@ import { refreshAccessToken } from './src/services/auth';
 import { resetToAuthScreen } from './src/navigation/navigationService';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 
-// 🌍 Global error handler – catches unhandled JS errors and promise rejections
 if (__DEV__) {
   const originalHandler = ErrorUtils.getGlobalHandler?.();
   ErrorUtils.setGlobalHandler((error, isFatal) => {
@@ -37,7 +36,6 @@ if (__DEV__) {
       ],
       { cancelable: false }
     );
-    // Forward to the original handler (e.g., Hermes or React Native's default)
     if (originalHandler) originalHandler(error, isFatal);
   });
 }
@@ -58,10 +56,13 @@ export default function App() {
     setDeviceIdInStore,
     validateSession,
     clearSession,
+    logout,               // 👈 added logout
     updateTokens,
   } = useAuthStore();
 
   const refreshTimerRef = useRef<number | null>(null);
+  const isFirstForeground = useRef(true);
+  const hasRefreshedOnLaunch = useRef(false);
 
   const [fontsLoaded] = useFonts({
     ...MaterialCommunityIcons.font,
@@ -91,8 +92,8 @@ export default function App() {
     prepare();
   }, []);
 
-  // 2. Define the refresh function
-  const doRefresh = async (): Promise<{ accessToken: string; refreshToken: string }> => {
+  // 2. Define the refresh function (memoized)
+  const doRefresh = useCallback(async (): Promise<{ accessToken: string; refreshToken: string }> => {
     const refreshToken = useAuthStore.getState().refreshToken;
     if (!refreshToken) {
       throw new Error('No refresh token');
@@ -103,19 +104,20 @@ export default function App() {
       updateTokens(access_token, refresh_token);
       return { accessToken: access_token, refreshToken: refresh_token };
     } catch (error: any) {
+      // If the server says the refresh token is invalid, clear session (keep saved credentials)
       if (error.response?.status === 401) {
         clearSession();
         resetToAuthScreen();
       }
       throw error;
     }
-  };
+  }, [updateTokens, clearSession]);
 
   // 3. Set refresh function for interceptor
   useEffect(() => {
     setRefreshTokenFunction(doRefresh);
     return () => setRefreshTokenFunction(null);
-  }, []);
+  }, [doRefresh]);
 
   // 4. Set unauthorized callback
   useEffect(() => {
@@ -131,7 +133,7 @@ export default function App() {
     };
   }, [clearSession]);
 
-  // 5. Proactive refresh timer
+  // 5. Proactive refresh timer (every 4.5 minutes)
   useEffect(() => {
     const startTimer = () => {
       if (refreshTimerRef.current) {
@@ -159,21 +161,62 @@ export default function App() {
         refreshTimerRef.current = null;
       }
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, doRefresh]);
 
-  // 6. Validate session
+  // 6. 🚀 Proactive Refresh on Launch – with differentiated logout
   useEffect(() => {
-    async function validate() {
-      if (isAuthenticated) {
-        await validateSession();
+    async function refreshOnLaunch() {
+      if (hasRefreshedOnLaunch.current) return;
+
+      // If no refresh token exists, we don't even try – just logout completely
+      const refreshToken = useAuthStore.getState().refreshToken;
+      if (!refreshToken) {
+        console.log('🔑 No refresh token – logging out completely');
+        logout();               // clears everything, including saved credentials
+        resetToAuthScreen();
+        hasRefreshedOnLaunch.current = true;
+        await SplashScreen.hideAsync();
+        return;
       }
-      await SplashScreen.hideAsync();
+
+      // Refresh token exists – attempt proactive refresh
+      try {
+        await doRefresh();
+        console.log('✅ Proactive refresh succeeded on launch');
+      } catch (error) {
+        console.warn('❌ Proactive refresh failed on launch:', error);
+        // Refresh token existed but refresh failed → clear session but keep saved credentials
+        clearSession();         // keeps savedAdminId, savedPhone, savedHasMpin
+        resetToAuthScreen();
+      } finally {
+        hasRefreshedOnLaunch.current = true;
+        await SplashScreen.hideAsync();
+      }
     }
 
     if (isReady && fontsLoaded) {
-      validate();
+      refreshOnLaunch();
     }
-  }, [isReady, fontsLoaded, isAuthenticated, validateSession]);
+  }, [isReady, fontsLoaded, isAuthenticated, doRefresh, clearSession, logout]);
+
+  // 7. Re-validate when app comes to foreground
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active' && isAuthenticated) {
+        if (isFirstForeground.current) {
+          isFirstForeground.current = false;
+          return;
+        }
+        validateSession().catch(() => {});
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+
+    return () => {
+      subscription.remove();
+    };
+  }, [isAuthenticated, validateSession]);
 
   const handleSplashFinish = () => {
     setIsSplashVisible(false);
@@ -1315,7 +1358,7 @@ const styles = StyleSheet.create({
 
 ```tsx
 // apps/mobile/src/screens/admin/CompanyManagement/CompanyDepartmentsScreen.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   StyleSheet,
@@ -1335,7 +1378,9 @@ import {
   Provider as PaperProvider,
   TextInput,
   Button,
-  Modal, // ✅ import Modal from react-native-paper
+  Modal,
+  SegmentedButtons,
+  Searchbar,
 } from 'react-native-paper';
 import { useRoute } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -1346,22 +1391,49 @@ import {
   addCompanyDepartment,
   softDeleteDepartment,
   activateDepartment,
+  getSystemDepartments,
+  getDeactivatedDepartments,
+  SystemDepartment,
 } from '../../../services/admin';
 
 export default function CompanyDepartmentsScreen() {
   const route = useRoute();
   const { companyId } = route.params as { companyId: string };
 
+  // Active departments
   const [departments, setDepartments] = useState<CompanyDepartment[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [total, setTotal] = useState(0);
 
-  // Modal state for adding department
+  // Inactive departments
+  const [showInactive, setShowInactive] = useState(false);
+  const [inactiveDepartments, setInactiveDepartments] = useState<CompanyDepartment[]>([]);
+  const [loadingInactive, setLoadingInactive] = useState(false);
+
+  // Add modal state
   const [modalVisible, setModalVisible] = useState(false);
+  const [selectedSystemDeptId, setSelectedSystemDeptId] = useState<string | null>(null);
   const [newDeptName, setNewDeptName] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
+  // System departments
+  const [systemDepartments, setSystemDepartments] = useState<SystemDepartment[]>([]);
+  const [loadingSystemDepts, setLoadingSystemDepts] = useState(true);
+
+  // Filtered system depts based on search
+  const filteredSystemDepts = useMemo(() => {
+    if (!searchQuery.trim()) return systemDepartments;
+    const q = searchQuery.toLowerCase();
+    return systemDepartments.filter(
+      (d) =>
+        d.name.toLowerCase().includes(q) ||
+        d.module_code.toLowerCase().includes(q)
+    );
+  }, [systemDepartments, searchQuery]);
+
+  // Fetch active departments
   const fetchDepartments = async () => {
     try {
       const result = await getCompanyDepartments(companyId, 100);
@@ -1375,32 +1447,75 @@ export default function CompanyDepartmentsScreen() {
     }
   };
 
+  // Fetch inactive departments
+  const fetchInactiveDepartments = async () => {
+    setLoadingInactive(true);
+    try {
+      const data = await getDeactivatedDepartments(companyId);
+      setInactiveDepartments(data || []);
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to load inactive departments');
+    } finally {
+      setLoadingInactive(false);
+    }
+  };
+
+  // Fetch system departments
+  const fetchSystemDepartments = async () => {
+    setLoadingSystemDepts(true);
+    try {
+      const data = await getSystemDepartments();
+      setSystemDepartments(data);
+    } catch (error: any) {
+      Alert.alert('Error', 'Failed to load system departments');
+    } finally {
+      setLoadingSystemDepts(false);
+    }
+  };
+
   useEffect(() => {
     fetchDepartments();
+    fetchSystemDepartments();
   }, [companyId]);
+
+  useEffect(() => {
+    if (showInactive) {
+      fetchInactiveDepartments();
+    }
+  }, [showInactive]);
 
   const onRefresh = () => {
     setRefreshing(true);
     fetchDepartments();
+    if (showInactive) fetchInactiveDepartments();
   };
 
   // --- Department Actions ---
 
   const handleAddDepartment = async () => {
-    if (!newDeptName.trim()) {
-      Alert.alert('Error', 'Department name is required');
+    if (!selectedSystemDeptId) {
+      Alert.alert('Error', 'Please select a system department.');
       return;
     }
+    if (!newDeptName.trim()) {
+      Alert.alert('Error', 'Please enter a department name.');
+      return;
+    }
+
     setSubmitting(true);
     try {
       await addCompanyDepartment(companyId, {
+        system_department_id: selectedSystemDeptId,
         department_name: newDeptName.trim(),
-        // system_department_id can be omitted to create a custom department
       });
       Alert.alert('Success', 'Department added');
+      // Reset and close
       setModalVisible(false);
+      setSelectedSystemDeptId(null);
       setNewDeptName('');
+      setSearchQuery('');
       fetchDepartments();
+      if (showInactive) fetchInactiveDepartments();
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to add department');
     } finally {
@@ -1411,15 +1526,14 @@ export default function CompanyDepartmentsScreen() {
   const handleToggleActive = async (item: CompanyDepartment) => {
     try {
       if (item.is_active) {
-        // Soft-delete (mark inactive)
         await softDeleteDepartment(companyId, item.department_id);
         Alert.alert('Success', 'Department deactivated');
       } else {
-        // Activate
         await activateDepartment(companyId, item.department_id);
-        Alert.alert('Success', 'Department activated');
+        Alert.alert('Success', 'Department reactivated');
       }
       fetchDepartments();
+      if (showInactive) fetchInactiveDepartments();
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Action failed');
     }
@@ -1439,6 +1553,7 @@ export default function CompanyDepartmentsScreen() {
               await softDeleteDepartment(companyId, item.department_id);
               Alert.alert('Success', 'Department soft-deleted');
               fetchDepartments();
+              if (showInactive) fetchInactiveDepartments();
             } catch (error: any) {
               Alert.alert('Error', error.message || 'Delete failed');
             }
@@ -1448,9 +1563,9 @@ export default function CompanyDepartmentsScreen() {
     );
   };
 
-  // --- Render ---
+  // --- Render Helpers ---
 
-  const renderItem = ({ item }: { item: CompanyDepartment }) => (
+  const renderDepartmentItem = (item: CompanyDepartment, isInactive: boolean = false) => (
     <Card style={styles.card}>
       <Card.Content style={styles.cardContent}>
         <View style={styles.row}>
@@ -1467,22 +1582,29 @@ export default function CompanyDepartmentsScreen() {
             >
               {item.is_active ? 'Active' : 'Inactive'}
             </Chip>
-            <TouchableOpacity
-              onPress={() => handleToggleActive(item)}
-              style={styles.iconButton}
-            >
-              <Icon
-                name={item.is_active ? 'eye-off' : 'eye'}
-                size={20}
-                color="#7B2FBE"
-              />
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => handleSoftDelete(item)}
-              style={styles.iconButton}
-            >
-              <Icon name="delete" size={20} color="#FF6B6B" />
-            </TouchableOpacity>
+            {isInactive ? (
+              <TouchableOpacity
+                onPress={() => handleToggleActive(item)}
+                style={styles.iconButton}
+              >
+                <Icon name="eye" size={20} color="#2E7D32" />
+              </TouchableOpacity>
+            ) : (
+              <>
+                <TouchableOpacity
+                  onPress={() => handleToggleActive(item)}
+                  style={styles.iconButton}
+                >
+                  <Icon name="eye-off" size={20} color="#7B2FBE" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => handleSoftDelete(item)}
+                  style={styles.iconButton}
+                >
+                  <Icon name="delete" size={20} color="#FF6B6B" />
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </View>
         {item.system_department_name ? (
@@ -1502,6 +1624,8 @@ export default function CompanyDepartmentsScreen() {
     </Card>
   );
 
+  // --- Main Render ---
+
   if (loading) {
     return (
       <SafeAreaView style={styles.safeArea} edges={['bottom']}>
@@ -1516,22 +1640,33 @@ export default function CompanyDepartmentsScreen() {
     <PaperProvider>
       <SafeAreaView style={styles.safeArea} edges={['bottom']}>
         <View style={styles.header}>
-          <Text variant="headlineMedium" style={styles.title}>
-            Departments
-          </Text>
-          <Text variant="bodyMedium" style={styles.subtitle}>
-            {total} departments
-          </Text>
+          <View style={styles.headerRow}>
+            <Text variant="headlineMedium" style={styles.title}>
+              Departments
+            </Text>
+            <Text variant="bodyMedium" style={styles.subtitle}>
+              {showInactive ? `${inactiveDepartments.length} inactive` : `${total} active`}
+            </Text>
+          </View>
+          <SegmentedButtons
+            value={showInactive ? 'inactive' : 'active'}
+            onValueChange={(val) => setShowInactive(val === 'inactive')}
+            buttons={[
+              { value: 'active', label: 'Active' },
+              { value: 'inactive', label: 'Inactive' },
+            ]}
+            style={styles.segmented}
+          />
         </View>
 
         <FlatList
-          data={departments}
-          renderItem={renderItem}
+          data={showInactive ? inactiveDepartments : departments}
+          renderItem={({ item }) => renderDepartmentItem(item, showInactive)}
           keyExtractor={(item) => item.department_id}
           contentContainerStyle={styles.listContent}
           refreshControl={
             <RefreshControl
-              refreshing={refreshing}
+              refreshing={refreshing || (showInactive && loadingInactive)}
               onRefresh={onRefresh}
               colors={['#7B2FBE']}
             />
@@ -1539,7 +1674,7 @@ export default function CompanyDepartmentsScreen() {
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <Text variant="bodyLarge" style={styles.emptyText}>
-                No departments found
+                {showInactive ? 'No inactive departments' : 'No departments found'}
               </Text>
             </View>
           }
@@ -1549,19 +1684,70 @@ export default function CompanyDepartmentsScreen() {
         <FAB
           style={styles.fab}
           icon="plus"
-          onPress={() => setModalVisible(true)}
+          onPress={() => {
+            setModalVisible(true);
+            if (systemDepartments.length === 0) fetchSystemDepartments();
+            // Reset selection when opening
+            setSelectedSystemDeptId(null);
+            setNewDeptName('');
+            setSearchQuery('');
+          }}
           color="white"
           theme={{ colors: { primary: '#7B2FBE' } }}
         />
 
-        {/* ✅ Corrected Modal – wrap content in a View */}
+        {/* Add Department Modal – inline system department list */}
         <Portal>
           <Modal
             visible={modalVisible}
             onDismiss={() => setModalVisible(false)}
+            contentContainerStyle={styles.modalContainer}
           >
             <View style={styles.modal}>
               <Text style={styles.modalTitle}>Add Department</Text>
+
+              {/* Step 1: Select system department */}
+              <Text style={styles.stepLabel}>1. Select a system department</Text>
+              <Searchbar
+                placeholder="Search system departments..."
+                onChangeText={setSearchQuery}
+                value={searchQuery}
+                style={styles.searchBar}
+                inputStyle={styles.searchInput}
+                iconColor="#7B2FBE"
+                theme={{ colors: { primary: '#7B2FBE' } }}
+              />
+              {loadingSystemDepts ? (
+                <ActivityIndicator style={{ marginVertical: 12 }} size="small" color="#7B2FBE" />
+              ) : (
+                <FlatList
+                  data={filteredSystemDepts}
+                  keyExtractor={(item) => item.system_department_id}
+                  style={styles.systemList}
+                  renderItem={({ item }) => (
+                    <TouchableOpacity
+                      style={[
+                        styles.systemCard,
+                        selectedSystemDeptId === item.system_department_id && styles.systemCardSelected,
+                      ]}
+                      onPress={() => {
+                        setSelectedSystemDeptId(item.system_department_id);
+                        // Pre-fill name with the department's name (editable)
+                        setNewDeptName(item.name);
+                      }}
+                    >
+                      <Text style={styles.systemCardName}>{item.name}</Text>
+                      <Text style={styles.systemCardModule}>{item.module_code}</Text>
+                    </TouchableOpacity>
+                  )}
+                  ListEmptyComponent={
+                    <Text style={styles.emptyListText}>No system departments found</Text>
+                  }
+                />
+              )}
+
+              {/* Step 2: Enter custom name (auto-filled) */}
+              <Text style={[styles.stepLabel, { marginTop: 12 }]}>2. Customize department name</Text>
               <TextInput
                 mode="outlined"
                 label="Department Name"
@@ -1569,8 +1755,10 @@ export default function CompanyDepartmentsScreen() {
                 onChangeText={setNewDeptName}
                 style={styles.input}
                 theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
-                autoFocus
+                editable={!!selectedSystemDeptId}
+                autoFocus={!!selectedSystemDeptId}
               />
+
               <View style={styles.modalButtons}>
                 <Button
                   mode="outlined"
@@ -1584,7 +1772,7 @@ export default function CompanyDepartmentsScreen() {
                   mode="contained"
                   onPress={handleAddDepartment}
                   loading={submitting}
-                  disabled={submitting}
+                  disabled={submitting || !selectedSystemDeptId || !newDeptName.trim()}
                   style={styles.modalSaveButton}
                   theme={{ colors: { primary: '#7B2FBE' } }}
                 >
@@ -1603,9 +1791,11 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#FFFFFF' },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   header: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 8 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   title: { fontWeight: 'bold', color: '#1A1A1A', fontSize: 28 },
   subtitle: { color: '#666', marginTop: 4 },
-  listContent: { paddingHorizontal: 24, paddingBottom: 100 }, // extra bottom for FAB
+  segmented: { marginTop: 8 },
+  listContent: { paddingHorizontal: 24, paddingBottom: 100 },
   card: {
     marginBottom: 12,
     borderRadius: 12,
@@ -1653,17 +1843,67 @@ const styles = StyleSheet.create({
     bottom: 24,
     backgroundColor: '#7B2FBE',
   },
+  modalContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
   modal: {
     backgroundColor: 'white',
     padding: 24,
     margin: 24,
     borderRadius: 12,
+    maxHeight: '80%',
   },
   modalTitle: {
     fontSize: 20,
     fontWeight: 'bold',
     marginBottom: 16,
     color: '#1A1A1A',
+  },
+  stepLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#555',
+    marginBottom: 8,
+  },
+  searchBar: {
+    marginBottom: 8,
+    borderRadius: 8,
+    elevation: 2,
+    backgroundColor: '#FFFFFF',
+  },
+  searchInput: { fontSize: 14 },
+  systemList: {
+    maxHeight: 200,
+    marginBottom: 8,
+  },
+  systemCard: {
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#eee',
+    borderRadius: 8,
+    marginBottom: 6,
+    backgroundColor: '#fafafa',
+  },
+  systemCardSelected: {
+    borderColor: '#7B2FBE',
+    backgroundColor: '#EDE7F6',
+  },
+  systemCardName: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#1A1A1A',
+  },
+  systemCardModule: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 2,
+  },
+  emptyListText: {
+    textAlign: 'center',
+    color: '#999',
+    paddingVertical: 12,
   },
   input: {
     marginBottom: 16,
@@ -1687,7 +1927,6 @@ const styles = StyleSheet.create({
 # File: apps/mobile/src/screens/admin/CompanyManagement/CompanyDetailScreen.tsx
 
 ```tsx
-// apps/mobile/src/screens/admin/CompanyManagement/CompanyDetailScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -1710,6 +1949,7 @@ import {
   getCompanyEmployees,
   getCompanyDepartments,
   getCompanyRoles,
+  getActiveDepartmentCount,
   Company,
 } from '../../../services/admin';
 
@@ -1724,22 +1964,33 @@ export default function CompanyDetailScreen() {
   const [actionLoading, setActionLoading] = useState(false);
   const [employeeCount, setEmployeeCount] = useState(0);
   const [departmentCount, setDepartmentCount] = useState(0);
+  const [activeDepartmentCount, setActiveDepartmentCount] = useState(0);
   const [roleCount, setRoleCount] = useState(0);
 
   const loadData = async () => {
     try {
-      const [companyData, statsData, employeesData, departmentsData, rolesData] = await Promise.all([
+      const [
+        companyData,
+        statsData,
+        employeesData,
+        departmentsData,
+        rolesData,
+        activeDeptCount,
+      ] = await Promise.all([
         getCompanyById(companyId),
         getCompanyStats(companyId),
         getCompanyEmployees(companyId, 1),
         getCompanyDepartments(companyId, 1),
         getCompanyRoles(companyId, 1),
+        getActiveDepartmentCount(companyId),
       ]);
+
       setCompany(companyData);
       setStats(statsData);
       setEmployeeCount(employeesData.meta?.total || 0);
       setDepartmentCount(departmentsData.meta?.total || 0);
       setRoleCount(rolesData.meta?.total || 0);
+      setActiveDepartmentCount(activeDeptCount.active_departments || 0);
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load company details');
     } finally {
@@ -1788,6 +2039,10 @@ export default function CompanyDetailScreen() {
     return new Date(expiry).toLocaleDateString();
   };
 
+  const totalEmployees = stats?.total_employees || 0;
+  const maxEmployees = company?.max_employees || 0;
+  const utilization = maxEmployees > 0 ? (totalEmployees / maxEmployees) * 100 : 0;
+
   if (loading || !company) {
     return (
       <SafeAreaView style={styles.safeArea} edges={['bottom']}>
@@ -1801,7 +2056,6 @@ export default function CompanyDetailScreen() {
   return (
     <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {/* Header */}
         <View style={styles.header}>
           <Text variant="headlineMedium" style={styles.companyName}>
             {company.company_name}
@@ -1828,7 +2082,6 @@ export default function CompanyDetailScreen() {
           </View>
         </View>
 
-        {/* Basic Info Card */}
         <Card style={styles.infoCard}>
           <Card.Content style={styles.cardContent}>
             <View style={styles.infoRow}>
@@ -1856,38 +2109,32 @@ export default function CompanyDetailScreen() {
           </Card.Content>
         </Card>
 
-        {/* Statistics Card */}
         {stats && (
           <Card style={styles.statsCard}>
             <Card.Content style={styles.cardContent}>
               <Text variant="titleMedium" style={styles.statsTitle}>
                 Statistics
               </Text>
-              <View style={styles.statsGrid}>
-                <View style={styles.statItem}>
-                  <Text style={styles.statValue}>{stats.total_employees || 0}</Text>
-                  <Text style={styles.statLabel}>Total Employees</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={styles.statValue}>{stats.active_employees || 0}</Text>
-                  <Text style={styles.statLabel}>Active</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={styles.statValue}>{stats.department_count || 0}</Text>
-                  <Text style={styles.statLabel}>Departments</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={styles.statValue}>
-                    {Math.round((stats.employee_utilization || 0) * 100)}%
-                  </Text>
-                  <Text style={styles.statLabel}>Utilization</Text>
-                </View>
+              <View style={styles.infoRow}>
+                <Text style={styles.label}>Total Employees:</Text>
+                <Text style={styles.value}>{stats.total_employees || 0}</Text>
+              </View>
+              <View style={styles.infoRow}>
+                <Text style={styles.label}>Active Employees:</Text>
+                <Text style={styles.value}>{stats.active_employees || 0}</Text>
+              </View>
+              <View style={styles.infoRow}>
+                <Text style={styles.label}>Active Departments:</Text>
+                <Text style={styles.value}>{activeDepartmentCount}</Text>
+              </View>
+              <View style={styles.infoRow}>
+                <Text style={styles.label}>Utilization:</Text>
+                <Text style={styles.value}>{Math.round(utilization)}%</Text>
               </View>
             </Card.Content>
           </Card>
         )}
 
-        {/* Subscription Management Card */}
         <Card style={styles.infoCard}>
           <Card.Content>
             <Text variant="titleMedium" style={styles.sectionTitle}>Subscription</Text>
@@ -1905,7 +2152,7 @@ export default function CompanyDetailScreen() {
             </View>
             <View style={styles.infoRow}>
               <Text style={styles.label}>Expires:</Text>
-              <Text style={styles.value}>{formatExpiry((company as any).subscription_expires_at)}</Text>
+              <Text style={styles.value}>{formatExpiry(company.subscription_end_date)}</Text>
             </View>
             <View style={styles.buttonRow}>
               <TouchableOpacity
@@ -1938,13 +2185,16 @@ export default function CompanyDetailScreen() {
           </Card.Content>
         </Card>
 
-        {/* Max Departments Card */}
         <Card style={styles.infoCard}>
           <Card.Content>
             <Text variant="titleMedium" style={styles.sectionTitle}>Departments Limit</Text>
             <View style={styles.infoRow}>
               <Text style={styles.label}>Current Max:</Text>
               <Text style={styles.value}>{company.max_departments || 0}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.label}>Active Departments:</Text>
+              <Text style={styles.value}>{activeDepartmentCount}</Text>
             </View>
             <TouchableOpacity
               style={styles.fullButton}
@@ -1962,7 +2212,6 @@ export default function CompanyDetailScreen() {
           </Card.Content>
         </Card>
 
-        {/* Quick action rows */}
         <View style={styles.actionRow}>
           <TouchableOpacity
             style={styles.actionButton}
@@ -3790,6 +4039,16 @@ import {
   User,
 } from '../../../services/admin';
 
+// Import KYC constants
+import {
+  KYC_STATUSES,
+  KYC_LEVELS,
+  KYC_TRANSITIONS,
+  ALL_KYC_LEVELS,
+  KYCStatus,
+  KYCLevel,
+} from '../../../constants/kyc';
+
 export default function UserDetailScreen() {
   const route = useRoute();
   const navigation = useNavigation();
@@ -3805,8 +4064,11 @@ export default function UserDetailScreen() {
     email: '',
     data_region: '',
   });
-  const [kycStatus, setKycStatus] = useState('');
-  const [kycLevel, setKycLevel] = useState('');
+
+  // KYC state with proper types
+  const [kycStatus, setKycStatus] = useState<KYCStatus>(KYC_STATUSES.PENDING);
+  const [kycLevel, setKycLevel] = useState<KYCLevel>(KYC_LEVELS.BASIC);
+  const [availableStatuses, setAvailableStatuses] = useState<KYCStatus[]>([]);
 
   const loadUser = async () => {
     setLoading(true);
@@ -3826,8 +4088,13 @@ export default function UserDetailScreen() {
         email: foundUser.email || '',
         data_region: foundUser.data_region || '',
       });
-      setKycStatus(foundUser.kyc_status || 'pending');
-      setKycLevel(foundUser.kyc_level || 'basic');
+
+      // Set KYC values, fallback to defaults
+      const currentStatus = (foundUser.kyc_status || KYC_STATUSES.PENDING) as KYCStatus;
+      setKycStatus(currentStatus);
+      setKycLevel((foundUser.kyc_level || KYC_LEVELS.BASIC) as KYCLevel);
+      // Compute allowed transitions based on current status
+      setAvailableStatuses(KYC_TRANSITIONS[currentStatus] || []);
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load user');
     } finally {
@@ -3838,6 +4105,12 @@ export default function UserDetailScreen() {
   useEffect(() => {
     loadUser();
   }, [userId]);
+
+  // When status changes manually, update the available transitions
+  const handleStatusChange = (newStatus: KYCStatus) => {
+    setKycStatus(newStatus);
+    setAvailableStatuses(KYC_TRANSITIONS[newStatus] || []);
+  };
 
   const handleUpdateUser = async () => {
     setUpdating(true);
@@ -4028,30 +4301,62 @@ export default function UserDetailScreen() {
           </TouchableOpacity>
         )}
 
+        {/* Updated KYC Card with Chip Selectors */}
         <Card style={styles.card}>
           <Card.Content style={styles.cardContent}>
             <Text variant="titleMedium" style={styles.sectionTitle}>
               Update KYC
             </Text>
-            <TextInput
-              mode="outlined"
-              label="KYC Status"
-              value={kycStatus}
-              onChangeText={setKycStatus}
-              style={styles.input}
-              theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
-            />
-            <TextInput
-              mode="outlined"
-              label="KYC Level"
-              value={kycLevel}
-              onChangeText={setKycLevel}
-              style={styles.input}
-              theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
-            />
+
+            {/* Status selector */}
+            <View style={styles.pickerContainer}>
+              <Text style={styles.pickerLabel}>New Status</Text>
+              <View style={styles.chipContainer}>
+                {availableStatuses.length === 0 ? (
+                  <Text style={styles.noTransitionText}>No further transitions allowed</Text>
+                ) : (
+                  availableStatuses.map((status) => (
+                    <Chip
+                      key={status}
+                      selected={kycStatus === status}
+                      onPress={() => handleStatusChange(status)}
+                      style={[
+                        styles.chip,
+                        kycStatus === status && styles.activeChip,
+                      ]}
+                      textStyle={kycStatus === status ? styles.activeChipText : {}}
+                    >
+                      {status.replace('_', ' ').toUpperCase()}
+                    </Chip>
+                  ))
+                )}
+              </View>
+            </View>
+
+            {/* Level selector */}
+            <View style={styles.pickerContainer}>
+              <Text style={styles.pickerLabel}>KYC Level</Text>
+              <View style={styles.chipContainer}>
+                {ALL_KYC_LEVELS.map((level) => (
+                  <Chip
+                    key={level}
+                    selected={kycLevel === level}
+                    onPress={() => setKycLevel(level)}
+                    style={[
+                      styles.chip,
+                      kycLevel === level && styles.activeChip,
+                    ]}
+                    textStyle={kycLevel === level ? styles.activeChipText : {}}
+                  >
+                    {level.toUpperCase()}
+                  </Chip>
+                ))}
+              </View>
+            </View>
+
             <TouchableOpacity
               onPress={handleUpdateKyc}
-              disabled={updating}
+              disabled={updating || availableStatuses.length === 0}
               activeOpacity={0.8}
               style={styles.buttonWrapper}
             >
@@ -4059,7 +4364,10 @@ export default function UserDetailScreen() {
                 colors={['#6C5CE7', '#A29BFE']}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 0 }}
-                style={[styles.gradientButton, updating && styles.buttonDisabled]}
+                style={[
+                  styles.gradientButton,
+                  (updating || availableStatuses.length === 0) && styles.buttonDisabled,
+                ]}
               >
                 <Text style={styles.buttonText}>
                   {updating ? 'Updating...' : 'Update KYC'}
@@ -4122,6 +4430,15 @@ const styles = StyleSheet.create({
   gradientButton: { paddingVertical: 14, alignItems: 'center', justifyContent: 'center', minHeight: 50 },
   buttonDisabled: { opacity: 0.6 },
   buttonText: { color: 'white', fontSize: 16, fontWeight: '600', letterSpacing: 0.5 },
+
+  // New styles for KYC pickers
+  pickerContainer: { marginBottom: 16 },
+  pickerLabel: { fontSize: 14, fontWeight: '500', color: '#333', marginBottom: 6 },
+  chipContainer: { flexDirection: 'row', flexWrap: 'wrap' },
+  chip: { marginRight: 8, marginBottom: 8, backgroundColor: '#f0f0f0' },
+  activeChip: { backgroundColor: '#7B2FBE' },
+  activeChipText: { color: 'white' },
+  noTransitionText: { color: '#888', fontStyle: 'italic' },
 });
 ```
 
@@ -4150,7 +4467,9 @@ import {
   getBannedUsers,
   User,
 } from '../../../services/admin';
-// ❌ Removed unused import: useIdempotency
+
+// Import KYC constants
+import { ALL_KYC_STATUSES, KYCStatus } from '../../../constants/kyc';
 
 type SearchType = 'advanced' | 'username' | 'fullname' | 'kyc' | 'banned';
 
@@ -4161,15 +4480,20 @@ export default function UserSearchScreen() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [searchType, setSearchType] = useState<SearchType>('advanced');
+
+  // Advanced filters
   const [filters, setFilters] = useState({
     username: '',
     full_name: '',
-    kyc_status: '',
+    kyc_status: '' as KYCStatus | '', // allow empty for "All"
     is_active: true,
   });
+
+  // Simple searches
   const [usernameSearch, setUsernameSearch] = useState('');
   const [fullNameSearch, setFullNameSearch] = useState('');
-  const [kycStatus, setKycStatus] = useState('pending');
+  const [kycStatus, setKycStatus] = useState<KYCStatus>('pending');
+
   const [total, setTotal] = useState(0);
 
   const performSearch = async () => {
@@ -4251,6 +4575,33 @@ export default function UserSearchScreen() {
     </TouchableOpacity>
   );
 
+  // Helper to render a chip group for KYC status selection
+  const renderKycChipGroup = (
+    selectedStatus: string,
+    onSelect: (status: string) => void,
+    includeAll: boolean = true
+  ) => {
+    const statuses = includeAll ? ['', ...ALL_KYC_STATUSES] : ALL_KYC_STATUSES;
+    return (
+      <View style={styles.chipContainer}>
+        {statuses.map((status) => (
+          <Chip
+            key={status || 'all'}
+            selected={selectedStatus === status}
+            onPress={() => onSelect(status)}
+            style={[
+              styles.chip,
+              selectedStatus === status && styles.activeChip,
+            ]}
+            textStyle={selectedStatus === status ? styles.activeChipText : {}}
+          >
+            {status ? status.replace('_', ' ').toUpperCase() : 'All'}
+          </Chip>
+        ))}
+      </View>
+    );
+  };
+
   const renderSearchControls = () => {
     switch (searchType) {
       case 'advanced':
@@ -4272,14 +4623,12 @@ export default function UserSearchScreen() {
               style={styles.input}
               theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
             />
-            <TextInput
-              mode="outlined"
-              label="KYC Status"
-              value={filters.kyc_status}
-              onChangeText={(text) => setFilters({ ...filters, kyc_status: text })}
-              style={styles.input}
-              theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
-            />
+            <View style={styles.labelContainer}>
+              <Text style={styles.label}>KYC Status</Text>
+              {renderKycChipGroup(filters.kyc_status, (status) =>
+                setFilters({ ...filters, kyc_status: status as KYCStatus | '' })
+              )}
+            </View>
           </View>
         );
       case 'username':
@@ -4307,14 +4656,10 @@ export default function UserSearchScreen() {
       case 'kyc':
         return (
           <View style={styles.filterGroup}>
-            <TextInput
-              mode="outlined"
-              label="KYC Status"
-              value={kycStatus}
-              onChangeText={setKycStatus}
-              style={styles.input}
-              theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
-            />
+            <View style={styles.labelContainer}>
+              <Text style={styles.label}>KYC Status</Text>
+              {renderKycChipGroup(kycStatus, (status) => setKycStatus(status as KYCStatus), false)}
+            </View>
           </View>
         );
       case 'banned':
@@ -4405,6 +4750,10 @@ const styles = StyleSheet.create({
   scrollContent: { paddingHorizontal: 24, paddingBottom: 40, backgroundColor: '#FFFFFF' },
   filterGroup: { marginBottom: 12 },
   input: { marginBottom: 12, backgroundColor: 'white' },
+  labelContainer: { marginBottom: 12 },
+  label: { fontSize: 14, fontWeight: '500', color: '#333', marginBottom: 6 },
+  chipContainer: { flexDirection: 'row', flexWrap: 'wrap' },
+  chip: { marginRight: 8, marginBottom: 8, backgroundColor: '#f0f0f0' },
   buttonWrapper: { borderRadius: 12, overflow: 'hidden', marginBottom: 16 },
   buttonGradient: { paddingVertical: 14, alignItems: 'center', justifyContent: 'center', minHeight: 50 },
   buttonDisabled: { opacity: 0.6 },

@@ -1,4 +1,3 @@
-// apps/mobile/src/screens/admin/CompanyManagement/CompanyDetailScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -21,6 +20,7 @@ import {
   getCompanyEmployees,
   getCompanyDepartments,
   getCompanyRoles,
+  getActiveDepartmentCount,
   Company,
 } from '../../../services/admin';
 
@@ -35,22 +35,33 @@ export default function CompanyDetailScreen() {
   const [actionLoading, setActionLoading] = useState(false);
   const [employeeCount, setEmployeeCount] = useState(0);
   const [departmentCount, setDepartmentCount] = useState(0);
+  const [activeDepartmentCount, setActiveDepartmentCount] = useState(0);
   const [roleCount, setRoleCount] = useState(0);
 
   const loadData = async () => {
     try {
-      const [companyData, statsData, employeesData, departmentsData, rolesData] = await Promise.all([
+      const [
+        companyData,
+        statsData,
+        employeesData,
+        departmentsData,
+        rolesData,
+        activeDeptCount,
+      ] = await Promise.all([
         getCompanyById(companyId),
         getCompanyStats(companyId),
         getCompanyEmployees(companyId, 1),
         getCompanyDepartments(companyId, 1),
         getCompanyRoles(companyId, 1),
+        getActiveDepartmentCount(companyId),
       ]);
+
       setCompany(companyData);
       setStats(statsData);
       setEmployeeCount(employeesData.meta?.total || 0);
       setDepartmentCount(departmentsData.meta?.total || 0);
       setRoleCount(rolesData.meta?.total || 0);
+      setActiveDepartmentCount(activeDeptCount.active_departments || 0);
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load company details');
     } finally {
@@ -99,6 +110,10 @@ export default function CompanyDetailScreen() {
     return new Date(expiry).toLocaleDateString();
   };
 
+  const totalEmployees = stats?.total_employees || 0;
+  const maxEmployees = company?.max_employees || 0;
+  const utilization = maxEmployees > 0 ? (totalEmployees / maxEmployees) * 100 : 0;
+
   if (loading || !company) {
     return (
       <SafeAreaView style={styles.safeArea} edges={['bottom']}>
@@ -112,7 +127,6 @@ export default function CompanyDetailScreen() {
   return (
     <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {/* Header */}
         <View style={styles.header}>
           <Text variant="headlineMedium" style={styles.companyName}>
             {company.company_name}
@@ -139,7 +153,6 @@ export default function CompanyDetailScreen() {
           </View>
         </View>
 
-        {/* Basic Info Card */}
         <Card style={styles.infoCard}>
           <Card.Content style={styles.cardContent}>
             <View style={styles.infoRow}>
@@ -167,38 +180,32 @@ export default function CompanyDetailScreen() {
           </Card.Content>
         </Card>
 
-        {/* Statistics Card */}
         {stats && (
           <Card style={styles.statsCard}>
             <Card.Content style={styles.cardContent}>
               <Text variant="titleMedium" style={styles.statsTitle}>
                 Statistics
               </Text>
-              <View style={styles.statsGrid}>
-                <View style={styles.statItem}>
-                  <Text style={styles.statValue}>{stats.total_employees || 0}</Text>
-                  <Text style={styles.statLabel}>Total Employees</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={styles.statValue}>{stats.active_employees || 0}</Text>
-                  <Text style={styles.statLabel}>Active</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={styles.statValue}>{stats.department_count || 0}</Text>
-                  <Text style={styles.statLabel}>Departments</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={styles.statValue}>
-                    {Math.round((stats.employee_utilization || 0) * 100)}%
-                  </Text>
-                  <Text style={styles.statLabel}>Utilization</Text>
-                </View>
+              <View style={styles.infoRow}>
+                <Text style={styles.label}>Total Employees:</Text>
+                <Text style={styles.value}>{stats.total_employees || 0}</Text>
+              </View>
+              <View style={styles.infoRow}>
+                <Text style={styles.label}>Active Employees:</Text>
+                <Text style={styles.value}>{stats.active_employees || 0}</Text>
+              </View>
+              <View style={styles.infoRow}>
+                <Text style={styles.label}>Active Departments:</Text>
+                <Text style={styles.value}>{activeDepartmentCount}</Text>
+              </View>
+              <View style={styles.infoRow}>
+                <Text style={styles.label}>Utilization:</Text>
+                <Text style={styles.value}>{Math.round(utilization)}%</Text>
               </View>
             </Card.Content>
           </Card>
         )}
 
-        {/* Subscription Management Card */}
         <Card style={styles.infoCard}>
           <Card.Content>
             <Text variant="titleMedium" style={styles.sectionTitle}>Subscription</Text>
@@ -216,7 +223,7 @@ export default function CompanyDetailScreen() {
             </View>
             <View style={styles.infoRow}>
               <Text style={styles.label}>Expires:</Text>
-              <Text style={styles.value}>{formatExpiry((company as any).subscription_expires_at)}</Text>
+              <Text style={styles.value}>{formatExpiry(company.subscription_end_date)}</Text>
             </View>
             <View style={styles.buttonRow}>
               <TouchableOpacity
@@ -249,13 +256,16 @@ export default function CompanyDetailScreen() {
           </Card.Content>
         </Card>
 
-        {/* Max Departments Card */}
         <Card style={styles.infoCard}>
           <Card.Content>
             <Text variant="titleMedium" style={styles.sectionTitle}>Departments Limit</Text>
             <View style={styles.infoRow}>
               <Text style={styles.label}>Current Max:</Text>
               <Text style={styles.value}>{company.max_departments || 0}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.label}>Active Departments:</Text>
+              <Text style={styles.value}>{activeDepartmentCount}</Text>
             </View>
             <TouchableOpacity
               style={styles.fullButton}
@@ -273,7 +283,6 @@ export default function CompanyDetailScreen() {
           </Card.Content>
         </Card>
 
-        {/* Quick action rows */}
         <View style={styles.actionRow}>
           <TouchableOpacity
             style={styles.actionButton}
