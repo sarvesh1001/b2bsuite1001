@@ -5,13 +5,38 @@ import axios, {
   InternalAxiosRequestConfig,
 } from 'axios';
 
+// ------------------------------------------------------------------
+// 1. Determine base URL
+// ------------------------------------------------------------------
+const baseURL =
+  process.env.EXPO_PUBLIC_API_BASE_URL ||
+  process.env.API_BASE_URL ||
+  'http://localhost:8080/api/v1';
+
+console.log('🌐 [api-client] baseURL initialized to:', baseURL);
+
+// ------------------------------------------------------------------
+// 2. Create Axios instance
+// ------------------------------------------------------------------
 const AXIOS_INSTANCE: AxiosInstance = axios.create({
+  baseURL,
   withCredentials: true,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  headers: { 'Content-Type': 'application/json' },
 });
 
+// ------------------------------------------------------------------
+// 3. Request logging (debug)
+// ------------------------------------------------------------------
+AXIOS_INSTANCE.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+  console.log(`🚀 [api-client] Request: ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`);
+  console.log('   Headers:', config.headers);
+  if (config.data) console.log('   Body:', config.data);
+  return config;
+});
+
+// ------------------------------------------------------------------
+// 4. Auth token & device ID setters
+// ------------------------------------------------------------------
 export const setAuthToken = (token: string | null) => {
   if (token) {
     AXIOS_INSTANCE.defaults.headers.common['Authorization'] = `Bearer ${token}`;
@@ -35,70 +60,83 @@ export const setRefreshTokenFunction = (fn: RefreshFn | null): void => {
   refreshTokenFn = fn;
 };
 
-// ---- New: Unauthorized callback ----
 let unauthorizedCallback: (() => void) | null = null;
 
 export const setUnauthorizedCallback = (cb: (() => void) | null): void => {
   unauthorizedCallback = cb;
 };
-// -----------------------------------
 
-AXIOS_INSTANCE.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  return config;
-});
-
+// ------------------------------------------------------------------
+// 5. Response interceptor with proper queue handling
+// ------------------------------------------------------------------
 let isRefreshing = false;
-let refreshSubscribers: ((token: string) => void)[] = [];
+let refreshSubscribers: {
+  resolve: (token: string) => void;
+  reject: (error: any) => void;
+}[] = [];
 
 const onRefreshed = (token: string) => {
-  refreshSubscribers.forEach((cb) => cb(token));
+  refreshSubscribers.forEach(({ resolve }) => resolve(token));
   refreshSubscribers = [];
 };
 
-const addSubscriber = (cb: (token: string) => void) => {
-  refreshSubscribers.push(cb);
+const onRefreshFailed = (error: any) => {
+  refreshSubscribers.forEach(({ reject }) => reject(error));
+  refreshSubscribers = [];
 };
 
-// Helper to check if the request is the refresh endpoint
+// ✅ FIX: match both /auth/refresh and /admin-auth/refresh
 const isRefreshRequest = (url: string | undefined): boolean => {
-  return url?.includes('/auth/refresh') ?? false;
+  if (!url) return false;
+  return url.includes('/auth/refresh') || url.includes('/admin-auth/refresh');
 };
 
 AXIOS_INSTANCE.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    console.log(`✅ [api-client] Response success: ${response.config.url}`, response.status);
+    return response;
+  },
   async (error) => {
     const originalRequest = error.config as AxiosRequestConfig & { _retry?: boolean };
     const status = error.response?.status;
+    const url = originalRequest.url;
 
-    // Handle rate limiting (already present)
+    // --- Log the error ---
+    console.error(`❌ [api-client] Request failed: ${url}`);
+    console.error(`   Status: ${status}`);
+    console.error(`   Message: ${error.message}`);
+    if (error.response?.data) console.error(`   Response data:`, error.response.data);
+
+    // --- Rate limiting ---
     if (status === 429) {
       const retryAfter = error.response?.headers?.['retry-after'];
-      if (retryAfter) {
-        error.retryAfter = parseInt(retryAfter, 10);
-      }
+      if (retryAfter) error.retryAfter = parseInt(retryAfter, 10);
       return Promise.reject(error);
     }
 
-    // If 401 and not already retrying and not the refresh endpoint itself
+    // --- 401 Unauthorized (only for non‑refresh requests) ---
     if (status === 401 && !originalRequest._retry && !isRefreshRequest(originalRequest.url)) {
       if (!refreshTokenFn) {
-        // No refresh capability – trigger unauthorized callback
         if (unauthorizedCallback) unauthorizedCallback();
         return Promise.reject(error);
       }
 
       if (isRefreshing) {
+        // Queue this request
         return new Promise((resolve, reject) => {
-          addSubscriber((token) => {
-            originalRequest.headers = originalRequest.headers || {};
-            originalRequest.headers.Authorization = `Bearer ${token}`;
-            resolve(AXIOS_INSTANCE.request(originalRequest));
+          refreshSubscribers.push({
+            resolve: (token) => {
+              originalRequest.headers = originalRequest.headers || {};
+              originalRequest.headers.Authorization = `Bearer ${token}`;
+              resolve(AXIOS_INSTANCE.request(originalRequest));
+            },
+            reject,
           });
         });
       }
 
-      isRefreshing = true;
       originalRequest._retry = true;
+      isRefreshing = true;
 
       try {
         const { accessToken } = await refreshTokenFn();
@@ -108,8 +146,8 @@ AXIOS_INSTANCE.interceptors.response.use(
         originalRequest.headers.Authorization = `Bearer ${accessToken}`;
         return AXIOS_INSTANCE.request(originalRequest);
       } catch (refreshError) {
-        // Refresh failed – clear session and notify
-        refreshSubscribers = [];
+        // Refresh failed – reject all queued requests and call unauthorized callback
+        onRefreshFailed(refreshError);
         if (unauthorizedCallback) unauthorizedCallback();
         return Promise.reject(refreshError);
       } finally {
@@ -117,15 +155,19 @@ AXIOS_INSTANCE.interceptors.response.use(
       }
     }
 
-    // If we get a 401 on the refresh endpoint itself, or after retry, trigger callback
-    if (status === 401 && (originalRequest._retry || isRefreshRequest(originalRequest.url))) {
-      if (unauthorizedCallback) unauthorizedCallback();
+    // --- 401 on refresh endpoint itself: just propagate (handled by caller) ---
+    if (status === 401 && isRefreshRequest(originalRequest.url)) {
+      console.warn('🚫 [api-client] 401 on refresh endpoint – propagating to caller');
+      // Do NOT call unauthorizedCallback here – doRefresh already handles it
     }
 
     return Promise.reject(error);
   }
 );
 
+// ------------------------------------------------------------------
+// 6. Exports
+// ------------------------------------------------------------------
 export const axiosInstance = AXIOS_INSTANCE;
 
 export const customAxiosInstance = <T>(config: AxiosRequestConfig): Promise<T> =>

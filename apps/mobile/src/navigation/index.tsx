@@ -7,7 +7,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import { useAuthStore } from '../store/authStore';
 import { GradientHeader } from '../components/GradientHeader';
-import { setTopLevelNavigator } from './navigationService';
+import { navigationRef, onNavigationReady } from './navigationService'; // ✅ updated import
 
 // Auth Screens
 import PhoneInputScreen from '../screens/auth/PhoneInput';
@@ -127,7 +127,10 @@ export default function Navigation() {
   }
 
   return (
-    <NavigationContainer ref={setTopLevelNavigator}>
+    <NavigationContainer
+      ref={navigationRef}           // ✅ updated
+      onReady={onNavigationReady}   // ✅ added
+    >
       <Stack.Navigator screenOptions={{ headerShown: false }} initialRouteName={initialRoute}>
         <Stack.Screen name="PhoneInput" component={PhoneInputScreen} />
         <Stack.Screen name="OTPVerification" component={OTPVerificationScreen} />

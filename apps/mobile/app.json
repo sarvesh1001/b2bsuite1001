@@ -4,11 +4,8 @@
     "slug": "prayantra",
     "version": "1.0.0",
     "orientation": "portrait",
-
     "icon": "./assets/icon.png",
-
     "userInterfaceStyle": "light",
-
     "plugins": [
       [
         "expo-splash-screen",
@@ -23,12 +20,10 @@
         }
       ]
     ],
-
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.sarvesh1001.prayantra"
     },
-
     "android": {
       "package": "com.sarvesh1001.prayantra",
       "predictiveBackGestureEnabled": false,
@@ -37,18 +32,15 @@
         "backgroundColor": "#E6F4FE"
       }
     },
-
     "web": {
       "favicon": "./assets/favicon.png"
     },
-
     "runtimeVersion": {
       "policy": "appVersion"
     },
-
     "extra": {
       "eas": {
-        "projectId": "06581bc2-ed26-44ef-aff5-b61d6b72b2d1"
+        "projectId": "9d3edaed-8635-4a0c-a5ce-3e7c64975bb1"
       }
     }
   }

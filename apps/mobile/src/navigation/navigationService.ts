@@ -1,50 +1,55 @@
 // src/navigation/navigationService.ts
-import { NavigationContainerRef, CommonActions } from '@react-navigation/native';
+import {
+  CommonActions,
+  createNavigationContainerRef,
+} from '@react-navigation/native';
 import { RootStackParamList } from './index';
-import { useAuthStore } from '../store/authStore';  // 👈 add this
+import { useAuthStore } from '../store/authStore';
 
-let navigator: NavigationContainerRef<RootStackParamList> | null = null;
-let pendingReset: (() => void) | null = null;
+// Use the official ref creator – no more custom navigator variable
+export const navigationRef =
+  createNavigationContainerRef<RootStackParamList>();
 
-export function setTopLevelNavigator(
-  ref: NavigationContainerRef<RootStackParamList> | null
-) {
-  navigator = ref;
-  // If there was a pending reset, execute it now
-  if (pendingReset) {
-    pendingReset();
-    pendingReset = null;
+// Queue flag: true means a reset is waiting for the navigator to become ready
+let pendingReset = false;
+
+/**
+ * Call this from <NavigationContainer onReady={onNavigationReady}>
+ * It will execute any queued reset once the navigator is fully initialised.
+ */
+export function onNavigationReady() {
+  if (pendingReset && navigationRef.isReady()) {
+    pendingReset = false;
+    resetToAuthScreen();
   }
 }
 
+/**
+ * Reset the navigation stack to the appropriate auth screen.
+ * If the navigator isn't ready yet, the reset is queued and executed
+ * when onNavigationReady fires.
+ */
 export function resetToAuthScreen() {
-  const performReset = () => {
-    if (!navigator) return;
-
-    // Get saved credentials from the store
-    const { savedAdminId, savedPhone, savedHasMpin } = useAuthStore.getState();
-
-    let routeName: keyof RootStackParamList = 'PhoneInput';
-    let params: any = undefined;
-
-    if (savedAdminId && savedPhone && savedHasMpin === true) {
-      routeName = 'MPINVerification';
-      params = { phone: savedPhone, adminId: savedAdminId };
-    }
-    // else PhoneInput (default)
-
-    navigator.dispatch(
-      CommonActions.reset({
-        index: 0,
-        routes: [{ name: routeName, params }],
-      })
-    );
-  };
-
-  if (navigator) {
-    performReset();
-  } else {
-    // Queue the reset until the navigator is ready
-    pendingReset = performReset;
+  // If navigator not ready, queue the reset
+  if (!navigationRef.isReady()) {
+    pendingReset = true;
+    return;
   }
+
+  const { savedAdminId, savedPhone, savedHasMpin } = useAuthStore.getState();
+
+  let routeName: keyof RootStackParamList = 'PhoneInput';
+  let params: any = undefined;
+
+  if (savedAdminId && savedPhone && savedHasMpin === true) {
+    routeName = 'MPINVerification';
+    params = { phone: savedPhone, adminId: savedAdminId };
+  }
+
+  navigationRef.dispatch(
+    CommonActions.reset({
+      index: 0,
+      routes: [{ name: routeName, params }],
+    })
+  );
 }
