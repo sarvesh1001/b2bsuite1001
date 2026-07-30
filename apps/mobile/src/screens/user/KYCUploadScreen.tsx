@@ -17,10 +17,12 @@ import { Text, Card, Chip, Divider, TextInput } from 'react-native-paper';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import { uploadKycDocument } from '../../services/kyc';
 import { searchUsersByUsername, User } from '../../services/admin';
+import { RootStackParamList } from '../../navigation'; // ✅ import the param list
 
 type DocumentType = 'identity' | 'address' | 'business' | 'selfie';
 
@@ -31,11 +33,12 @@ const DOCUMENT_LABELS: Record<DocumentType, string> = {
   selfie: 'Selfie',
 };
 
-// Allowed MIME types
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/jpg'];
 
 export default function KYCUploadScreen() {
-  const navigation = useNavigation();
+  // ✅ Use typed navigation
+  const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
+
   const [selectedType, setSelectedType] = useState<DocumentType>('identity');
   const [image, setImage] = useState<{
     uri: string;
@@ -83,10 +86,9 @@ export default function KYCUploadScreen() {
   const clearSelectedUser = () => {
     setSelectedUserId(null);
     setSelectedUserName('');
-    setImage(null); // Clear image when user is cleared
+    setImage(null);
   };
 
-  // Image picker
   const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
@@ -95,7 +97,6 @@ export default function KYCUploadScreen() {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      // Use string array to avoid deprecated MediaTypeOptions and fix TypeScript error
       mediaTypes: ['images'],
       allowsEditing: true,
       quality: 0.8,
@@ -103,7 +104,6 @@ export default function KYCUploadScreen() {
 
     if (!result.canceled) {
       const asset = result.assets[0];
-      // Validate MIME type
       if (asset.mimeType && !ALLOWED_MIME_TYPES.includes(asset.mimeType)) {
         Alert.alert('Invalid File', 'Please select a JPEG or PNG image.');
         return;
@@ -133,7 +133,6 @@ export default function KYCUploadScreen() {
 
     setUploading(true);
     try {
-      // Use a dynamic expiration date (1 year from now)
       const expiresAt = new Date();
       expiresAt.setFullYear(expiresAt.getFullYear() + 1);
       const expiresAtISO = expiresAt.toISOString();
@@ -148,7 +147,18 @@ export default function KYCUploadScreen() {
         expiresAtISO
       );
       setUploadedDoc(doc);
-      Alert.alert('Success', `Document uploaded successfully (ID: ${doc.id})`);
+      // ✅ Now navigation is properly typed
+      Alert.alert(
+        'Success',
+        `Document uploaded successfully (ID: ${doc.id})`,
+        [
+          {
+            text: 'View Document',
+            onPress: () => navigation.navigate('DocumentView', { docId: doc.id }),
+          },
+          { text: 'OK', style: 'cancel' },
+        ]
+      );
     } catch (error: any) {
       const msg = error.response?.data?.message || error.message || 'Upload failed.';
       Alert.alert('Upload Failed', msg);
@@ -168,7 +178,6 @@ export default function KYCUploadScreen() {
             onPress={() => setSelectedType(type)}
             style={[styles.chip, selectedType === type && styles.activeChip]}
             textStyle={selectedType === type ? styles.activeChipText : {}}
-            accessibilityLabel={`Select ${DOCUMENT_LABELS[type]}`}
           >
             {DOCUMENT_LABELS[type]}
           </Chip>
@@ -186,7 +195,7 @@ export default function KYCUploadScreen() {
       >
         <ScrollView
           contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled" // Dismiss keyboard on tap outside
+          keyboardShouldPersistTaps="handled"
         >
           <View style={styles.header}>
             <Text variant="headlineMedium" style={styles.title}>
@@ -220,13 +229,11 @@ export default function KYCUploadScreen() {
                       onChangeText={setSearchQuery}
                       style={styles.searchInput}
                       theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
-                      accessibilityLabel="Search for a user by username"
                     />
                     <TouchableOpacity
                       onPress={handleSearch}
                       disabled={searching}
                       style={styles.searchButton}
-                      accessibilityLabel="Search"
                     >
                       <LinearGradient
                         colors={['#00B4DB', '#7B2FBE']}
@@ -262,7 +269,7 @@ export default function KYCUploadScreen() {
                             </TouchableOpacity>
                           )}
                           ItemSeparatorComponent={() => <Divider />}
-                          scrollEnabled={false} // Prevents nesting warning
+                          scrollEnabled={false}
                           style={styles.list}
                         />
                       )}
@@ -295,7 +302,6 @@ export default function KYCUploadScreen() {
                   <TouchableOpacity
                     onPress={() => setImage(null)}
                     style={styles.removeButton}
-                    accessibilityLabel="Remove selected image"
                   >
                     <Icon name="close-circle" size={28} color="#FF6B6B" />
                   </TouchableOpacity>
@@ -304,7 +310,6 @@ export default function KYCUploadScreen() {
                 <TouchableOpacity
                   style={styles.pickerButton}
                   onPress={pickImage}
-                  accessibilityLabel="Pick an image from gallery"
                 >
                   <Icon name="camera-plus" size={40} color="#7B2FBE" />
                   <Text style={styles.pickerText}>Tap to select an image</Text>
@@ -319,7 +324,6 @@ export default function KYCUploadScreen() {
             disabled={uploading || !selectedUserId || !image}
             activeOpacity={0.8}
             style={styles.buttonWrapper}
-            accessibilityLabel="Upload document"
           >
             <LinearGradient
               colors={['#00B4DB', '#7B2FBE']}
@@ -420,7 +424,6 @@ const styles = StyleSheet.create({
   resultValue: { fontWeight: '500', color: '#1A1A1A' },
   statusChip: { backgroundColor: '#C8E6C9' },
 
-  // User selection styles
   selectedUserContainer: {
     flexDirection: 'row',
     alignItems: 'center',

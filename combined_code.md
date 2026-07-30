@@ -1,6 +1,6 @@
 # Combined Source Code
 
-Total Files: 29
+Total Files: 31
 
 # File: apps/mobile/App.tsx
 
@@ -42,19 +42,14 @@ if (__DEV__) {
 
 SplashScreen.preventAutoHideAsync();
 
-// -------------------- Environment variable logging --------------------
-console.log('📦 [App] process.env.EXPO_PUBLIC_API_BASE_URL =', process.env.EXPO_PUBLIC_API_BASE_URL);
-console.log('📦 [App] process.env.API_BASE_URL =', process.env.API_BASE_URL);
-
 const apiBaseUrl =
   process.env.EXPO_PUBLIC_API_BASE_URL ??
   'http://localhost:8080/api/v1';
 
-console.log('🌐 [App] apiBaseUrl resolved to:', apiBaseUrl);
-
 export default function App() {
   const [isSplashVisible, setIsSplashVisible] = useState(true);
   const [isReady, setIsReady] = useState(false);
+  const [isAuthReady, setIsAuthReady] = useState(false); // NEW: controls navigation rendering
 
   const {
     isAuthenticated,
@@ -78,29 +73,20 @@ export default function App() {
   useEffect(() => {
     async function prepare() {
       try {
-        console.log('🔧 [App] prepare() - setting axios baseURL to:', apiBaseUrl);
         axiosInstance.defaults.baseURL = apiBaseUrl;
-        console.log('✅ [App] axiosInstance.defaults.baseURL =', axiosInstance.defaults.baseURL);
-
         if (!deviceId) {
-          console.log('📱 [App] No deviceId, fetching fresh...');
           const freshDeviceId = await getDeviceId();
-          console.log('📱 [App] Fresh deviceId:', freshDeviceId);
           setDeviceIdInStore(freshDeviceId);
         } else {
-          console.log('📱 [App] Using existing deviceId:', deviceId);
           setDeviceIdInStore(deviceId);
         }
-
         await new Promise((resolve) => setTimeout(resolve, 300));
       } catch (error) {
         console.error('❌ [App] prepare() error:', error);
       } finally {
-        console.log('✅ [App] prepare() finished, setting isReady=true');
         setIsReady(true);
       }
     }
-
     prepare();
   }, []);
 
@@ -108,62 +94,43 @@ export default function App() {
   const doRefresh = useCallback(async (): Promise<{ accessToken: string; refreshToken: string }> => {
     console.log('🔄 [App] doRefresh() called');
     const refreshToken = useAuthStore.getState().refreshToken;
-    console.log('🔄 [App] refreshToken present:', !!refreshToken);
     if (!refreshToken) {
       console.error('❌ [App] No refresh token');
       throw new Error('No refresh token');
     }
     try {
-      console.log('🔄 [App] Calling refreshAccessToken...');
       const data = await refreshAccessToken(refreshToken);
       const { access_token, refresh_token } = data;
-      console.log('✅ [App] refreshAccessToken succeeded');
       updateTokens(access_token, refresh_token);
       return { accessToken: access_token, refreshToken: refresh_token };
     } catch (error: any) {
       console.error('❌ [App] refreshAccessToken error:', error.message, error.response?.status);
-      if (error.response?.status === 401) {
-        console.warn('⚠️ [App] Refresh token invalid (401), clearing session');
-        clearSession();
-        resetToAuthScreen();
-      }
+      // Do NOT clear session or reset navigation here – let the interceptor handle 401 via unauthorizedCallback
       throw error;
     }
-  }, [updateTokens, clearSession]);
+  }, [updateTokens]);
 
   // 3. Set refresh function for interceptor
   useEffect(() => {
-    console.log('🔧 [App] Setting refresh token function');
     setRefreshTokenFunction(doRefresh);
-    return () => {
-      console.log('🔧 [App] Clearing refresh token function');
-      setRefreshTokenFunction(null);
-    };
+    return () => setRefreshTokenFunction(null);
   }, [doRefresh]);
 
-  // 4. Set unauthorized callback
+  // 4. Set unauthorized callback (called by interceptor when refresh fails)
   useEffect(() => {
     const onUnauthorized = () => {
       console.warn('🚫 [App] Unauthorized callback triggered');
-      clearSession();
-      resetToAuthScreen();
+      clearSession(); // preserves savedAdminId, savedPhone, savedHasMpin
+      resetToAuthScreen(); // will route to MPIN verification if saved admin exists
     };
-
-    console.log('🔧 [App] Setting unauthorized callback');
     setUnauthorizedCallback(onUnauthorized);
-
-    return () => {
-      console.log('🔧 [App] Clearing unauthorized callback');
-      setUnauthorizedCallback(null);
-    };
+    return () => setUnauthorizedCallback(null);
   }, [clearSession]);
 
   // 5. Proactive refresh timer (every 4.5 minutes)
   useEffect(() => {
     const startTimer = () => {
-      if (refreshTimerRef.current) {
-        clearInterval(refreshTimerRef.current);
-      }
+      if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
       refreshTimerRef.current = setInterval(() => {
         if (useAuthStore.getState().isAuthenticated) {
           console.log('⏰ [App] Timer tick - doing proactive refresh');
@@ -173,104 +140,82 @@ export default function App() {
     };
 
     if (isAuthenticated) {
-      console.log('⏰ [App] Starting proactive refresh timer');
       startTimer();
-    } else {
-      if (refreshTimerRef.current) {
-        console.log('⏰ [App] Stopping proactive refresh timer (not authenticated)');
-        clearInterval(refreshTimerRef.current);
-        refreshTimerRef.current = null;
-      }
+    } else if (refreshTimerRef.current) {
+      clearInterval(refreshTimerRef.current);
+      refreshTimerRef.current = null;
     }
 
     return () => {
       if (refreshTimerRef.current) {
-        console.log('⏰ [App] Cleaning up refresh timer');
         clearInterval(refreshTimerRef.current);
         refreshTimerRef.current = null;
       }
     };
   }, [isAuthenticated, doRefresh]);
 
-  // 6. Proactive Refresh on Launch
+  // 6. Proactive Refresh on Launch – sets isAuthReady when done
   useEffect(() => {
     async function refreshOnLaunch() {
-      if (hasRefreshedOnLaunch.current) {
-        console.log('⏭️ [App] refreshOnLaunch already done, skipping');
-        return;
-      }
+      if (hasRefreshedOnLaunch.current) return;
 
       console.log('🚀 [App] refreshOnLaunch - starting');
 
       const refreshToken = useAuthStore.getState().refreshToken;
-      console.log('🚀 [App] refreshToken present:', !!refreshToken);
 
       if (!refreshToken) {
-        console.log('🔑 [App] No refresh token – logging out completely');
+        // No refresh token – log out completely (clears everything including saved admin)
         logout();
         resetToAuthScreen();
         hasRefreshedOnLaunch.current = true;
-        console.log('✅ [App] refreshOnLaunch - logged out, hiding splash');
+        setIsAuthReady(true);
         await SplashScreen.hideAsync();
         return;
       }
 
       try {
-        console.log('🔄 [App] Attempting proactive refresh on launch');
         await doRefresh();
         console.log('✅ [App] Proactive refresh succeeded on launch');
       } catch (error) {
+        // doRefresh throws, but we rely on the interceptor's unauthorizedCallback to handle 401.
+        // If the error is not 401 (e.g., network), we still proceed.
         console.warn('❌ [App] Proactive refresh failed on launch:', error);
-        clearSession();
-        resetToAuthScreen();
       } finally {
         hasRefreshedOnLaunch.current = true;
-        console.log('✅ [App] refreshOnLaunch - hiding splash');
+        setIsAuthReady(true);
         await SplashScreen.hideAsync();
       }
     }
 
     if (isReady && fontsLoaded) {
-      console.log('✅ [App] isReady && fontsLoaded true, calling refreshOnLaunch');
       refreshOnLaunch();
     }
-  }, [isReady, fontsLoaded, isAuthenticated, doRefresh, clearSession, logout]);
+  }, [isReady, fontsLoaded, doRefresh, logout]);
 
   // 7. Re-validate when app comes to foreground
   useEffect(() => {
     const handleAppStateChange = (nextAppState: AppStateStatus) => {
-      console.log(`📱 [App] App state changed: ${nextAppState}`);
       if (nextAppState === 'active' && isAuthenticated) {
         if (isFirstForeground.current) {
-          console.log('📱 [App] First foreground, skipping validation');
           isFirstForeground.current = false;
           return;
         }
-        console.log('📱 [App] App came to foreground, validating session');
         validateSession().catch((err) => console.error('❌ [App] validateSession error:', err));
       }
     };
-
     const subscription = AppState.addEventListener('change', handleAppStateChange);
-    console.log('📱 [App] AppState listener added');
-
-    return () => {
-      subscription.remove();
-      console.log('📱 [App] AppState listener removed');
-    };
+    return () => subscription.remove();
   }, [isAuthenticated, validateSession]);
 
   const handleSplashFinish = () => {
-    console.log('🎬 [App] Splash finished');
     setIsSplashVisible(false);
   };
 
-  if (!isReady || !fontsLoaded) {
-    console.log('⏳ [App] Waiting for assets to load...');
+  // Wait for assets AND auth validation before rendering navigation
+  if (!isReady || !fontsLoaded || !isAuthReady) {
     return null;
   }
 
-  console.log('✅ [App] Rendering app');
   return (
     <ErrorBoundary>
       <SafeAreaProvider>
@@ -533,7 +478,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import { useAuthStore } from '../store/authStore';
 import { GradientHeader } from '../components/GradientHeader';
-import { navigationRef, onNavigationReady } from './navigationService'; // ✅ updated import
+import { navigationRef, onNavigationReady } from './navigationService';
 
 // Auth Screens
 import PhoneInputScreen from '../screens/auth/PhoneInput';
@@ -554,13 +499,15 @@ import DepartmentsScreen from '../screens/admin/SystemSettings/DepartmentsScreen
 import PermissionsScreen from '../screens/admin/SystemSettings/PermissionsScreen';
 import AuditLogsScreen from '../screens/admin/AuditLogs/AuditLogsScreen';
 
-// Subscription & Department management screens
+// Subscription & Department management
 import SubscriptionManagementScreen from '../screens/admin/Subscription/SubscriptionManagementScreen';
 import ExtendSubscriptionScreen from '../screens/admin/Subscription/ExtendSubscriptionScreen';
 import UpdateMaxDepartmentsScreen from '../screens/admin/Department/UpdateMaxDepartmentsScreen';
 
-// 🆕 KYC Upload Screen
+// KYC
 import KYCUploadScreen from '../screens/user/KYCUploadScreen';
+import DocumentViewScreen from '../screens/document/DocumentViewScreen';
+import UserDocumentsScreen from '../screens/document/UserDocumentsScreen'; 
 
 export type RootStackParamList = {
   PhoneInput: undefined;
@@ -582,8 +529,9 @@ export type RootStackParamList = {
   SubscriptionManagement: { companyId: string; company: any };
   ExtendSubscription: { companyId: string };
   UpdateMaxDepartments: { companyId: string; currentMax: number };
-  // 🆕
   KYCUpload: undefined;
+  DocumentView: { docId: string };
+  UserDocuments: { userId: string }; // ✅ NEW
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -610,8 +558,9 @@ function AdminStack() {
       <Stack.Screen name="SubscriptionManagement" component={SubscriptionManagementScreen} options={{ title: 'Manage Subscription' }} />
       <Stack.Screen name="ExtendSubscription" component={ExtendSubscriptionScreen} options={{ title: 'Extend Subscription' }} />
       <Stack.Screen name="UpdateMaxDepartments" component={UpdateMaxDepartmentsScreen} options={{ title: 'Update Departments Limit' }} />
-      {/* 🆕 KYC Upload screen */}
       <Stack.Screen name="KYCUpload" component={KYCUploadScreen} options={{ title: 'Upload KYC Document' }} />
+      <Stack.Screen name="DocumentView" component={DocumentViewScreen} options={{ title: 'Document Preview' }} />
+      <Stack.Screen name="UserDocuments" component={UserDocumentsScreen} options={{ title: 'User Documents' }} /> 
     </Stack.Navigator>
   );
 }
@@ -654,8 +603,8 @@ export default function Navigation() {
 
   return (
     <NavigationContainer
-      ref={navigationRef}           // ✅ updated
-      onReady={onNavigationReady}   // ✅ added
+      ref={navigationRef}
+      onReady={onNavigationReady}
     >
       <Stack.Navigator screenOptions={{ headerShown: false }} initialRouteName={initialRoute}>
         <Stack.Screen name="PhoneInput" component={PhoneInputScreen} />
@@ -4091,6 +4040,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, ActivityIndicator, Card, Chip, TextInput, Button } from 'react-native-paper';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRoute, useNavigation } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack'; // ✅ ADDED
 
 import {
   updateUser,
@@ -4111,9 +4061,13 @@ import {
   KYCLevel,
 } from '../../../constants/kyc';
 
+// ✅ ADDED: Import RootStackParamList for navigation typing
+import { RootStackParamList } from '../../../navigation';
+
 export default function UserDetailScreen() {
   const route = useRoute();
-  const navigation = useNavigation();
+  // ✅ ADDED: typed navigation
+  const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
   const { userId } = route.params as { userId: string };
 
   const [user, setUser] = useState<User | null>(null);
@@ -4438,6 +4392,22 @@ export default function UserDetailScreen() {
             </TouchableOpacity>
           </Card.Content>
         </Card>
+
+        {/* ✅ NEW: View Documents Button */}
+        <TouchableOpacity
+          onPress={() => navigation.navigate('UserDocuments', { userId })}
+          activeOpacity={0.8}
+          style={styles.buttonWrapper}
+        >
+          <LinearGradient
+            colors={['#6C5CE7', '#A29BFE']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={styles.gradientButton}
+          >
+            <Text style={styles.buttonText}>View Documents</Text>
+          </LinearGradient>
+        </TouchableOpacity>
 
         <TouchableOpacity
           onPress={handleBanToggle}
@@ -6615,6 +6585,321 @@ const styles = StyleSheet.create({
 });
 ```
 
+# File: apps/mobile/src/screens/document/DocumentViewScreen.tsx
+
+```tsx
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  StyleSheet,
+  ActivityIndicator,
+  Image,
+  Alert,
+  ScrollView,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Text, Card, Chip, Button } from 'react-native-paper';
+import { axiosInstance } from '@b2b/api-client';
+import { useAuthStore } from '../../store/authStore';
+import { RouteProp, useRoute, useNavigation } from '@react-navigation/native';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+
+interface DocumentDetail {
+  id: string;
+  user_id: string;
+  document_type: string;
+  file_key: string;
+  upload_status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export default function DocumentViewScreen() {
+  const route = useRoute<RouteProp<{ params: { docId: string } }, 'params'>>();
+  const navigation = useNavigation();
+  const { docId } = route.params;
+  const [doc, setDoc] = useState<DocumentDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [imageUri, setImageUri] = useState<string | null>(null);
+  const [fileType, setFileType] = useState<string>('');
+  const { accessToken, deviceId } = useAuthStore.getState();
+
+  useEffect(() => {
+    fetchDocument();
+  }, [docId]);
+
+  const fetchDocument = async () => {
+    try {
+      // 1. Get metadata
+      const metaRes = await axiosInstance.get(`/admin/kyc/documents/${docId}`, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'X-Device-ID': deviceId,
+        },
+      });
+      const docData = metaRes.data.data;
+      setDoc(docData);
+
+      // 2. Fetch the actual file
+      const fileRes = await axiosInstance.get(`/admin/kyc/documents/${docId}/file`, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'X-Device-ID': deviceId,
+        },
+        responseType: 'blob',
+      });
+
+      const blob = fileRes.data;
+      // Safely extract content-type as string
+      const contentType = fileRes.headers['content-type'];
+      const typeString = typeof contentType === 'string' ? contentType : 'application/octet-stream';
+      setFileType(typeString);
+
+      // Only attempt to preview image files
+      if (typeString.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          setImageUri(reader.result as string);
+        };
+        reader.readAsDataURL(blob);
+      } else {
+        // For non‑images, show placeholder
+        setImageUri(null);
+      }
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to load document');
+      navigation.goBack();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.centered}>
+        <ActivityIndicator size="large" color="#7B2FBE" />
+      </SafeAreaView>
+    );
+  }
+
+  if (!doc) {
+    return (
+      <SafeAreaView style={styles.centered}>
+        <Text>Document not found</Text>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        <View style={styles.header}>
+          <Text variant="headlineMedium" style={styles.title}>
+            Document Preview
+          </Text>
+          <Chip style={styles.statusChip}>
+            {doc.upload_status.toUpperCase()}
+          </Chip>
+        </View>
+
+        <Card style={styles.card}>
+          <Card.Content>
+            {imageUri ? (
+              <Image source={{ uri: imageUri }} style={styles.image} resizeMode="contain" />
+            ) : (
+              <View style={styles.placeholder}>
+                <Icon name="file-document-outline" size={60} color="#ccc" />
+                <Text style={styles.placeholderText}>
+                  {fileType || 'No preview available'}
+                </Text>
+                <Button
+                  mode="contained"
+                  onPress={() => Alert.alert('Info', 'Download feature coming soon')}
+                  style={styles.downloadButton}
+                >
+                  Download File
+                </Button>
+              </View>
+            )}
+          </Card.Content>
+        </Card>
+
+        <Card style={styles.detailsCard}>
+          <Card.Content>
+            <Text variant="titleMedium" style={styles.sectionTitle}>
+              Document Details
+            </Text>
+            <View style={styles.row}>
+              <Text style={styles.label}>Type:</Text>
+              <Text style={styles.value}>{doc.document_type}</Text>
+            </View>
+            <View style={styles.row}>
+              <Text style={styles.label}>User ID:</Text>
+              <Text style={styles.value} numberOfLines={1}>{doc.user_id}</Text>
+            </View>
+            <View style={styles.row}>
+              <Text style={styles.label}>Uploaded:</Text>
+              <Text style={styles.value}>{new Date(doc.created_at).toLocaleString()}</Text>
+            </View>
+            {doc.upload_status === 'verified' && (
+              <View style={styles.row}>
+                <Text style={styles.label}>Verified:</Text>
+                <Text style={styles.value}>{doc.updated_at ? new Date(doc.updated_at).toLocaleString() : 'N/A'}</Text>
+              </View>
+            )}
+          </Card.Content>
+        </Card>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safeArea: { flex: 1, backgroundColor: '#FFFFFF' },
+  centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  scrollContent: { paddingHorizontal: 24, paddingBottom: 40 },
+  header: { paddingTop: 16, paddingBottom: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  title: { fontWeight: 'bold', color: '#1A1A1A', fontSize: 24, flex: 1 },
+  statusChip: { backgroundColor: '#E8E0F0' },
+  card: { marginVertical: 8, borderRadius: 12, elevation: 2, backgroundColor: '#FFFFFF' },
+  image: { width: '100%', height: 400, borderRadius: 12 },
+  placeholder: { alignItems: 'center', padding: 40 },
+  placeholderText: { color: '#999', marginTop: 12, textAlign: 'center' },
+  downloadButton: { marginTop: 16, backgroundColor: '#7B2FBE' },
+  detailsCard: { marginVertical: 8, borderRadius: 12, elevation: 2, backgroundColor: '#FFFFFF' },
+  sectionTitle: { fontWeight: '600', color: '#1A1A1A', marginBottom: 12 },
+  row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
+  label: { color: '#666', fontSize: 14 },
+  value: { color: '#1A1A1A', fontSize: 14, fontWeight: '500', flex: 1, textAlign: 'right' },
+});
+```
+
+# File: apps/mobile/src/screens/document/UserDocumentsScreen.tsx
+
+```tsx
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  StyleSheet,
+  FlatList,
+  ActivityIndicator,
+  Alert,
+  TouchableOpacity,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Text, Card, Chip } from 'react-native-paper';
+import { useRoute, useNavigation } from '@react-navigation/native';
+import { RouteProp } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack'; // ✅ ADDED
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+
+import { listUserDocuments, Document } from '../../services/kyc';
+import { RootStackParamList } from '../../navigation';
+
+export default function UserDocumentsScreen() {
+  const route = useRoute<RouteProp<{ params: { userId: string } }, 'params'>>();
+  // ✅ Typed navigation
+  const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
+  const { userId } = route.params;
+
+  const [documents, setDocuments] = useState<Document[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadDocuments();
+  }, [userId]);
+
+  const loadDocuments = async () => {
+    setLoading(true);
+    try {
+      const docs = await listUserDocuments(userId);
+      setDocuments(docs);
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to load documents');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderItem = ({ item }: { item: Document }) => (
+    <TouchableOpacity
+      onPress={() => navigation.navigate('DocumentView', { docId: item.id })}
+      activeOpacity={0.7}
+    >
+      <Card style={styles.card}>
+        <Card.Content>
+          <View style={styles.row}>
+            <Text variant="titleSmall" style={styles.type}>
+              {item.document_type.toUpperCase()}
+            </Text>
+            <Chip
+              style={[
+                styles.statusChip,
+                item.upload_status === 'verified'
+                  ? styles.verified
+                  : item.upload_status === 'rejected'
+                  ? styles.rejected
+                  : styles.pending,
+              ]}
+            >
+              {item.upload_status}
+            </Chip>
+          </View>
+          <Text variant="bodySmall" style={styles.fileKey} numberOfLines={1}>
+            {item.file_key}
+          </Text>
+          <Text variant="bodySmall" style={styles.date}>
+            Uploaded: {new Date(item.created_at).toLocaleString()}
+          </Text>
+        </Card.Content>
+      </Card>
+    </TouchableOpacity>
+  );
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.centered}>
+        <ActivityIndicator size="large" color="#7B2FBE" />
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
+      <FlatList
+        data={documents}
+        keyExtractor={(item) => item.id}
+        renderItem={renderItem}
+        contentContainerStyle={styles.listContent}
+        ListEmptyComponent={
+          <View style={styles.empty}>
+            <Icon name="file-document-outline" size={60} color="#ccc" />
+            <Text style={styles.emptyText}>No documents found for this user</Text>
+          </View>
+        }
+      />
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safeArea: { flex: 1, backgroundColor: '#FFFFFF' },
+  centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  listContent: { paddingHorizontal: 16, paddingVertical: 8 },
+  card: { marginBottom: 12, borderRadius: 12, elevation: 2 },
+  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  type: { fontWeight: '600', color: '#1A1A1A' },
+  statusChip: { backgroundColor: '#f0f0f0' },
+  verified: { backgroundColor: '#C8E6C9' },
+  rejected: { backgroundColor: '#FFCDD2' },
+  pending: { backgroundColor: '#FFF9C4' },
+  fileKey: { color: '#666', marginTop: 4, fontSize: 12 },
+  date: { color: '#888', marginTop: 4, fontSize: 12 },
+  empty: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 60 },
+  emptyText: { color: '#999', marginTop: 12 },
+});
+```
+
 # File: apps/mobile/src/screens/user/KYCUploadScreen.tsx
 
 ```tsx
@@ -6628,16 +6913,21 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
+  FlatList,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Text, Card, Button, Chip, Divider } from 'react-native-paper';
+import { Text, Card, Chip, Divider, TextInput } from 'react-native-paper';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import { uploadKycDocument } from '../../services/kyc';
-import { useAuthStore } from '../../store/authStore';
+import { searchUsersByUsername, User } from '../../services/admin';
+import { RootStackParamList } from '../../navigation'; // ✅ import the param list
 
 type DocumentType = 'identity' | 'address' | 'business' | 'selfie';
 
@@ -6648,9 +6938,12 @@ const DOCUMENT_LABELS: Record<DocumentType, string> = {
   selfie: 'Selfie',
 };
 
+const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/jpg'];
+
 export default function KYCUploadScreen() {
-  const navigation = useNavigation();
-  const user = useAuthStore((state) => state.user);
+  // ✅ Use typed navigation
+  const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
+
   const [selectedType, setSelectedType] = useState<DocumentType>('identity');
   const [image, setImage] = useState<{
     uri: string;
@@ -6659,10 +6952,48 @@ export default function KYCUploadScreen() {
     name: string;
   } | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState(0); // not used in this simple version but can be extended
   const [uploadedDoc, setUploadedDoc] = useState<any>(null);
 
-  // Permission request
+  // User selection state
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [selectedUserName, setSelectedUserName] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<User[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [showResults, setShowResults] = useState(false);
+
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) {
+      Alert.alert('Info', 'Please enter a username');
+      return;
+    }
+    setSearching(true);
+    try {
+      const result = await searchUsersByUsername(searchQuery.trim(), 20);
+      const users = result.users || [];
+      setSearchResults(users);
+      setShowResults(true);
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Search failed');
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const handleSelectUser = (user: User) => {
+    setSelectedUserId(user.user_id);
+    setSelectedUserName(user.username || user.full_name || '');
+    setShowResults(false);
+    setSearchQuery('');
+    setSearchResults([]);
+  };
+
+  const clearSelectedUser = () => {
+    setSelectedUserId(null);
+    setSelectedUserName('');
+    setImage(null);
+  };
+
   const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
@@ -6671,13 +7002,17 @@ export default function KYCUploadScreen() {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsEditing: true,
       quality: 0.8,
     });
 
     if (!result.canceled) {
       const asset = result.assets[0];
+      if (asset.mimeType && !ALLOWED_MIME_TYPES.includes(asset.mimeType)) {
+        Alert.alert('Invalid File', 'Please select a JPEG or PNG image.');
+        return;
+      }
       setImage({
         uri: asset.uri,
         mimeType: asset.mimeType || 'image/jpeg',
@@ -6688,8 +7023,8 @@ export default function KYCUploadScreen() {
   };
 
   const handleUpload = async () => {
-    if (!user?.user_id) {
-      Alert.alert('Error', 'User not logged in.');
+    if (!selectedUserId) {
+      Alert.alert('Error', 'Please select a user first.');
       return;
     }
     if (!image) {
@@ -6702,19 +7037,33 @@ export default function KYCUploadScreen() {
     }
 
     setUploading(true);
-    setProgress(0);
     try {
+      const expiresAt = new Date();
+      expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+      const expiresAtISO = expiresAt.toISOString();
+
       const doc = await uploadKycDocument(
-        user.user_id,
+        selectedUserId,
         selectedType,
         image.uri,
         image.mimeType,
         image.size,
         image.name,
-        '2027-01-01T00:00:00Z' // optional expiry
+        expiresAtISO
       );
       setUploadedDoc(doc);
-      Alert.alert('Success', `Document uploaded successfully (ID: ${doc.id})`);
+      // ✅ Now navigation is properly typed
+      Alert.alert(
+        'Success',
+        `Document uploaded successfully (ID: ${doc.id})`,
+        [
+          {
+            text: 'View Document',
+            onPress: () => navigation.navigate('DocumentView', { docId: doc.id }),
+          },
+          { text: 'OK', style: 'cancel' },
+        ]
+      );
     } catch (error: any) {
       const msg = error.response?.data?.message || error.message || 'Upload failed.';
       Alert.alert('Upload Failed', msg);
@@ -6744,87 +7093,179 @@ export default function KYCUploadScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['bottom']}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.header}>
-          <Text variant="headlineMedium" style={styles.title}>
-            Upload KYC Document
-          </Text>
-          <Text variant="bodyMedium" style={styles.subtitle}>
-            Please upload a clear photo of your document.
-          </Text>
-        </View>
-
-        <Card style={styles.card}>
-          <Card.Content>
-            <Text style={styles.label}>Document Type</Text>
-            {renderTypeChips()}
-          </Card.Content>
-        </Card>
-
-        <Card style={styles.card}>
-          <Card.Content>
-            <Text style={styles.label}>Select Image</Text>
-            {image ? (
-              <View style={styles.imagePreviewContainer}>
-                <Image source={{ uri: image.uri }} style={styles.imagePreview} />
-                <View style={styles.imageInfo}>
-                  <Text variant="bodySmall">{image.name}</Text>
-                  <Text variant="bodySmall">{(image.size / 1024).toFixed(1)} KB</Text>
-                </View>
-                <TouchableOpacity onPress={() => setImage(null)} style={styles.removeButton}>
-                  <Icon name="close-circle" size={28} color="#FF6B6B" />
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <TouchableOpacity style={styles.pickerButton} onPress={pickImage}>
-                <Icon name="camera-plus" size={40} color="#7B2FBE" />
-                <Text style={styles.pickerText}>Tap to select an image</Text>
-              </TouchableOpacity>
-            )}
-          </Card.Content>
-        </Card>
-
-        <TouchableOpacity
-          onPress={handleUpload}
-          disabled={uploading || !image}
-          activeOpacity={0.8}
-          style={styles.buttonWrapper}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
         >
-          <LinearGradient
-            colors={['#00B4DB', '#7B2FBE']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={[
-              styles.buttonGradient,
-              (uploading || !image) && styles.buttonDisabled,
-            ]}
-          >
-            {uploading ? (
-              <ActivityIndicator color="white" size="small" />
-            ) : (
-              <Text style={styles.buttonText}>Upload Document</Text>
-            )}
-          </LinearGradient>
-        </TouchableOpacity>
+          <View style={styles.header}>
+            <Text variant="headlineMedium" style={styles.title}>
+              Upload KYC Document
+            </Text>
+            <Text variant="bodyMedium" style={styles.subtitle}>
+              Select a user and upload a document.
+            </Text>
+          </View>
 
-        {uploadedDoc && (
-          <Card style={styles.resultCard}>
+          {/* User Selection Card */}
+          <Card style={styles.card}>
             <Card.Content>
-              <Text variant="titleSmall" style={styles.resultTitle}>
-                Upload Successful
-              </Text>
-              <View style={styles.resultRow}>
-                <Text style={styles.resultLabel}>ID:</Text>
-                <Text style={styles.resultValue}>{uploadedDoc.id}</Text>
-              </View>
-              <View style={styles.resultRow}>
-                <Text style={styles.resultLabel}>Status:</Text>
-                <Chip style={styles.statusChip}>{uploadedDoc.upload_status}</Chip>
-              </View>
+              <Text style={styles.label}>Select User</Text>
+              {selectedUserId ? (
+                <View style={styles.selectedUserContainer}>
+                  <Text variant="titleMedium" style={styles.selectedUserText}>
+                    {selectedUserName}
+                  </Text>
+                  <TouchableOpacity onPress={clearSelectedUser} style={styles.clearButton}>
+                    <Icon name="close-circle" size={24} color="#FF6B6B" />
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View>
+                  <View style={styles.searchRow}>
+                    <TextInput
+                      mode="outlined"
+                      label="Username"
+                      value={searchQuery}
+                      onChangeText={setSearchQuery}
+                      style={styles.searchInput}
+                      theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
+                    />
+                    <TouchableOpacity
+                      onPress={handleSearch}
+                      disabled={searching}
+                      style={styles.searchButton}
+                    >
+                      <LinearGradient
+                        colors={['#00B4DB', '#7B2FBE']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 0 }}
+                        style={styles.searchGradient}
+                      >
+                        {searching ? (
+                          <ActivityIndicator color="white" size="small" />
+                        ) : (
+                          <Icon name="magnify" size={24} color="white" />
+                        )}
+                      </LinearGradient>
+                    </TouchableOpacity>
+                  </View>
+                  {showResults && (
+                    <View style={styles.resultsContainer}>
+                      {searchResults.length === 0 ? (
+                        <Text style={styles.noResultText}>No users found</Text>
+                      ) : (
+                        <FlatList
+                          data={searchResults}
+                          keyExtractor={(item) => item.user_id}
+                          renderItem={({ item }) => (
+                            <TouchableOpacity
+                              style={styles.resultItem}
+                              onPress={() => handleSelectUser(item)}
+                            >
+                              <Text variant="bodyMedium">{item.username}</Text>
+                              <Text variant="bodySmall" style={styles.resultSub}>
+                                {item.full_name}
+                              </Text>
+                            </TouchableOpacity>
+                          )}
+                          ItemSeparatorComponent={() => <Divider />}
+                          scrollEnabled={false}
+                          style={styles.list}
+                        />
+                      )}
+                    </View>
+                  )}
+                </View>
+              )}
             </Card.Content>
           </Card>
-        )}
-      </ScrollView>
+
+          {/* Document Type Card */}
+          <Card style={styles.card}>
+            <Card.Content>
+              <Text style={styles.label}>Document Type</Text>
+              {renderTypeChips()}
+            </Card.Content>
+          </Card>
+
+          {/* Image Selection Card */}
+          <Card style={styles.card}>
+            <Card.Content>
+              <Text style={styles.label}>Select Image</Text>
+              {image ? (
+                <View style={styles.imagePreviewContainer}>
+                  <Image source={{ uri: image.uri }} style={styles.imagePreview} />
+                  <View style={styles.imageInfo}>
+                    <Text variant="bodySmall">{image.name}</Text>
+                    <Text variant="bodySmall">{(image.size / 1024).toFixed(1)} KB</Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => setImage(null)}
+                    style={styles.removeButton}
+                  >
+                    <Icon name="close-circle" size={28} color="#FF6B6B" />
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={styles.pickerButton}
+                  onPress={pickImage}
+                >
+                  <Icon name="camera-plus" size={40} color="#7B2FBE" />
+                  <Text style={styles.pickerText}>Tap to select an image</Text>
+                  <Text style={styles.pickerSubtext}>JPEG, PNG accepted</Text>
+                </TouchableOpacity>
+              )}
+            </Card.Content>
+          </Card>
+
+          <TouchableOpacity
+            onPress={handleUpload}
+            disabled={uploading || !selectedUserId || !image}
+            activeOpacity={0.8}
+            style={styles.buttonWrapper}
+          >
+            <LinearGradient
+              colors={['#00B4DB', '#7B2FBE']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={[
+                styles.buttonGradient,
+                (uploading || !selectedUserId || !image) && styles.buttonDisabled,
+              ]}
+            >
+              {uploading ? (
+                <ActivityIndicator color="white" size="small" />
+              ) : (
+                <Text style={styles.buttonText}>Upload Document</Text>
+              )}
+            </LinearGradient>
+          </TouchableOpacity>
+
+          {uploadedDoc && (
+            <Card style={styles.resultCard}>
+              <Card.Content>
+                <Text variant="titleSmall" style={styles.resultTitle}>
+                  Upload Successful
+                </Text>
+                <View style={styles.resultRow}>
+                  <Text style={styles.resultLabel}>ID:</Text>
+                  <Text style={styles.resultValue}>{uploadedDoc.id}</Text>
+                </View>
+                <View style={styles.resultRow}>
+                  <Text style={styles.resultLabel}>Status:</Text>
+                  <Chip style={styles.statusChip}>{uploadedDoc.upload_status}</Chip>
+                </View>
+              </Card.Content>
+            </Card>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -6852,6 +7293,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   pickerText: { color: '#666', marginTop: 8 },
+  pickerSubtext: { color: '#999', fontSize: 12, marginTop: 4 },
   imagePreviewContainer: {
     position: 'relative',
     alignItems: 'center',
@@ -6886,6 +7328,55 @@ const styles = StyleSheet.create({
   resultLabel: { color: '#555' },
   resultValue: { fontWeight: '500', color: '#1A1A1A' },
   statusChip: { backgroundColor: '#C8E6C9' },
+
+  selectedUserContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F3E5F5',
+    padding: 12,
+    borderRadius: 8,
+  },
+  selectedUserText: { color: '#4A148C' },
+  clearButton: { padding: 4 },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  searchInput: {
+    flex: 1,
+    backgroundColor: 'white',
+    marginRight: 8,
+  },
+  searchButton: {
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  searchGradient: {
+    padding: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 48,
+  },
+  resultsContainer: {
+    marginTop: 8,
+    backgroundColor: 'white',
+    borderRadius: 8,
+    elevation: 2,
+    maxHeight: 200,
+  },
+  list: { maxHeight: 180 },
+  resultItem: {
+    padding: 12,
+  },
+  resultSub: {
+    color: '#888',
+  },
+  noResultText: {
+    padding: 12,
+    color: '#999',
+    textAlign: 'center',
+  },
 });
 ```
 

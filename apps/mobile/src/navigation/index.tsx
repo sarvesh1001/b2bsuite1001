@@ -7,7 +7,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import { useAuthStore } from '../store/authStore';
 import { GradientHeader } from '../components/GradientHeader';
-import { navigationRef, onNavigationReady } from './navigationService'; // ✅ updated import
+import { navigationRef, onNavigationReady } from './navigationService';
 
 // Auth Screens
 import PhoneInputScreen from '../screens/auth/PhoneInput';
@@ -28,13 +28,15 @@ import DepartmentsScreen from '../screens/admin/SystemSettings/DepartmentsScreen
 import PermissionsScreen from '../screens/admin/SystemSettings/PermissionsScreen';
 import AuditLogsScreen from '../screens/admin/AuditLogs/AuditLogsScreen';
 
-// Subscription & Department management screens
+// Subscription & Department management
 import SubscriptionManagementScreen from '../screens/admin/Subscription/SubscriptionManagementScreen';
 import ExtendSubscriptionScreen from '../screens/admin/Subscription/ExtendSubscriptionScreen';
 import UpdateMaxDepartmentsScreen from '../screens/admin/Department/UpdateMaxDepartmentsScreen';
 
-// 🆕 KYC Upload Screen
+// KYC
 import KYCUploadScreen from '../screens/user/KYCUploadScreen';
+import DocumentViewScreen from '../screens/document/DocumentViewScreen';
+import UserDocumentsScreen from '../screens/document/UserDocumentsScreen'; 
 
 export type RootStackParamList = {
   PhoneInput: undefined;
@@ -56,8 +58,9 @@ export type RootStackParamList = {
   SubscriptionManagement: { companyId: string; company: any };
   ExtendSubscription: { companyId: string };
   UpdateMaxDepartments: { companyId: string; currentMax: number };
-  // 🆕
   KYCUpload: undefined;
+  DocumentView: { docId: string };
+  UserDocuments: { userId: string }; // ✅ NEW
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -84,8 +87,9 @@ function AdminStack() {
       <Stack.Screen name="SubscriptionManagement" component={SubscriptionManagementScreen} options={{ title: 'Manage Subscription' }} />
       <Stack.Screen name="ExtendSubscription" component={ExtendSubscriptionScreen} options={{ title: 'Extend Subscription' }} />
       <Stack.Screen name="UpdateMaxDepartments" component={UpdateMaxDepartmentsScreen} options={{ title: 'Update Departments Limit' }} />
-      {/* 🆕 KYC Upload screen */}
       <Stack.Screen name="KYCUpload" component={KYCUploadScreen} options={{ title: 'Upload KYC Document' }} />
+      <Stack.Screen name="DocumentView" component={DocumentViewScreen} options={{ title: 'Document Preview' }} />
+      <Stack.Screen name="UserDocuments" component={UserDocumentsScreen} options={{ title: 'User Documents' }} /> 
     </Stack.Navigator>
   );
 }
@@ -128,8 +132,8 @@ export default function Navigation() {
 
   return (
     <NavigationContainer
-      ref={navigationRef}           // ✅ updated
-      onReady={onNavigationReady}   // ✅ added
+      ref={navigationRef}
+      onReady={onNavigationReady}
     >
       <Stack.Navigator screenOptions={{ headerShown: false }} initialRouteName={initialRoute}>
         <Stack.Screen name="PhoneInput" component={PhoneInputScreen} />

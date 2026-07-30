@@ -138,3 +138,16 @@ export async function uploadKycDocument(
     throw error;
   }
 }
+
+// -------------------------------------------------------------------------
+// NEW: List documents for a specific user
+// -------------------------------------------------------------------------
+export async function listUserDocuments(userId: string): Promise<Document[]> {
+  const response = await axiosInstance.get('/admin/kyc/documents', {
+    params: { user_id: userId },
+    headers: getHeaders({ 'Content-Type': 'application/json' }),
+  });
+  // The API returns { data: { documents: [...], total, limit, offset } }
+  const data = response.data?.data;
+  return data?.documents || [];
+}

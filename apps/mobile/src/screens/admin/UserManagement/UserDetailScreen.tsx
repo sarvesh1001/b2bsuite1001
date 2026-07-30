@@ -10,6 +10,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, ActivityIndicator, Card, Chip, TextInput, Button } from 'react-native-paper';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRoute, useNavigation } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack'; // ✅ ADDED
 
 import {
   updateUser,
@@ -30,9 +31,13 @@ import {
   KYCLevel,
 } from '../../../constants/kyc';
 
+// ✅ ADDED: Import RootStackParamList for navigation typing
+import { RootStackParamList } from '../../../navigation';
+
 export default function UserDetailScreen() {
   const route = useRoute();
-  const navigation = useNavigation();
+  // ✅ ADDED: typed navigation
+  const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
   const { userId } = route.params as { userId: string };
 
   const [user, setUser] = useState<User | null>(null);
@@ -357,6 +362,22 @@ export default function UserDetailScreen() {
             </TouchableOpacity>
           </Card.Content>
         </Card>
+
+        {/* ✅ NEW: View Documents Button */}
+        <TouchableOpacity
+          onPress={() => navigation.navigate('UserDocuments', { userId })}
+          activeOpacity={0.8}
+          style={styles.buttonWrapper}
+        >
+          <LinearGradient
+            colors={['#6C5CE7', '#A29BFE']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={styles.gradientButton}
+          >
+            <Text style={styles.buttonText}>View Documents</Text>
+          </LinearGradient>
+        </TouchableOpacity>
 
         <TouchableOpacity
           onPress={handleBanToggle}
