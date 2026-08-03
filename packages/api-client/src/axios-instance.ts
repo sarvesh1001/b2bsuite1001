@@ -116,6 +116,16 @@ AXIOS_INSTANCE.interceptors.response.use(
 
     // --- 401 Unauthorized (only for non‑refresh requests) ---
     if (status === 401 && !originalRequest._retry && !isRefreshRequest(originalRequest.url)) {
+      
+      // 🧠 **FIX: Skip refresh if the request had no Authorization header**
+      // This means it's an unauthenticated endpoint (e.g., login, OTP, MPIN verification)
+      // returning 401 due to invalid credentials, not an expired token.
+      if (!originalRequest.headers?.Authorization) {
+        console.warn('🚫 [api-client] 401 on unauthenticated request – skipping refresh');
+        return Promise.reject(error);
+      }
+
+      // If we reach here, the request had a token – attempt refresh
       if (!refreshTokenFn) {
         if (unauthorizedCallback) unauthorizedCallback();
         return Promise.reject(error);

@@ -1,0 +1,164 @@
+/* QR Login Page – matches mobile app colors with horizontal gradient */
+.qr-login-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    background: #f5f7fa;
+    padding: 20px;
+  }
+  
+  .qr-login-card {
+    background: white;
+    border-radius: 20px;
+    padding: 40px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+    text-align: center;
+    max-width: 420px;
+    width: 100%;
+  }
+  
+  /* Heading with gradient text – matches mobile app */
+  .brand-heading {
+    background: linear-gradient(to right, #00B4DB, #7B2FBE);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    font-size: 2rem;
+    font-weight: 700;
+    margin-bottom: 6px;
+    display: inline-block;
+  }
+  
+  /* Or if you prefer a solid background block with white text:
+     .brand-gradient { background: linear-gradient(to right, #00B4DB, #7B2FBE); ... }
+     but the above is cleaner.
+  */
+  
+  .login-subtitle {
+    color: #666;
+    margin-bottom: 30px;
+    font-size: 1rem;
+  }
+  
+  .qr-section {
+    margin: 30px 0;
+  }
+  
+  .qr-code-container {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 20px;
+    padding: 16px;
+    background: #fafafa;
+    border-radius: 12px;
+    border: 1px solid #eee;
+  }
+  
+  .status-section {
+    margin-top: 20px;
+  }
+  
+  /* Status indicator – solid colors (no gradient) */
+  .status-indicator {
+    padding: 12px 20px;
+    border-radius: 25px;
+    color: white;
+    font-weight: 600;
+    margin-bottom: 15px;
+    transition: all 0.3s ease;
+    background: #7B2FBE; /* fallback – overridden inline */
+  }
+  
+  /* BUTTONS – horizontal gradient (to right) */
+  .confirm-button,
+  .retry-button {
+    background: linear-gradient(to right, #00B4DB, #7B2FBE) !important;
+    color: white !important;
+    border: none;
+    padding: 12px 30px;
+    border-radius: 25px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.3s ease;
+    margin: 5px;
+    box-shadow: 0 4px 12px rgba(0, 180, 219, 0.3);
+  }
+  
+  .confirm-button:hover,
+  .retry-button:hover {
+    opacity: 0.9;
+    transform: translateY(-1px);
+  }
+  
+  .confirm-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+  }
+  
+  .error-message {
+    background: #FF5252;
+    color: white;
+    padding: 12px 16px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.95rem;
+  }
+  
+  .error-message .retry-button {
+    background: white !important;
+    color: #FF5252 !important;
+    box-shadow: none;
+    padding: 6px 16px;
+    font-size: 0.85rem;
+  }
+  
+  /* Optional: if you need a solid gradient block (e.g., for a badge) */
+  .brand-gradient {
+    display: inline-block;
+    background: linear-gradient(to right, #00B4DB, #7B2FBE);
+    padding: 6px 20px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+  }
+  
+  .brand-gradient h1 {
+    color: white;
+    font-size: 1.8rem;
+    font-weight: 900;
+    letter-spacing: 2px;
+    margin: 0;
+  }
+  
+  .help-text {
+    margin-top: 24px;
+    color: #888;
+    font-size: 0.85rem;
+  }
+  
+  .loading-spinner {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 40px;
+    font-size: 1rem;
+    color: #666;
+  }
+  
+  /* Responsive */
+  @media (max-width: 768px) {
+    .qr-login-container { padding: 16px; }
+    .qr-login-card { padding: 24px; }
+    .brand-heading { font-size: 1.6rem; }
+    .brand-gradient h1 { font-size: 1.4rem; }
+  }
+  
+  @media (max-width: 480px) {
+    .qr-code-container { padding: 8px; }
+    .qr-code-container canvas { width: 200px !important; height: 200px !important; }
+  }

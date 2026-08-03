@@ -11,6 +11,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@b2b/shared-types": "workspace:*",
     "axios": "^1.6.0"
   },
   "devDependencies": {
@@ -20,6 +21,6 @@
   },
   "peerDependencies": {
     "@tanstack/react-query": "^5.0.0",
-    "react": "^18.0.0"
+    "react": "^19.0.0"
   }
 }
