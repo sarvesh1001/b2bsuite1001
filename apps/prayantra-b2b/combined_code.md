@@ -1,6 +1,6 @@
 # Combined Source Code
 
-Total Files: 26
+Total Files: 31
 
 # File: AGENTS.md
 
@@ -1010,7 +1010,7 @@ print(f"Output         : {OUTPUT_FILE}")
 ```markdown
 # Combined Source Code
 
-Total Files: 26
+Total Files: 31
 
 # File: AGENTS.md
 
@@ -1941,6 +1941,8 @@ const styles = StyleSheet.create({
 # File: src/navigation/index.tsx
 
 ```tsx
+// apps/prayantra-b2b/src/navigation/index.tsx
+
 import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
@@ -1954,15 +1956,23 @@ import MPINSetupScreen from '../screens/auth/MPINSetup';
 import MPINVerificationScreen from '../screens/auth/MPINVerification';
 import MPINForgotScreen from '../screens/auth/MPINForgotScreen';
 import CompanySelectionScreen from '../screens/auth/CompanySelectionScreen';
-
-// Main (Dashboard)
-import UserDashboard from '../screens/main/UserDashboard';
-
-// QR Scanner (Web Login Pairing)
 import WebLoginQRScanner from '../screens/auth/WebLoginQRScanner';
 
-// Define param list including QRScanner
+// Main Screens
+import ModuleGridScreen from '../screens/main/ModuleGridScreen';
+import ModuleDetailScreen from '../screens/module/ModuleDetailScreen';
+
+// Administration Module Screens
+import WorkCentersListScreen from '../screens/module/administration/WorkCentersListScreen';
+// Placeholder screens for Create/Edit (we’ll implement later)
+import CreateWorkCenterScreen from '../screens/module/administration/CreateWorkCenterScreen';
+import EditWorkCenterScreen from '../screens/module/administration/EditWorkCenterScreen';
+
+// (Optional) Old dashboard – you can keep or remove
+// import UserDashboard from '../screens/main/UserDashboard';
+
 export type RootStackParamList = {
+  // Auth
   PhoneInput: undefined;
   OTPVerification: { phone: string; userId?: string; hasMpin?: boolean; flowState?: string };
   MPINSetup: { userId: string; phone: string; companyId: string };
@@ -1975,7 +1985,19 @@ export type RootStackParamList = {
     from: 'setup' | 'verify';
   };
   QRScanner: undefined;
+
+  // Main (after login)
   Main: undefined;
+
+  // Module navigation
+  ModuleDetail: { moduleName: string };
+
+  // Administration
+  WorkCentersList: undefined;
+  CreateWorkCenter: undefined;
+  EditWorkCenter: { code: string };
+
+  // Add more module screens here...
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -2004,6 +2026,7 @@ export default function Navigation() {
   return (
     <NavigationContainer ref={navigationRef} onReady={onNavigationReady}>
       <Stack.Navigator screenOptions={{ headerShown: false }} initialRouteName={initialRoute}>
+        {/* Auth Screens */}
         <Stack.Screen name="PhoneInput" component={PhoneInputScreen} />
         <Stack.Screen name="OTPVerification" component={OTPVerificationScreen} />
         <Stack.Screen name="MPINSetup" component={MPINSetupScreen} />
@@ -2011,7 +2034,35 @@ export default function Navigation() {
         <Stack.Screen name="MPINForgot" component={MPINForgotScreen} />
         <Stack.Screen name="CompanySelection" component={CompanySelectionScreen} />
         <Stack.Screen name="QRScanner" component={WebLoginQRScanner} options={{ headerShown: false }} />
-        <Stack.Screen name="Main" component={UserDashboard} />
+
+        {/* Main (Module Grid) */}
+        <Stack.Screen name="Main" component={ModuleGridScreen} />
+
+        {/* Module Detail */}
+        <Stack.Screen
+          name="ModuleDetail"
+          component={ModuleDetailScreen}
+          options={{ headerShown: true, title: 'Module' }}
+        />
+
+        {/* Administration Module Screens */}
+        <Stack.Screen
+          name="WorkCentersList"
+          component={WorkCentersListScreen}
+          options={{ headerShown: true, title: 'Work Centers' }}
+        />
+        <Stack.Screen
+          name="CreateWorkCenter"
+          component={CreateWorkCenterScreen}
+          options={{ headerShown: true, title: 'New Work Center' }}
+        />
+        <Stack.Screen
+          name="EditWorkCenter"
+          component={EditWorkCenterScreen}
+          options={{ headerShown: true, title: 'Edit Work Center' }}
+        />
+
+        {/* Add other module screens here as you build them */}
       </Stack.Navigator>
     </NavigationContainer>
   );
@@ -2901,7 +2952,7 @@ export default function MPINVerificationScreen() {
   const [deviceId, setDeviceId] = useState('');
   const [fingerprint, setFingerprint] = useState('');
 
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
     async function loadDeviceInfo() {
@@ -2987,8 +3038,12 @@ export default function MPINVerificationScreen() {
         companyId
       );
 
-      // ✅ FIX: tokens are nested inside `responseData.data`
+      // Extract tokens, user data, and permissions from the nested structure
       const { user_id, company_id, company_name, tokens, phone: userPhone } = responseData.data;
+
+      // Get permissions from company_context (if available)
+      const companyContext = responseData.data.company_context;
+      const permissions = companyContext?.permissions || [];
 
       if (tokens?.access_token && user_id) {
         const user = {
@@ -2999,9 +3054,11 @@ export default function MPINVerificationScreen() {
         };
 
         console.log('🧑‍💼 [MPINVerification] User object built:', user);
+        console.log('🔑 [MPINVerification] Permissions count:', permissions.length);
 
         clearPendingMpinLogin();
-        login(tokens.access_token, tokens.refresh_token, user, deviceId, company_id);
+        // Pass permissions to the store
+        login(tokens.access_token, tokens.refresh_token, user, deviceId, company_id, permissions);
 
         setTimeout(() => {
           navigation.dispatch(
@@ -3020,13 +3077,11 @@ export default function MPINVerificationScreen() {
       const status = error.response?.status;
       const msg = error.response?.data?.message || error.message || 'Verification failed.';
 
-      // Handle specific error cases
       if (status === 429) {
         const retryAfter = error.response?.data?.retry_after || 60;
         setCooldownSeconds(retryAfter);
         Alert.alert('Too Many Attempts', `Please wait ${retryAfter} seconds.`);
       } else if (status === 401) {
-        // This is the incorrect MPIN case (now correctly not triggering refresh)
         Alert.alert('Invalid MPIN', 'The MPIN you entered is incorrect. Please try again.');
       } else if (status === 400 && msg.toLowerCase().includes('user not found')) {
         Alert.alert('Error', 'User account not found. Please restart the process.');
@@ -4256,6 +4311,198 @@ const styles = StyleSheet.create({
 });
 ```
 
+# File: src/screens/main/ModuleGridScreen.tsx
+
+```tsx
+// apps/mobile/src/screens/main/ModuleGridScreen.tsx
+
+import React from 'react';
+import {
+  View,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  Dimensions,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Text, Card, ActivityIndicator } from 'react-native-paper';
+import { useNavigation } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+
+import { useUserAuthStore } from '../../store/userAuthStore';
+import { useModuleAccess } from '../../utils/permissions';
+
+// ---- Module icon & label mapping ----
+const MODULE_CONFIG: Record<string, { icon: string; label: string; color: string }> = {
+  administration: { icon: 'account-cog', label: 'Administration', color: '#7B2FBE' },
+  hr: { icon: 'account-group', label: 'HR', color: '#00B4DB' },
+  attendance: { icon: 'calendar-clock', label: 'Attendance', color: '#F59E0B' },
+  inventory: { icon: 'package-variant', label: 'Inventory', color: '#10B981' },
+  payroll: { icon: 'cash-multiple', label: 'Payroll', color: '#EF4444' },
+  sales: { icon: 'sale', label: 'Sales', color: '#8B5CF6' },
+  procurement: { icon: 'truck-delivery', label: 'Procurement', color: '#F97316' },
+  production: { icon: 'factory', label: 'Production', color: '#14B8A6' },
+  logistics: { icon: 'map-marker-path', label: 'Logistics', color: '#3B82F6' },
+  accounting: { icon: 'calculator', label: 'Accounting', color: '#6366F1' },
+  finance: { icon: 'bank', label: 'Finance', color: '#8B5CF6' },
+  it: { icon: 'laptop', label: 'IT', color: '#6B7280' },
+  academics: { icon: 'school', label: 'Academics', color: '#EC4899' },
+  marketing: { icon: 'bullhorn', label: 'Marketing', color: '#F59E0B' },
+  transport: { icon: 'bus', label: 'Transport', color: '#14B8A6' },
+  operations: { icon: 'clipboard-list', label: 'Operations', color: '#0EA5E9' },
+};
+
+type RootStackParamList = {
+  ModuleDetail: { moduleName: string };
+  // ... other screens
+};
+
+type NavigationProp = StackNavigationProp<RootStackParamList, 'ModuleDetail'>;
+
+const screenWidth = Dimensions.get('window').width;
+const numColumns = 2;
+const cardWidth = (screenWidth - 48) / numColumns;
+
+export default function ModuleGridScreen() {
+  const navigation = useNavigation<NavigationProp>();
+  const { accessibleModules } = useModuleAccess();
+  const { user, isAuthenticated } = useUserAuthStore();
+
+  // Show loading if authentication status is not yet determined
+  if (!isAuthenticated) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color="#7B2FBE" />
+          <Text style={{ marginTop: 12 }}>Loading modules...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // No modules available
+  if (!accessibleModules || accessibleModules.length === 0) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.centered}>
+          <Icon name="alert-circle-outline" size={64} color="#999" />
+          <Text variant="titleLarge" style={{ marginTop: 16 }}>
+            No Modules Available
+          </Text>
+          <Text variant="bodyMedium" style={styles.emptySubtext}>
+            You don't have access to any modules. Contact your administrator.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const renderModuleItem = ({ item }: { item: string }) => {
+    const config = MODULE_CONFIG[item] || {
+      icon: 'apps',
+      label: item.charAt(0).toUpperCase() + item.slice(1),
+      color: '#7B2FBE',
+    };
+
+    return (
+      <TouchableOpacity
+        style={styles.cardWrapper}
+        onPress={() => navigation.navigate('ModuleDetail', { moduleName: item })}
+        activeOpacity={0.7}
+      >
+        <Card style={[styles.card, { borderTopColor: config.color, width: cardWidth }]}>
+          <Card.Content style={styles.cardContent}>
+            <Icon name={config.icon} size={48} color={config.color} />
+            <Text variant="titleMedium" style={styles.moduleLabel}>
+              {config.label}
+            </Text>
+          </Card.Content>
+        </Card>
+      </TouchableOpacity>
+    );
+  };
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <View style={styles.header}>
+        <Text variant="headlineMedium" style={styles.welcome}>
+          Welcome, {user?.full_name || user?.phone || 'User'}
+        </Text>
+        <Text variant="bodyMedium" style={styles.subtitle}>
+          Select a module to get started
+        </Text>
+      </View>
+
+      <FlatList
+        data={accessibleModules}
+        keyExtractor={(item) => item}
+        numColumns={numColumns}
+        contentContainerStyle={styles.grid}
+        renderItem={renderModuleItem}
+        columnWrapperStyle={styles.columnWrapper}
+        showsVerticalScrollIndicator={false}
+      />
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#F5F7FA',
+  },
+  centered: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  emptySubtext: {
+    color: '#888',
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  header: {
+    paddingHorizontal: 24,
+    paddingTop: 16,
+    paddingBottom: 8,
+  },
+  welcome: {
+    fontWeight: 'bold',
+    color: '#1A1A1A',
+  },
+  subtitle: {
+    color: '#666',
+    marginTop: 4,
+  },
+  grid: {
+    paddingHorizontal: 16,
+    paddingBottom: 24,
+  },
+  columnWrapper: {
+    justifyContent: 'space-between',
+  },
+  cardWrapper: {
+    marginBottom: 16,
+  },
+  card: {
+    borderRadius: 12,
+    elevation: 2,
+    borderTopWidth: 4,
+  },
+  cardContent: {
+    alignItems: 'center',
+    paddingVertical: 24,
+  },
+  moduleLabel: {
+    marginTop: 12,
+    fontWeight: '600',
+    color: '#1A1A1A',
+  },
+});
+```
+
 # File: src/screens/main/UserDashboard.tsx
 
 ```tsx
@@ -4324,6 +4571,1040 @@ const styles = StyleSheet.create({
   container: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   subtext: { marginTop: 8, color: '#666' },
   button: { marginTop: 20, width: '80%' },
+});
+```
+
+# File: src/screens/module/ModuleDetailScreen.tsx
+
+```tsx
+// apps/mobile/src/screens/modules/ModuleDetailScreen.tsx
+
+import React from 'react';
+import {
+  View,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Text, Card } from 'react-native-paper';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+
+// ---- Feature configuration per module ----
+// For now, only 'administration' has features. Others show a placeholder.
+const FEATURES_CONFIG: Record<string, Array<{ key: string; label: string; icon: string; screen: string }>> = {
+  administration: [
+    { key: 'workCenters', label: 'Work Centers', icon: 'factory', screen: 'WorkCentersList' },
+    // Add more features here as they are implemented
+    // e.g., { key: 'shifts', label: 'Shifts', icon: 'clock-outline', screen: 'ShiftsList' },
+    // { key: 'departments', label: 'Departments', icon: 'domain', screen: 'DepartmentsList' },
+  ],
+  // Add other modules as needed
+  // hr: [
+  //   { key: 'employees', label: 'Employees', icon: 'account-multiple', screen: 'EmployeesList' },
+  // ],
+};
+
+// Type for the route params
+type ModuleDetailRouteProp = RouteProp<{ params: { moduleName: string } }, 'params'>;
+
+// Type for navigation (adjust if you have a proper RootStackParamList)
+type NavigationProp = StackNavigationProp<any>;
+
+export default function ModuleDetailScreen() {
+  const route = useRoute<ModuleDetailRouteProp>();
+  const navigation = useNavigation<NavigationProp>();
+  const { moduleName } = route.params as { moduleName: string };
+
+  // Get features for this module, or empty array if none
+  const features = FEATURES_CONFIG[moduleName] || [];
+
+  // If no features defined, show a placeholder
+  if (features.length === 0) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.centered}>
+          <Icon name="apps-box" size={64} color="#ccc" />
+          <Text variant="titleLarge" style={{ marginTop: 16 }}>
+            No Features Yet
+          </Text>
+          <Text variant="bodyMedium" style={styles.emptySubtext}>
+            This module does not have any available features at the moment.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const renderFeature = ({ item }: { item: typeof features[0] }) => (
+    <TouchableOpacity
+      style={styles.featureCard}
+      onPress={() => navigation.navigate(item.screen)}
+      activeOpacity={0.7}
+    >
+      <Card style={styles.card}>
+        <Card.Content style={styles.cardContent}>
+          <Icon name={item.icon} size={32} color="#7B2FBE" />
+          <Text variant="titleMedium" style={styles.featureLabel}>
+            {item.label}
+          </Text>
+        </Card.Content>
+      </Card>
+    </TouchableOpacity>
+  );
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <View style={styles.header}>
+        <Text variant="headlineSmall" style={styles.title}>
+          {moduleName.charAt(0).toUpperCase() + moduleName.slice(1)}
+        </Text>
+        <Text variant="bodyMedium" style={styles.subtitle}>
+          Select a feature to manage
+        </Text>
+      </View>
+      <FlatList
+        data={features}
+        keyExtractor={(item) => item.key}
+        renderItem={renderFeature}
+        contentContainerStyle={styles.list}
+        showsVerticalScrollIndicator={false}
+      />
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#F5F7FA',
+  },
+  centered: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  emptySubtext: {
+    color: '#888',
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  header: {
+    paddingHorizontal: 24,
+    paddingTop: 16,
+    paddingBottom: 8,
+  },
+  title: {
+    fontWeight: 'bold',
+    color: '#1A1A1A',
+  },
+  subtitle: {
+    color: '#666',
+    marginTop: 4,
+  },
+  list: {
+    paddingHorizontal: 16,
+    paddingBottom: 24,
+  },
+  featureCard: {
+    marginBottom: 12,
+  },
+  card: {
+    borderRadius: 12,
+    elevation: 1,
+  },
+  cardContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 16,
+  },
+  featureLabel: {
+    marginLeft: 16,
+    fontWeight: '500',
+    color: '#1A1A1A',
+  },
+});
+```
+
+# File: src/screens/module/administration/CreateWorkCenterScreen.tsx
+
+```tsx
+// apps/prayantra-b2b/src/screens/module/administration/CreateWorkCenterScreen.tsx
+
+import React from 'react';
+import { View, StyleSheet, ScrollView, Alert, KeyboardAvoidingView, Platform } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Text, TextInput, Button, Switch, ActivityIndicator } from 'react-native-paper';
+import { useForm, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
+import { useNavigation } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
+
+// API & Store
+import { createWorkCenter } from '@b2b/api-client';
+import { useUserAuthStore } from '../../../store/userAuthStore';
+
+// --- Zod Schema (no defaults in schema) ---
+const createWorkCenterSchema = z.object({
+  work_center_code: z.string().min(1, 'Code is required').max(20, 'Code too long'),
+  name: z.string().min(1, 'Name is required').max(100, 'Name too long'),
+  description: z.string().optional(),
+  timezone: z.string().optional(), // optional in form, we'll default in submit
+  is_active: z.boolean().optional(),
+});
+
+type FormData = z.infer<typeof createWorkCenterSchema>;
+
+type NavigationProp = StackNavigationProp<any>;
+
+export default function CreateWorkCenterScreen() {
+  const navigation = useNavigation<NavigationProp>();
+  const { accessToken, deviceId, companyId } = useUserAuthStore();
+
+  const [loading, setLoading] = React.useState(false);
+
+  const {
+    control,
+    handleSubmit,
+    formState: { errors },
+    setError,
+  } = useForm<FormData>({
+    resolver: zodResolver(createWorkCenterSchema),
+    defaultValues: {
+      work_center_code: '',
+      name: '',
+      description: '',
+      timezone: 'Asia/Kolkata', // default value
+      is_active: true,
+    },
+  });
+
+  const onSubmit = async (data: FormData) => {
+    if (!accessToken || !companyId || !deviceId) {
+      Alert.alert('Error', 'You are not logged in.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // Build payload with explicit defaults if not provided
+      const payload = {
+        work_center_code: data.work_center_code.trim(),
+        name: data.name.trim(),
+        description: data.description?.trim() || undefined,
+        timezone: data.timezone || 'Asia/Kolkata',
+        is_active: data.is_active !== undefined ? data.is_active : true,
+      };
+
+      const response = await createWorkCenter(
+        companyId,
+        deviceId,
+        payload,
+        accessToken
+      );
+
+      if (response.success) {
+        Alert.alert('Success', 'Work center created successfully.', [
+          { text: 'OK', onPress: () => navigation.goBack() },
+        ]);
+      } else {
+        Alert.alert('Error', response.message || 'Failed to create work center.');
+      }
+    } catch (error: any) {
+      console.error('Create work center error:', error);
+      const status = error.response?.status;
+      const msg = error.response?.data?.error || error.message;
+
+      if (status === 409) {
+        setError('work_center_code', {
+          type: 'manual',
+          message: 'This code already exists. Please use a different one.',
+        });
+        Alert.alert('Duplicate Code', 'A work center with this code already exists.');
+      } else {
+        Alert.alert('Error', msg || 'An unexpected error occurred.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={100}
+      >
+        <ScrollView contentContainerStyle={styles.scrollContainer}>
+          <View style={styles.form}>
+            <Text variant="headlineSmall" style={styles.heading}>
+              Create New Work Center
+            </Text>
+
+            {/* Code */}
+            <Controller
+              control={control}
+              name="work_center_code"
+              render={({ field: { onChange, onBlur, value } }) => (
+                <TextInput
+                  label="Work Center Code *"
+                  mode="outlined"
+                  value={value}
+                  onChangeText={onChange}
+                  onBlur={onBlur}
+                  error={!!errors.work_center_code}
+                  style={styles.input}
+                  autoCapitalize="characters"
+                  maxLength={20}
+                />
+              )}
+            />
+            {errors.work_center_code && (
+              <Text style={styles.errorText}>{errors.work_center_code.message}</Text>
+            )}
+
+            {/* Name */}
+            <Controller
+              control={control}
+              name="name"
+              render={({ field: { onChange, onBlur, value } }) => (
+                <TextInput
+                  label="Name *"
+                  mode="outlined"
+                  value={value}
+                  onChangeText={onChange}
+                  onBlur={onBlur}
+                  error={!!errors.name}
+                  style={styles.input}
+                  maxLength={100}
+                />
+              )}
+            />
+            {errors.name && <Text style={styles.errorText}>{errors.name.message}</Text>}
+
+            {/* Description */}
+            <Controller
+              control={control}
+              name="description"
+              render={({ field: { onChange, onBlur, value } }) => (
+                <TextInput
+                  label="Description (optional)"
+                  mode="outlined"
+                  value={value}
+                  onChangeText={onChange}
+                  onBlur={onBlur}
+                  style={styles.input}
+                  multiline
+                  numberOfLines={3}
+                  maxLength={500}
+                />
+              )}
+            />
+
+            {/* Timezone – fixed for now, but can be a picker */}
+            <Controller
+              control={control}
+              name="timezone"
+              render={({ field: { onChange, value } }) => (
+                <TextInput
+                  label="Timezone"
+                  mode="outlined"
+                  value={value || 'Asia/Kolkata'}
+                  onChangeText={onChange}
+                  style={[styles.input, styles.disabledInput]}
+                  editable={false}
+                />
+              )}
+            />
+
+            {/* Active switch */}
+            <Controller
+              control={control}
+              name="is_active"
+              render={({ field: { onChange, value } }) => (
+                <View style={styles.switchRow}>
+                  <Text variant="bodyMedium">Active</Text>
+                  <Switch value={value || false} onValueChange={onChange} color="#7B2FBE" />
+                </View>
+              )}
+            />
+
+            <Button
+              mode="contained"
+              onPress={handleSubmit(onSubmit)}
+              loading={loading}
+              disabled={loading}
+              style={styles.submitButton}
+              contentStyle={styles.submitButtonContent}
+              buttonColor="#7B2FBE"
+            >
+              Create Work Center
+            </Button>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#F5F7FA',
+  },
+  scrollContainer: {
+    flexGrow: 1,
+    paddingHorizontal: 24,
+    paddingVertical: 32,
+  },
+  form: {
+    width: '100%',
+  },
+  heading: {
+    fontWeight: 'bold',
+    color: '#1A1A1A',
+    marginBottom: 24,
+  },
+  input: {
+    marginBottom: 16,
+    backgroundColor: 'white',
+  },
+  disabledInput: {
+    backgroundColor: '#f0f0f0',
+  },
+  errorText: {
+    color: '#EF4444',
+    fontSize: 12,
+    marginTop: -8,
+    marginBottom: 8,
+    marginLeft: 8,
+  },
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginVertical: 16,
+    paddingHorizontal: 4,
+  },
+  submitButton: {
+    marginTop: 16,
+    borderRadius: 8,
+  },
+  submitButtonContent: {
+    paddingVertical: 8,
+  },
+});
+```
+
+# File: src/screens/module/administration/EditWorkCenterScreen.tsx
+
+```tsx
+// apps/prayantra-b2b/src/screens/modules/administration/EditWorkCenterScreen.tsx
+
+import React, { useEffect, useState } from 'react';
+import { View, StyleSheet, ScrollView, Alert, KeyboardAvoidingView, Platform } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Text, TextInput, Button, Switch, ActivityIndicator } from 'react-native-paper';
+import { useForm, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
+
+// API & Store
+import { getWorkCenterByCode, updateWorkCenter } from '@b2b/api-client';
+import { useUserAuthStore } from '../../../store/userAuthStore';
+import { RootStackParamList } from '../../../navigation';
+
+// Zod schema for update (all fields optional)
+const updateWorkCenterSchema = z.object({
+  name: z.string().min(1, 'Name is required').max(100, 'Name too long').optional(),
+  description: z.string().optional().nullable(),
+  is_active: z.boolean().optional(),
+});
+
+type FormData = z.infer<typeof updateWorkCenterSchema>;
+
+type EditWorkCenterRouteProp = RouteProp<RootStackParamList, 'EditWorkCenter'>;
+type NavigationProp = StackNavigationProp<any>;
+
+export default function EditWorkCenterScreen() {
+  const navigation = useNavigation<NavigationProp>();
+  const route = useRoute<EditWorkCenterRouteProp>();
+  const { code } = route.params;
+
+  const { accessToken, deviceId, companyId } = useUserAuthStore();
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [workCenterData, setWorkCenterData] = useState<any>(null);
+
+  const {
+    control,
+    handleSubmit,
+    reset,
+    formState: { errors },
+    setError,
+  } = useForm<FormData>({
+    resolver: zodResolver(updateWorkCenterSchema),
+    defaultValues: {
+      name: '',
+      description: '',
+      is_active: true,
+    },
+  });
+
+  // Fetch existing data
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!accessToken || !companyId || !deviceId) {
+        Alert.alert('Error', 'Missing authentication.');
+        navigation.goBack();
+        return;
+      }
+
+      try {
+        const response = await getWorkCenterByCode(companyId, deviceId, code, accessToken);
+        if (response.success && response.data) {
+          setWorkCenterData(response.data);
+          reset({
+            name: response.data.name,
+            description: response.data.description || '',
+            is_active: response.data.is_active,
+          });
+        } else {
+          Alert.alert('Not Found', 'Work center not found.', [{ text: 'OK', onPress: () => navigation.goBack() }]);
+        }
+      } catch (error: any) {
+        Alert.alert('Error', error.message || 'Failed to load work center.');
+        navigation.goBack();
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, [code, accessToken, companyId, deviceId]);
+
+  const onSubmit = async (data: FormData) => {
+    if (!accessToken || !companyId || !deviceId) {
+      Alert.alert('Error', 'You are not logged in.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const payload: any = {};
+      if (data.name !== undefined) payload.name = data.name.trim();
+      if (data.description !== undefined) payload.description = data.description?.trim() || '';
+      if (data.is_active !== undefined) payload.is_active = data.is_active;
+
+      const response = await updateWorkCenter(
+        companyId,
+        deviceId,
+        code,
+        payload,
+        accessToken
+      );
+
+      if (response.success) {
+        Alert.alert('Success', 'Work center updated successfully.', [
+          { text: 'OK', onPress: () => navigation.goBack() },
+        ]);
+      } else {
+        Alert.alert('Error', response.message || 'Update failed.');
+      }
+    } catch (error: any) {
+      console.error('Update work center error:', error);
+      const msg = error.response?.data?.error || error.message;
+      Alert.alert('Error', msg || 'An unexpected error occurred.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.centered}>
+        <ActivityIndicator size="large" color="#7B2FBE" />
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={100}
+      >
+        <ScrollView contentContainerStyle={styles.scrollContainer}>
+          <View style={styles.form}>
+            <Text variant="headlineSmall" style={styles.heading}>
+              Edit Work Center
+            </Text>
+
+            <View style={styles.readonlyRow}>
+              <Text variant="bodyMedium" style={styles.label}>Code</Text>
+              <Text variant="bodyLarge" style={styles.value}>{code}</Text>
+            </View>
+
+            {/* Name */}
+            <Controller
+              control={control}
+              name="name"
+              render={({ field: { onChange, onBlur, value } }) => (
+                <TextInput
+                  label="Name *"
+                  mode="outlined"
+                  value={value}
+                  onChangeText={onChange}
+                  onBlur={onBlur}
+                  error={!!errors.name}
+                  style={styles.input}
+                  maxLength={100}
+                />
+              )}
+            />
+            {errors.name && <Text style={styles.errorText}>{errors.name.message}</Text>}
+
+            {/* Description */}
+            <Controller
+              control={control}
+              name="description"
+              render={({ field: { onChange, onBlur, value } }) => (
+                <TextInput
+                  label="Description (optional)"
+                  mode="outlined"
+                  value={value || ''}
+                  onChangeText={onChange}
+                  onBlur={onBlur}
+                  style={styles.input}
+                  multiline
+                  numberOfLines={3}
+                  maxLength={500}
+                />
+              )}
+            />
+
+            {/* Active switch */}
+            <Controller
+              control={control}
+              name="is_active"
+              render={({ field: { onChange, value } }) => (
+                <View style={styles.switchRow}>
+                  <Text variant="bodyMedium">Active</Text>
+                  <Switch value={value || false} onValueChange={onChange} color="#7B2FBE" />
+                </View>
+              )}
+            />
+
+            <Button
+              mode="contained"
+              onPress={handleSubmit(onSubmit)}
+              loading={saving}
+              disabled={saving}
+              style={styles.submitButton}
+              contentStyle={styles.submitButtonContent}
+              buttonColor="#7B2FBE"
+            >
+              Update Work Center
+            </Button>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#F5F7FA',
+  },
+  centered: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  scrollContainer: {
+    flexGrow: 1,
+    paddingHorizontal: 24,
+    paddingVertical: 32,
+  },
+  form: {
+    width: '100%',
+  },
+  heading: {
+    fontWeight: 'bold',
+    color: '#1A1A1A',
+    marginBottom: 24,
+  },
+  readonlyRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+    marginBottom: 16,
+  },
+  label: {
+    color: '#666',
+    fontWeight: '500',
+  },
+  value: {
+    color: '#1A1A1A',
+    fontWeight: '600',
+  },
+  input: {
+    marginBottom: 16,
+    backgroundColor: 'white',
+  },
+  errorText: {
+    color: '#EF4444',
+    fontSize: 12,
+    marginTop: -8,
+    marginBottom: 8,
+    marginLeft: 8,
+  },
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginVertical: 16,
+    paddingHorizontal: 4,
+  },
+  submitButton: {
+    marginTop: 16,
+    borderRadius: 8,
+  },
+  submitButtonContent: {
+    paddingVertical: 8,
+  },
+});
+```
+
+# File: src/screens/module/administration/WorkCentersListScreen.tsx
+
+```tsx
+// apps/mobile/src/screens/modules/administration/WorkCentersListScreen.tsx
+
+import React, { useEffect, useState, useCallback } from 'react';
+import {
+  View,
+  StyleSheet,
+  FlatList,
+  Alert,
+  TouchableOpacity,
+  RefreshControl,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Text, Card, ActivityIndicator, FAB } from 'react-native-paper';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+
+// Shared types & API
+import { WorkCenter, ApiResponse } from '@b2b/shared-types';
+import { listWorkCenters, deleteWorkCenter } from '@b2b/api-client';
+
+// Store
+import { useUserAuthStore } from '../../../store/userAuthStore';
+
+// Optional: permission check (if needed)
+import { useModuleAccess } from '../../../utils/permissions';
+
+type NavigationProp = StackNavigationProp<any>;
+
+export default function WorkCentersListScreen() {
+  const [workCenters, setWorkCenters] = useState<WorkCenter[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const { accessToken, deviceId, companyId } = useUserAuthStore();
+  const navigation = useNavigation<NavigationProp>();
+
+  // Optional: check if user has permission to view work centers
+  // const { hasPermission } = useModuleAccess();
+  // useEffect(() => {
+  //   if (!hasPermission('attendance.workcenter.view')) {
+  //     Alert.alert('Access Denied', 'You do not have permission to view work centers.');
+  //     navigation.goBack();
+  //   }
+  // }, []);
+
+  const fetchWorkCenters = async (showLoading = true) => {
+    if (!accessToken || !companyId) {
+      setLoading(false);
+      return;
+    }
+
+    if (showLoading) setLoading(true);
+    try {
+      const res = await listWorkCenters(
+        companyId,
+        deviceId!,
+        { page: 1, page_size: 100 },
+        accessToken
+      );
+      setWorkCenters(res.data || []);
+    } catch (error: any) {
+      console.error('❌ Failed to fetch work centers:', error);
+      Alert.alert(
+        'Error',
+        error.response?.data?.message || error.message || 'Failed to load work centers.'
+      );
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  // Initial load
+  useEffect(() => {
+    fetchWorkCenters(true);
+  }, [accessToken, companyId]);
+
+  // Refresh on focus (in case of create/edit)
+  useFocusEffect(
+    useCallback(() => {
+      fetchWorkCenters(false);
+    }, [accessToken, companyId])
+  );
+
+  const handleDelete = (code: string) => {
+    Alert.alert(
+      'Delete Work Center',
+      'Are you sure you want to delete this work center? This action cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteWorkCenter(companyId!, deviceId!, code, accessToken!);
+              // Remove locally or refetch
+              setWorkCenters((prev) => prev.filter((wc) => wc.work_center_code !== code));
+            } catch (error: any) {
+              Alert.alert(
+                'Error',
+                error.response?.data?.message || error.message || 'Failed to delete.'
+              );
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const renderItem = ({ item }: { item: WorkCenter }) => (
+    <Card style={styles.card}>
+      <Card.Content>
+        <View style={styles.cardRow}>
+          <View style={styles.cardInfo}>
+            <Text variant="titleMedium" style={styles.name}>
+              {item.name}
+            </Text>
+            <Text variant="bodySmall" style={styles.code}>
+              Code: {item.work_center_code}
+            </Text>
+            {item.description && (
+              <Text variant="bodySmall" style={styles.description}>
+                {item.description}
+              </Text>
+            )}
+            <View style={styles.statusBadge}>
+              <Text style={[styles.statusText, item.is_active ? styles.active : styles.inactive]}>
+                {item.is_active ? 'Active' : 'Inactive'}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.actions}>
+            <TouchableOpacity
+              onPress={() =>
+                navigation.navigate('EditWorkCenter', { code: item.work_center_code })
+              }
+              style={styles.actionButton}
+            >
+              <Icon name="pencil" size={24} color="#7B2FBE" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => handleDelete(item.work_center_code)}
+              style={styles.actionButton}
+            >
+              <Icon name="delete" size={24} color="#EF4444" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Card.Content>
+    </Card>
+  );
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchWorkCenters(false);
+  };
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color="#7B2FBE" />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <View style={styles.header}>
+        <Text variant="headlineSmall" style={styles.title}>
+          Work Centers
+        </Text>
+        <Text variant="bodyMedium" style={styles.subtitle}>
+          Manage your work locations
+        </Text>
+      </View>
+
+      <FlatList
+        data={workCenters}
+        keyExtractor={(item) => item.work_center_code}
+        renderItem={renderItem}
+        contentContainerStyle={styles.list}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#7B2FBE']} />
+        }
+        ListEmptyComponent={
+          <View style={styles.empty}>
+            <Icon name="factory" size={48} color="#ccc" />
+            <Text variant="titleMedium" style={styles.emptyTitle}>
+              No Work Centers
+            </Text>
+            <Text variant="bodyMedium" style={styles.emptySubtext}>
+              Click the + button to create your first work center.
+            </Text>
+          </View>
+        }
+      />
+
+      <FAB
+        style={styles.fab}
+        icon="plus"
+        onPress={() => navigation.navigate('CreateWorkCenter')}
+        color="white"
+      />
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#F5F7FA',
+  },
+  centered: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  header: {
+    paddingHorizontal: 24,
+    paddingVertical: 16,
+    backgroundColor: '#F5F7FA',
+  },
+  title: {
+    fontWeight: 'bold',
+    color: '#1A1A1A',
+  },
+  subtitle: {
+    color: '#666',
+    marginTop: 4,
+  },
+  list: {
+    paddingHorizontal: 16,
+    paddingBottom: 80,
+  },
+  card: {
+    marginBottom: 12,
+    borderRadius: 12,
+    elevation: 2,
+  },
+  cardRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  cardInfo: {
+    flex: 1,
+    marginRight: 8,
+  },
+  name: {
+    fontWeight: '600',
+    color: '#1A1A1A',
+  },
+  code: {
+    color: '#666',
+    marginTop: 2,
+  },
+  description: {
+    color: '#888',
+    marginTop: 2,
+  },
+  statusBadge: {
+    marginTop: 6,
+  },
+  statusText: {
+    fontSize: 12,
+    fontWeight: '600',
+    paddingHorizontal: 10,
+    paddingVertical: 2,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+  },
+  active: {
+    color: '#10B981',
+    backgroundColor: '#D1FAE5',
+  },
+  inactive: {
+    color: '#EF4444',
+    backgroundColor: '#FEE2E2',
+  },
+  actions: {
+    flexDirection: 'row',
+    marginLeft: 8,
+  },
+  actionButton: {
+    padding: 6,
+    marginLeft: 4,
+  },
+  empty: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 60,
+  },
+  emptyTitle: {
+    marginTop: 16,
+    color: '#666',
+  },
+  emptySubtext: {
+    color: '#999',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  fab: {
+    position: 'absolute',
+    margin: 16,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#7B2FBE',
+  },
 });
 ```
 

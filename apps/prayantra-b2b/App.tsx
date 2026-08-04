@@ -1,6 +1,5 @@
-// apps/prayantra-b2b/App.tsx
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { Provider as PaperProvider } from 'react-native-paper';
+import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper'; // <-- import DefaultTheme
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
@@ -16,6 +15,9 @@ import { getDeviceId } from './src/utils/device';
 import { refreshUserAccessToken } from './src/services/auth';
 import { resetToAuthScreen } from './src/navigation/navigationService';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
+
+// 👇 Import shared colors
+import { PRIMARY_COLOR } from './src/constants/colors';
 
 // --- Global error handler (dev only) ---
 if (__DEV__) {
@@ -41,6 +43,22 @@ const apiBaseUrl =
   process.env.EXPO_PUBLIC_API_BASE_URL ??
   'http://localhost:8080/api/v1';
 
+// ----- Define a light theme to prevent dark mode issues -----
+const lightTheme = {
+  ...DefaultTheme,
+  colors: {
+    ...DefaultTheme.colors,
+    primary: PRIMARY_COLOR,
+    background: '#FFFFFF',
+    surface: '#FFFFFF',
+    card: '#FFFFFF',
+    text: '#1A1A1A',
+    placeholder: '#999',
+    disabled: '#ccc',
+    accent: PRIMARY_COLOR,
+  },
+};
+
 export default function App() {
   const [isSplashVisible, setIsSplashVisible] = useState(true);
   const [isReady, setIsReady] = useState(false);
@@ -56,7 +74,6 @@ export default function App() {
     updateTokens,
   } = useUserAuthStore();
 
-  // ✅ Fix: use 'number' (not NodeJS.Timeout) for React Native
   const refreshTimerRef = useRef<number | null>(null);
   const isFirstForeground = useRef(true);
   const hasRefreshedOnLaunch = useRef(false);
@@ -86,7 +103,7 @@ export default function App() {
     prepare();
   }, []);
 
-  // 2. Define the refresh function (memoized) – FIXED token extraction
+  // 2. Define the refresh function (memoized)
   const doRefresh = useCallback(async (): Promise<{ accessToken: string; refreshToken: string }> => {
     console.log('🔄 [App] doRefresh() called');
     const refreshToken = useUserAuthStore.getState().refreshToken;
@@ -95,7 +112,6 @@ export default function App() {
       throw new Error('No refresh token');
     }
     try {
-      // ✅ The response contains a nested `data` property with the tokens
       const response = await refreshUserAccessToken(refreshToken);
       const { access_token, refresh_token } = response.data;
       console.log('🔄 [App] New tokens received:', { access_token, refresh_token });
@@ -119,22 +135,29 @@ export default function App() {
     const onUnauthorized = () => {
       console.warn('🚫 [App] Unauthorized callback triggered');
       clearSession(); // preserves savedUserId, savedPhone, savedHasMpin
-      resetToAuthScreen(); // will route to MPIN verification if saved user exists
+      resetToAuthScreen();
     };
     setUnauthorizedCallback(onUnauthorized);
     return () => setUnauthorizedCallback(null);
   }, [clearSession]);
 
-  // 5. Proactive refresh timer – NOW EVERY 10 SECONDS FOR TESTING
+  // 5. Proactive refresh timer – every 27 seconds
   useEffect(() => {
     const startTimer = () => {
       if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
       refreshTimerRef.current = setInterval(() => {
         if (useUserAuthStore.getState().isAuthenticated) {
           console.log('⏰ [App] Timer tick - doing proactive refresh');
-          doRefresh().catch((err) => console.error('❌ [App] Proactive refresh error:', err));
+          doRefresh().catch((err) => {
+            console.error('❌ [App] Proactive refresh error:', err);
+            if (err.response?.status === 401) {
+              const { clearSession } = useUserAuthStore.getState();
+              clearSession();
+              resetToAuthScreen();
+            }
+          });
         }
-      }, 27000); // 🔁 10 seconds (was 270000)
+      }, 27000);
     };
 
     if (isAuthenticated) {
@@ -152,7 +175,7 @@ export default function App() {
     };
   }, [isAuthenticated, doRefresh]);
 
-  // 6. Proactive Refresh on Launch – sets isAuthReady when done
+  // 6. Proactive Refresh on Launch
   useEffect(() => {
     async function refreshOnLaunch() {
       if (hasRefreshedOnLaunch.current) return;
@@ -162,7 +185,6 @@ export default function App() {
       const refreshToken = useUserAuthStore.getState().refreshToken;
 
       if (!refreshToken) {
-        // No refresh token – log out completely (clears everything including saved user)
         logout();
         resetToAuthScreen();
         hasRefreshedOnLaunch.current = true;
@@ -174,8 +196,13 @@ export default function App() {
       try {
         await doRefresh();
         console.log('✅ [App] Proactive refresh succeeded on launch');
-      } catch (error) {
+      } catch (error: any) {
         console.warn('❌ [App] Proactive refresh failed on launch:', error);
+        if (error.response?.status === 401) {
+          const { clearSession } = useUserAuthStore.getState();
+          clearSession();
+          resetToAuthScreen();
+        }
       } finally {
         hasRefreshedOnLaunch.current = true;
         setIsAuthReady(true);
@@ -218,7 +245,8 @@ export default function App() {
         {isSplashVisible ? (
           <AnimatedSplash onFinish={handleSplashFinish} />
         ) : (
-          <PaperProvider>
+          // 👇 Apply the light theme here
+          <PaperProvider theme={lightTheme}>
             <StatusBar style="dark" />
             <Navigation />
           </PaperProvider>

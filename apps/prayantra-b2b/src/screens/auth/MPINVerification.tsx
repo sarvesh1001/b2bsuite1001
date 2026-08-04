@@ -57,7 +57,7 @@ export default function MPINVerificationScreen() {
   const [deviceId, setDeviceId] = useState('');
   const [fingerprint, setFingerprint] = useState('');
 
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
     async function loadDeviceInfo() {
@@ -143,8 +143,12 @@ export default function MPINVerificationScreen() {
         companyId
       );
 
-      // ✅ FIX: tokens are nested inside `responseData.data`
+      // Extract tokens, user data, and permissions from the nested structure
       const { user_id, company_id, company_name, tokens, phone: userPhone } = responseData.data;
+
+      // Get permissions from company_context (if available)
+      const companyContext = responseData.data.company_context;
+      const permissions = companyContext?.permissions || [];
 
       if (tokens?.access_token && user_id) {
         const user = {
@@ -155,9 +159,11 @@ export default function MPINVerificationScreen() {
         };
 
         console.log('🧑‍💼 [MPINVerification] User object built:', user);
+        console.log('🔑 [MPINVerification] Permissions count:', permissions.length);
 
         clearPendingMpinLogin();
-        login(tokens.access_token, tokens.refresh_token, user, deviceId, company_id);
+        // Pass permissions to the store
+        login(tokens.access_token, tokens.refresh_token, user, deviceId, company_id, permissions);
 
         setTimeout(() => {
           navigation.dispatch(
@@ -176,13 +182,11 @@ export default function MPINVerificationScreen() {
       const status = error.response?.status;
       const msg = error.response?.data?.message || error.message || 'Verification failed.';
 
-      // Handle specific error cases
       if (status === 429) {
         const retryAfter = error.response?.data?.retry_after || 60;
         setCooldownSeconds(retryAfter);
         Alert.alert('Too Many Attempts', `Please wait ${retryAfter} seconds.`);
       } else if (status === 401) {
-        // This is the incorrect MPIN case (now correctly not triggering refresh)
         Alert.alert('Invalid MPIN', 'The MPIN you entered is incorrect. Please try again.');
       } else if (status === 400 && msg.toLowerCase().includes('user not found')) {
         Alert.alert('Error', 'User account not found. Please restart the process.');

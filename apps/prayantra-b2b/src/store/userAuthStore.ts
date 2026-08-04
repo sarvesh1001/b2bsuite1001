@@ -24,6 +24,18 @@ export interface User {
   data_region?: string;
 }
 
+// Helper to extract unique module names from permissions
+const extractModulesFromPermissions = (permissions: string[]): string[] => {
+  const modules = new Set<string>();
+  permissions.forEach(p => {
+    const parts = p.split('.');
+    if (parts.length >= 2) {
+      modules.add(parts[0]); // e.g. "administration", "hr", "attendance"
+    }
+  });
+  return Array.from(modules);
+};
+
 interface UserAuthState {
   user: User | null;
   accessToken: string | null;
@@ -31,6 +43,10 @@ interface UserAuthState {
   deviceId: string | null;
   companyId: string | null;
   isAuthenticated: boolean;
+
+  // New: permissions and derived modules
+  permissions: string[];
+  accessibleModules: string[];
 
   pendingUserId: string | null;
   pendingPhone: string | null;
@@ -40,7 +56,14 @@ interface UserAuthState {
   savedPhone: string | null;
   savedHasMpin: boolean | null;
 
-  login: (accessToken: string, refreshToken: string, user: User, deviceId?: string, companyId?: string) => void;
+  login: (
+    accessToken: string,
+    refreshToken: string,
+    user: User,
+    deviceId?: string,
+    companyId?: string,
+    permissions?: string[]
+  ) => void;
   logout: () => Promise<void>;
   clearSession: () => void;
   updateTokens: (accessToken: string, refreshToken: string) => void;
@@ -70,6 +93,8 @@ export const useUserAuthStore = create<UserAuthState>()(
       deviceId: null,
       companyId: null,
       isAuthenticated: false,
+      permissions: [],
+      accessibleModules: [],
 
       pendingUserId: null,
       pendingPhone: null,
@@ -79,10 +104,12 @@ export const useUserAuthStore = create<UserAuthState>()(
       savedPhone: null,
       savedHasMpin: null,
 
-      login: (accessToken, refreshToken, user, deviceId, companyId) => {
+      login: (accessToken, refreshToken, user, deviceId, companyId, permissions = []) => {
         console.log('🔐 [UserAuth] login() – user_id:', user.user_id);
         setAuthToken(accessToken);
         if (deviceId) setDeviceId(deviceId);
+
+        const modules = extractModulesFromPermissions(permissions);
 
         set({
           accessToken,
@@ -91,6 +118,8 @@ export const useUserAuthStore = create<UserAuthState>()(
           deviceId: deviceId || null,
           companyId: companyId || user.company_id || null,
           isAuthenticated: true,
+          permissions,
+          accessibleModules: modules,
           pendingUserId: null,
           pendingPhone: null,
           pendingHasMpin: null,
@@ -125,6 +154,8 @@ export const useUserAuthStore = create<UserAuthState>()(
           deviceId: null,
           companyId: null,
           isAuthenticated: false,
+          permissions: [],
+          accessibleModules: [],
           pendingUserId: null,
           pendingPhone: null,
           pendingHasMpin: null,
@@ -141,6 +172,8 @@ export const useUserAuthStore = create<UserAuthState>()(
           accessToken: null,
           refreshToken: null,
           isAuthenticated: false,
+          permissions: [],
+          accessibleModules: [],
         });
       },
 
@@ -236,6 +269,8 @@ export const useUserAuthStore = create<UserAuthState>()(
         deviceId: state.deviceId,
         companyId: state.companyId,
         isAuthenticated: state.isAuthenticated,
+        permissions: state.permissions,
+        accessibleModules: state.accessibleModules,
         pendingUserId: state.pendingUserId,
         pendingPhone: state.pendingPhone,
         pendingHasMpin: state.pendingHasMpin,
