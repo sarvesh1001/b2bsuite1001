@@ -1,5 +1,3 @@
-// apps/mobile/src/screens/modules/ModuleDetailScreen.tsx
-
 import React from 'react';
 import {
   View,
@@ -14,7 +12,6 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { LinearGradient } from 'expo-linear-gradient';
 
-// 👇 Import shared colors & gradients
 import {
   BACKGROUND_COLOR,
   CARD_BACKGROUND,
@@ -31,7 +28,15 @@ import {
 const FEATURES_CONFIG: Record<string, Array<{ key: string; label: string; icon: string; screen: string }>> = {
   administration: [
     { key: 'workCenters', label: 'Work Centers', icon: 'factory', screen: 'WorkCentersList' },
+    { key: 'departments', label: 'Departments', icon: 'office-building', screen: 'DepartmentsList' },
+    { key: 'roles', label: 'Roles', icon: 'account-key', screen: 'RolesList' },
+    { key: 'positions', label: 'Positions', icon: 'badge-account', screen: 'PositionsList' },
+    { key: 'employees', label: 'Employees', icon: 'account-multiple', screen: 'EmployeesList' },
   ],
+  // Add other modules here as they are built
+  // hr: [...],
+  // inventory: [...],
+  // etc.
 };
 
 type ModuleDetailRouteProp = RouteProp<{ params: { moduleName: string } }, 'params'>;
@@ -95,7 +100,7 @@ export default function ModuleDetailScreen() {
         </Text>
       </LinearGradient>
 
-      {/* 👇 Subtle divider – thin line with small gap */}
+      {/* Divider */}
       <View style={styles.divider} />
 
       <FlatList
@@ -128,7 +133,6 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: 24,
     paddingBottom: 16,
-    // Soft shadow – gives depth without being harsh
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
@@ -144,20 +148,14 @@ const styles = StyleSheet.create({
     opacity: 0.9,
     marginTop: 4,
   },
-  // 👇 Elegant divider – thin line with small spacing
   divider: {
-    height: 12, // small gap
+    height: 12,
     backgroundColor: BACKGROUND_COLOR,
-    justifyContent: 'center',
-    alignItems: 'center',
   },
-  // Add a thin line inside the divider (optional – can be removed)
-  // We can also use a border on the list itself instead.
   list: {
     paddingHorizontal: 16,
     paddingTop: 4,
     paddingBottom: 24,
-    // 👇 A subtle top border on the list itself
     borderTopWidth: 1,
     borderTopColor: BORDER_COLOR,
   },

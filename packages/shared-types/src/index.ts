@@ -1,5 +1,10 @@
 import { z } from 'zod';
 export * from './workCenter';
+export * from './department';
+export * from './role';
+export * from './position';
+export * from './employee';
+
 
 // ---------- User ----------
 export const UserSchema = z.object({
