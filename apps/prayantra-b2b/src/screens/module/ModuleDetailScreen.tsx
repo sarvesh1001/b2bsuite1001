@@ -32,6 +32,10 @@ const FEATURES_CONFIG: Record<string, Array<{ key: string; label: string; icon: 
     { key: 'roles', label: 'Roles', icon: 'account-key', screen: 'RolesList' },
     { key: 'positions', label: 'Positions', icon: 'badge-account', screen: 'PositionsList' },
     { key: 'employees', label: 'Employees', icon: 'account-multiple', screen: 'EmployeesList' },
+    { key: 'employeeSearch', label: 'Employee Search', icon: 'account-search', screen: 'EmployeeSearch' },
+    { key: 'avatars', label: 'My Avatars', icon: 'account-circle', screen: 'AvatarManagement' },
+    // 👇 NEW: User Phone
+    { key: 'userPhone', label: 'User Phone', icon: 'phone', screen: 'UserPhone' },
   ],
   // Add other modules here as they are built
   // hr: [...],

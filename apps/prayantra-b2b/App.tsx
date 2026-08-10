@@ -1,11 +1,12 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper'; // <-- import DefaultTheme
+import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { useFonts } from 'expo-font';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Alert, AppState, AppStateStatus } from 'react-native';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import Navigation from './src/navigation';
 import { axiosInstance, setRefreshTokenFunction, setUnauthorizedCallback } from '@b2b/api-client';
@@ -16,7 +17,6 @@ import { refreshUserAccessToken } from './src/services/auth';
 import { resetToAuthScreen } from './src/navigation/navigationService';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 
-// 👇 Import shared colors
 import { PRIMARY_COLOR } from './src/constants/colors';
 
 // --- Global error handler (dev only) ---
@@ -43,7 +43,18 @@ const apiBaseUrl =
   process.env.EXPO_PUBLIC_API_BASE_URL ??
   'http://localhost:8080/api/v1';
 
-// ----- Define a light theme to prevent dark mode issues -----
+// ----- Create QueryClient instance -----
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60 * 1000, // 5 minutes
+      gcTime: 10 * 60 * 1000,   // 10 minutes (replaces cacheTime)
+      retry: 1,
+    },
+  },
+});
+
+// ----- Define a light theme -----
 const lightTheme = {
   ...DefaultTheme,
   colors: {
@@ -245,11 +256,12 @@ export default function App() {
         {isSplashVisible ? (
           <AnimatedSplash onFinish={handleSplashFinish} />
         ) : (
-          // 👇 Apply the light theme here
-          <PaperProvider theme={lightTheme}>
-            <StatusBar style="dark" />
-            <Navigation />
-          </PaperProvider>
+          <QueryClientProvider client={queryClient}>
+            <PaperProvider theme={lightTheme}>
+              <StatusBar style="dark" />
+              <Navigation />
+            </PaperProvider>
+          </QueryClientProvider>
         )}
       </SafeAreaProvider>
     </ErrorBoundary>

@@ -37,6 +37,14 @@ import EditPositionScreen from '../screens/module/administration/EditPositionScr
 import EmployeesListScreen from '../screens/module/administration/EmployeesListScreen';
 import AddEmployeeScreen from '../screens/module/administration/AddEmployeeScreen';
 import EditEmployeeScreen from '../screens/module/administration/EditEmployeeScreen';
+import EmployeeSearchScreen from '../screens/module/administration/EmployeeSearchScreen';
+
+// Avatar Management
+import AvatarManagementScreen from '../screens/module/administration/AvatarManagementScreen';
+// Employee Detail
+import EmployeeDetailScreen from '../screens/module/administration/EmployeeDetailScreen';
+// 👇 NEW: User Phone Screen
+import UserPhoneScreen from '../screens/module/administration/UserPhoneScreen';
 
 export type RootStackParamList = {
   // Auth
@@ -79,6 +87,12 @@ export type RootStackParamList = {
   EmployeesList: undefined;
   AddEmployee: undefined;
   EditEmployee: { userId: string };
+  EmployeeSearch: undefined;
+
+  AvatarManagement: undefined;
+  EmployeeDetail: { userId: string };
+  // 👇 NEW: User Phone
+  UserPhone: { userId: string; userName?: string };
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -212,7 +226,30 @@ export default function Navigation() {
           options={{ headerShown: true, title: 'Edit Employee' }}
         />
 
-        {/* Add other module screens here as you build them */}
+        <Stack.Screen
+          name="EmployeeSearch"
+          component={EmployeeSearchScreen}
+          options={{ headerShown: true, title: 'Search Employees' }}
+        />
+
+        <Stack.Screen
+          name="AvatarManagement"
+          component={AvatarManagementScreen}
+          options={{ headerShown: true, title: 'My Avatars' }}
+        />
+
+        <Stack.Screen
+          name="EmployeeDetail"
+          component={EmployeeDetailScreen}
+          options={{ headerShown: true, title: 'Employee Details' }}
+        />
+
+        {/* 👇 NEW: User Phone */}
+        <Stack.Screen
+          name="UserPhone"
+          component={UserPhoneScreen}
+          options={{ headerShown: true, title: 'User Phone' }}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );

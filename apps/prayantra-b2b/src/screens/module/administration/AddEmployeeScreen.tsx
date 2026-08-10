@@ -1,3 +1,5 @@
+// apps/prayantra-b2b/src/screens/module/administration/AddEmployeeScreen.tsx
+
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -8,6 +10,7 @@ import {
   Modal,
   FlatList,
   StyleSheet,
+  TextInput as RNTextInput,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Text, TextInput, Switch } from 'react-native-paper';
@@ -19,10 +22,11 @@ import { z } from 'zod';
 import { LinearGradient } from 'expo-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
-import { addEmployee, addManager, listRoles, listPositions } from '@b2b/api-client';
+import { addEmployee, addManager, listRoles, listPositions, getEmployeeSuggestions } from '@b2b/api-client';
 import { useUserAuthStore } from '../../../store/userAuthStore';
-import { Role, Position } from '@b2b/shared-types';
+import { Role, Position, CompanyEmployee } from '@b2b/shared-types';
 import { RootStackParamList } from '../../../navigation';
+import { UserAvatar } from '../../../components/UserAvatar'; // 👈 import Avatar component
 
 import {
   BACKGROUND_COLOR,
@@ -64,9 +68,16 @@ export default function AddEmployeeScreen() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [loadingOptions, setLoadingOptions] = useState(true);
 
-  // Dropdown modals
+  // ---- Dropdown modals ----
   const [roleModalVisible, setRoleModalVisible] = useState(false);
   const [positionModalVisible, setPositionModalVisible] = useState(false);
+
+  // ---- Reports To search state ----
+  const [reportsToModalVisible, setReportsToModalVisible] = useState(false);
+  const [reportsToSearch, setReportsToSearch] = useState('');
+  const [reportsToSuggestions, setReportsToSuggestions] = useState<CompanyEmployee[]>([]);
+  const [loadingReportsTo, setLoadingReportsTo] = useState(false);
+  const [selectedReportsToName, setSelectedReportsToName] = useState('');
 
   const {
     control,
@@ -79,14 +90,16 @@ export default function AddEmployeeScreen() {
     defaultValues: {
       phone: '',
       role_id: '',
-      position_id: '',   // <-- added to make it always defined
+      position_id: '',
       is_manager: false,
+      reports_to: '',
     },
   });
 
   const selectedRoleId = watch('role_id');
   const selectedPositionId = watch('position_id');
   const isManager = watch('is_manager');
+  const reportsToId = watch('reports_to');
 
   // ---- Fetch options ----
   useEffect(() => {
@@ -111,20 +124,49 @@ export default function AddEmployeeScreen() {
     fetchOptions();
   }, [accessToken, companyId, deviceId]);
 
+  // ---- Reports To search ----
+  useEffect(() => {
+    if (!reportsToModalVisible) {
+      setReportsToSearch('');
+      setReportsToSuggestions([]);
+    }
+  }, [reportsToModalVisible]);
+
+  const handleReportsToSearch = async (text: string) => {
+    setReportsToSearch(text);
+    if (text.length < 2) {
+      setReportsToSuggestions([]);
+      return;
+    }
+    if (!accessToken || !companyId || !deviceId) return;
+    setLoadingReportsTo(true);
+    try {
+      const res = await getEmployeeSuggestions(companyId, deviceId, text, 20, accessToken);
+      setReportsToSuggestions(res.data || []);
+    } catch (error) {
+      console.error('Failed to search employees', error);
+      Alert.alert('Error', 'Could not load suggestions');
+    } finally {
+      setLoadingReportsTo(false);
+    }
+  };
+
+  const selectReportsTo = (user: CompanyEmployee) => {
+    setValue('reports_to', user.user_id);
+    setSelectedReportsToName(user.full_name || user.username || user.user_id);
+    setReportsToModalVisible(false);
+  };
+
   // ---- Submit ----
   const onSubmit = async (data: FormData) => {
-    // Guard – ensure we have all required credentials
     if (!accessToken || !companyId || !deviceId) {
       Alert.alert('Error', 'Missing authentication');
       return;
     }
 
-    // Assign to local constants so TypeScript treats them as strings
     const token = accessToken;
     const compId = companyId;
     const devId = deviceId;
-
-    // Clean phone: remove spaces and trim
     const cleanPhone = data.phone.trim().replace(/\s/g, '');
 
     setLoading(true);
@@ -152,8 +194,7 @@ export default function AddEmployeeScreen() {
     }
   };
 
-  // ---- Render dropdown helper ----
-  // Allow value to be string | undefined
+  // ---- Render dropdown helper (for role & position) ----
   const renderDropdown = (
     label: string,
     value: string | undefined,
@@ -313,22 +354,23 @@ export default function AddEmployeeScreen() {
           errors.position_id
         )}
 
-        {/* Reports To (optional) */}
-        <Controller
-          control={control}
-          name="reports_to"
-          render={({ field: { onChange, onBlur, value } }) => (
-            <TextInput
-              label="Reports To (User ID) – optional"
-              mode="outlined"
-              value={value || ''}
-              onChangeText={onChange}
-              onBlur={onBlur}
-              style={styles.input}
-              theme={{ colors: { primary: PRIMARY_COLOR } }}
-            />
-          )}
-        />
+        {/* Reports To – searchable dropdown */}
+        <View style={styles.dropdownWrapper}>
+          <Text style={styles.dropdownLabel}>Reports To (optional)</Text>
+          <TouchableOpacity
+            style={[
+              styles.dropdownButton,
+              { borderColor: BORDER_COLOR },
+            ]}
+            onPress={() => setReportsToModalVisible(true)}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.dropdownText, !reportsToId && styles.placeholderText]}>
+              {reportsToId ? selectedReportsToName || 'Selected' : 'Search for user...'}
+            </Text>
+            <Icon name="account-search" size={24} color={TEXT_SECONDARY} />
+          </TouchableOpacity>
+        </View>
 
         {/* Submit button */}
         <View style={styles.buttonWrapper}>
@@ -454,11 +496,97 @@ export default function AddEmployeeScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* ---- Reports To Search Modal (UPDATED with UserAvatar) ---- */}
+      <Modal
+        visible={reportsToModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setReportsToModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, styles.reportsToModalContent]}>
+            <View style={styles.modalHeader}>
+              <Text variant="titleMedium" style={styles.modalTitle}>
+                Select Manager/Supervisor
+              </Text>
+              <TouchableOpacity onPress={() => setReportsToModalVisible(false)}>
+                <Icon name="close" size={24} color={TEXT_SECONDARY} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.searchContainer}>
+              <Icon name="magnify" size={20} color={TEXT_SECONDARY} />
+              <RNTextInput
+                style={styles.searchInput}
+                placeholder="Search by name or username"
+                placeholderTextColor={TEXT_SECONDARY}
+                value={reportsToSearch}
+                onChangeText={handleReportsToSearch}
+                autoFocus
+              />
+              {reportsToSearch.length > 0 && (
+                <TouchableOpacity onPress={() => handleReportsToSearch('')}>
+                  <Icon name="close" size={20} color={TEXT_SECONDARY} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {loadingReportsTo ? (
+              <ActivityIndicator size="large" color={PRIMARY_COLOR} style={{ marginTop: 20 }} />
+            ) : (
+              <FlatList
+                data={reportsToSuggestions}
+                keyExtractor={(item) => item.user_id}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.modalItem}
+                    onPress={() => selectReportsTo(item)}
+                  >
+                    <View style={styles.modalItemRow}>
+                      {/* 👇 Use UserAvatar component */}
+                      <UserAvatar
+                        userId={item.user_id}
+                        username={item.username}
+                        fullName={item.full_name}
+                        size={40}
+                        style={styles.avatar}
+                      />
+                      <View style={styles.userInfo}>
+                        <Text style={styles.modalItemText}>
+                          {item.full_name || item.username || item.user_id}
+                        </Text>
+                        {item.username && item.full_name && (
+                          <Text style={styles.userSubtext}>@{item.username}</Text>
+                        )}
+                        {item.employee_id && (
+                          <Text style={styles.userSubtext}>ID: {item.employee_id}</Text>
+                        )}
+                        {item.role_name && (
+                          <Text style={styles.userSubtext}>{item.role_name}</Text>
+                        )}
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                )}
+                contentContainerStyle={styles.modalList}
+                ListEmptyComponent={
+                  reportsToSearch.length >= 2 ? (
+                    <Text style={styles.emptyText}>No users found</Text>
+                  ) : (
+                    <Text style={styles.emptyText}>Type at least 2 characters to search</Text>
+                  )
+                }
+              />
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
-// ---- Styles ----
+// ---- Styles (add avatar style, remove old avatarPlaceholder) ----
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
@@ -552,6 +680,9 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
     maxHeight: '70%',
   },
+  reportsToModalContent: {
+    maxHeight: '80%',
+  },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -571,9 +702,8 @@ const styles = StyleSheet.create({
   },
   modalItem: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 14,
+    paddingVertical: 12,
     paddingHorizontal: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
@@ -588,5 +718,44 @@ const styles = StyleSheet.create({
   modalItemTextSelected: {
     color: PRIMARY_COLOR,
     fontWeight: '600',
+  },
+  // ---- Reports To search specific ----
+  modalItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  avatar: {
+    marginRight: 12,
+  },
+  userInfo: {
+    flex: 1,
+  },
+  userSubtext: {
+    fontSize: 12,
+    color: TEXT_SECONDARY,
+    marginTop: 2,
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    marginHorizontal: 16,
+    marginVertical: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  searchInput: {
+    flex: 1,
+    height: 40,
+    marginLeft: 8,
+    fontSize: 16,
+    color: TEXT_PRIMARY,
+  },
+  emptyText: {
+    textAlign: 'center',
+    marginTop: 20,
+    color: TEXT_SECONDARY,
   },
 });
