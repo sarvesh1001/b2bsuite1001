@@ -10,12 +10,18 @@
   },
   "dependencies": {
     "@b2b/api-client": "workspace:*",
+    "@hookform/resolvers": "^5.7.1",
+    "@tanstack/react-query": "^5.101.2",
     "axios": "^1.18.1",
-    "next": "16.2.12",
+    "next": "15.5.21",
     "qrcode.react": "^4.2.0",
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
-    "react-qr-code": "^2.2.0"
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-hook-form": "^7.84.0",
+    "react-icons": "^5.7.0",
+    "react-qr-code": "^2.2.0",
+    "zod": "^4.4.3",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

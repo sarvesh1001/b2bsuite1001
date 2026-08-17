@@ -5,6 +5,7 @@ export * from './role';
 export * from './position';
 export * from './employee';
 export * from './avatar';     // 👈 Export avatar types (Avatar, AvatarSummary)
+export * from './chat';
 
 // ---------- User ----------
 export const UserSchema = z.object({

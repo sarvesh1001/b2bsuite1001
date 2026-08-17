@@ -27,3 +27,23 @@ export const getUserPhone = async (
     return undefined;
   }
 };
+
+/**
+ * Log out the current user from all devices.
+ * Calls POST /auth/logout/all with { user_id }.
+ */
+export const logoutAllDevices = async (
+  companyId: string,
+  deviceId: string,
+  userId: string,
+  accessToken: string,
+): Promise<void> => {
+  const url = `/auth/logout/all`;
+  const headers = {
+    'X-Company-ID': companyId,
+    'X-Device-ID': deviceId,
+    'Authorization': `Bearer ${accessToken}`,
+    'Content-Type': 'application/json',
+  };
+  await axiosInstance.post(url, { user_id: userId }, { headers });
+};

@@ -13,8 +13,11 @@
     "typescript": "^5.4.0"
   },
   "packageManager": "pnpm@10.34.5",
-  "dependencies": {
-    "@tanstack/react-query": "^5.101.2",
-    "next": "^16.2.12"
+  "pnpm": {
+    "overrides": {
+      "react": "19.2.3",
+      "react-dom": "19.2.3",
+      "next": "15.5.21"
+    }
   }
 }

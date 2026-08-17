@@ -1,6 +1,7 @@
 // apps/prayantra-b2b/src/screens/module/administration/AddEmployeeScreen.tsx
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
+
 import {
   View,
   ScrollView,
@@ -11,27 +12,78 @@ import {
   FlatList,
   StyleSheet,
   TextInput as RNTextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Text, TextInput, Switch } from 'react-native-paper';
-import { useNavigation } from '@react-navigation/native';
-import { StackNavigationProp } from '@react-navigation/stack';
-import { useForm, Controller } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
-import { LinearGradient } from 'expo-linear-gradient';
+
+import {
+  SafeAreaView,
+} from 'react-native-safe-area-context';
+
+import {
+  Text,
+  TextInput,
+  Switch,
+} from 'react-native-paper';
+
+import {
+  useNavigation,
+} from '@react-navigation/native';
+
+import {
+  StackNavigationProp,
+} from '@react-navigation/stack';
+
+import {
+  useForm,
+  Controller,
+} from 'react-hook-form';
+
+import {
+  zodResolver,
+} from '@hookform/resolvers/zod';
+
+import {
+  z,
+} from 'zod';
+
+import {
+  LinearGradient,
+} from 'expo-linear-gradient';
+
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
-import { addEmployee, addManager, listRoles, listPositions, getEmployeeSuggestions } from '@b2b/api-client';
-import { useUserAuthStore } from '../../../store/userAuthStore';
-import { Role, Position, CompanyEmployee } from '@b2b/shared-types';
-import { RootStackParamList } from '../../../navigation';
-import { UserAvatar } from '../../../components/UserAvatar'; // 👈 import Avatar component
+import {
+  addEmployee,
+  addManager,
+  listRoles,
+  listPositions,
+  getEmployeeSuggestions,
+} from '@b2b/api-client';
+
+import {
+  useUserAuthStore,
+} from '../../../store/userAuthStore';
+
+import {
+  Role,
+  Position,
+  CompanyEmployee,
+} from '@b2b/shared-types';
+
+import {
+  RootStackParamList,
+} from '../../../navigation';
+
+import {
+  UserAvatar,
+} from '../../../components/UserAvatar';
 
 import {
   BACKGROUND_COLOR,
   CARD_BACKGROUND,
   PRIMARY_COLOR,
+  SECONDARY_COLOR,
   TEXT_PRIMARY,
   TEXT_SECONDARY,
   ERROR_COLOR,
@@ -42,720 +94,2914 @@ import {
   GRADIENT_END,
 } from '../../../constants/colors';
 
-// ---- Zod schema ----
+// =========================================================
+// FORM SCHEMA
+// =========================================================
+
 const schema = z.object({
-  phone: z.string().min(10, 'Phone must be at least 10 digits'),
+  phone: z
+    .string()
+    .min(
+      10,
+      'Phone must be at least 10 digits'
+    ),
+
   username: z.string().optional(),
+
   full_name: z.string().optional(),
+
   employee_id: z.string().optional(),
-  role_id: z.string().min(1, 'Role is required'),
+
+  role_id: z
+    .string()
+    .min(
+      1,
+      'Role is required'
+    ),
+
   reports_to: z.string().optional(),
+
   position_id: z.string().optional(),
+
   is_manager: z.boolean(),
 });
 
 type FormData = z.infer<typeof schema>;
 
-// ---- Navigation type ----
-type NavigationProp = StackNavigationProp<RootStackParamList, 'AddEmployee'>;
+// =========================================================
+// NAVIGATION
+// =========================================================
+
+type NavigationProp =
+  StackNavigationProp<
+    RootStackParamList,
+    'AddEmployee'
+  >;
+
+// =========================================================
+// SCREEN
+// =========================================================
 
 export default function AddEmployeeScreen() {
-  const insets = useSafeAreaInsets();
-  const navigation = useNavigation<NavigationProp>();
-  const { accessToken, deviceId, companyId } = useUserAuthStore();
-  const [loading, setLoading] = useState(false);
-  const [roles, setRoles] = useState<Role[]>([]);
-  const [positions, setPositions] = useState<Position[]>([]);
-  const [loadingOptions, setLoadingOptions] = useState(true);
+  const navigation =
+    useNavigation<NavigationProp>();
 
-  // ---- Dropdown modals ----
-  const [roleModalVisible, setRoleModalVisible] = useState(false);
-  const [positionModalVisible, setPositionModalVisible] = useState(false);
+  const {
+    accessToken,
+    deviceId,
+    companyId,
+  } = useUserAuthStore();
 
-  // ---- Reports To search state ----
-  const [reportsToModalVisible, setReportsToModalVisible] = useState(false);
-  const [reportsToSearch, setReportsToSearch] = useState('');
-  const [reportsToSuggestions, setReportsToSuggestions] = useState<CompanyEmployee[]>([]);
-  const [loadingReportsTo, setLoadingReportsTo] = useState(false);
-  const [selectedReportsToName, setSelectedReportsToName] = useState('');
+  // =======================================================
+  // STATE
+  // =======================================================
+
+  const [loading, setLoading] =
+    useState(false);
+
+  const [roles, setRoles] =
+    useState<Role[]>([]);
+
+  const [positions, setPositions] =
+    useState<Position[]>([]);
+
+  const [loadingOptions, setLoadingOptions] =
+    useState(true);
+
+  // -------------------------------------------------------
+  // Modals
+  // -------------------------------------------------------
+
+  const [roleModalVisible, setRoleModalVisible] =
+    useState(false);
+
+  const [positionModalVisible, setPositionModalVisible] =
+    useState(false);
+
+  const [reportsToModalVisible, setReportsToModalVisible] =
+    useState(false);
+
+  // -------------------------------------------------------
+  // Reports To
+  // -------------------------------------------------------
+
+  const [reportsToSearch, setReportsToSearch] =
+    useState('');
+
+  const [reportsToSuggestions, setReportsToSuggestions] =
+    useState<CompanyEmployee[]>([]);
+
+  const [loadingReportsTo, setLoadingReportsTo] =
+    useState(false);
+
+  const [selectedReportsToName, setSelectedReportsToName] =
+    useState('');
+
+  // =======================================================
+  // FORM
+  // =======================================================
 
   const {
     control,
     handleSubmit,
     setValue,
     watch,
-    formState: { errors },
+    formState: {
+      errors,
+    },
   } = useForm<FormData>({
     resolver: zodResolver(schema),
+
     defaultValues: {
       phone: '',
+      username: '',
+      full_name: '',
+      employee_id: '',
       role_id: '',
       position_id: '',
-      is_manager: false,
       reports_to: '',
+      is_manager: false,
     },
   });
 
-  const selectedRoleId = watch('role_id');
-  const selectedPositionId = watch('position_id');
-  const isManager = watch('is_manager');
-  const reportsToId = watch('reports_to');
+  const selectedRoleId =
+    watch('role_id');
 
-  // ---- Fetch options ----
+  const selectedPositionId =
+    watch('position_id');
+
+  const isManager =
+    watch('is_manager');
+
+  const reportsToId =
+    watch('reports_to');
+
+  // =======================================================
+  // FETCH ROLES + POSITIONS
+  // =======================================================
+
   useEffect(() => {
-    const fetchOptions = async () => {
-      if (!accessToken || !companyId || !deviceId) {
-        setLoadingOptions(false);
-        return;
-      }
-      try {
-        const [rolesRes, positionsRes] = await Promise.all([
-          listRoles(companyId, deviceId, { page: 1, limit: 100 }, accessToken),
-          listPositions(companyId, deviceId, { limit: 100, offset: 0 }, accessToken),
-        ]);
-        setRoles(rolesRes.data?.roles || []);
-        setPositions(positionsRes.data?.positions || []);
-      } catch (error: any) {
-        Alert.alert('Error', 'Failed to load options');
-      } finally {
-        setLoadingOptions(false);
-      }
-    };
-    fetchOptions();
-  }, [accessToken, companyId, deviceId]);
+    const fetchOptions =
+      async () => {
+        if (
+          !accessToken ||
+          !companyId ||
+          !deviceId
+        ) {
+          setLoadingOptions(false);
+          return;
+        }
 
-  // ---- Reports To search ----
+        try {
+          setLoadingOptions(true);
+
+          const [
+            rolesRes,
+            positionsRes,
+          ] = await Promise.all([
+            listRoles(
+              companyId,
+              deviceId,
+              {
+                page: 1,
+                limit: 100,
+              },
+              accessToken
+            ),
+
+            listPositions(
+              companyId,
+              deviceId,
+              {
+                limit: 100,
+                offset: 0,
+              },
+              accessToken
+            ),
+          ]);
+
+          setRoles(
+            rolesRes.data?.roles || []
+          );
+
+          setPositions(
+            positionsRes.data?.positions || []
+          );
+        } catch (error) {
+          console.error(
+            'Failed to load employee options:',
+            error
+          );
+
+          Alert.alert(
+            'Unable to Load',
+            'Failed to load roles and positions. Please try again.'
+          );
+        } finally {
+          setLoadingOptions(false);
+        }
+      };
+
+    fetchOptions();
+  }, [
+    accessToken,
+    companyId,
+    deviceId,
+  ]);
+
+  // =======================================================
+  // RESET REPORTS SEARCH WHEN MODAL CLOSES
+  // =======================================================
+
   useEffect(() => {
     if (!reportsToModalVisible) {
       setReportsToSearch('');
       setReportsToSuggestions([]);
     }
-  }, [reportsToModalVisible]);
+  }, [
+    reportsToModalVisible,
+  ]);
 
-  const handleReportsToSearch = async (text: string) => {
-    setReportsToSearch(text);
-    if (text.length < 2) {
-      setReportsToSuggestions([]);
-      return;
-    }
-    if (!accessToken || !companyId || !deviceId) return;
-    setLoadingReportsTo(true);
-    try {
-      const res = await getEmployeeSuggestions(companyId, deviceId, text, 20, accessToken);
-      setReportsToSuggestions(res.data || []);
-    } catch (error) {
-      console.error('Failed to search employees', error);
-      Alert.alert('Error', 'Could not load suggestions');
-    } finally {
-      setLoadingReportsTo(false);
-    }
-  };
+  // =======================================================
+  // SEARCH REPORTS TO
+  // =======================================================
 
-  const selectReportsTo = (user: CompanyEmployee) => {
-    setValue('reports_to', user.user_id);
-    setSelectedReportsToName(user.full_name || user.username || user.user_id);
-    setReportsToModalVisible(false);
-  };
+  const handleReportsToSearch =
+    async (text: string) => {
+      setReportsToSearch(text);
 
-  // ---- Submit ----
-  const onSubmit = async (data: FormData) => {
-    if (!accessToken || !companyId || !deviceId) {
-      Alert.alert('Error', 'Missing authentication');
-      return;
-    }
+      if (text.length < 2) {
+        setReportsToSuggestions([]);
+        return;
+      }
 
-    const token = accessToken;
-    const compId = companyId;
-    const devId = deviceId;
-    const cleanPhone = data.phone.trim().replace(/\s/g, '');
+      if (
+        !accessToken ||
+        !companyId ||
+        !deviceId
+      ) {
+        return;
+      }
 
-    setLoading(true);
-    try {
+      setLoadingReportsTo(true);
+
+      try {
+        const response =
+          await getEmployeeSuggestions(
+            companyId,
+            deviceId,
+            text,
+            20,
+            accessToken
+          );
+
+        setReportsToSuggestions(
+          response.data || []
+        );
+      } catch (error) {
+        console.error(
+          'Failed to search employees:',
+          error
+        );
+      } finally {
+        setLoadingReportsTo(false);
+      }
+    };
+
+  // =======================================================
+  // SELECT REPORTS TO
+  // =======================================================
+
+  const selectReportsTo =
+    (employee: CompanyEmployee) => {
+      setValue(
+        'reports_to',
+        employee.user_id,
+        {
+          shouldValidate: true,
+        }
+      );
+
+      setSelectedReportsToName(
+        employee.full_name ||
+          employee.username ||
+          employee.user_id
+      );
+
+      setReportsToModalVisible(false);
+    };
+
+  // =======================================================
+  // SUBMIT
+  // =======================================================
+
+  const onSubmit =
+    async (data: FormData) => {
+      if (
+        !accessToken ||
+        !companyId ||
+        !deviceId
+      ) {
+        Alert.alert(
+          'Authentication Error',
+          'Your session information is missing. Please log in again.'
+        );
+
+        return;
+      }
+
+      const cleanPhone =
+        data.phone
+          .trim()
+          .replace(/\s/g, '');
+
       const payload = {
         phone: cleanPhone,
-        username: data.username,
-        full_name: data.full_name,
-        employee_id: data.employee_id,
+        username:
+          data.username?.trim() || undefined,
+        full_name:
+          data.full_name?.trim() || undefined,
+        employee_id:
+          data.employee_id?.trim() || undefined,
         role_id: data.role_id,
-        reports_to: data.reports_to,
-        position_id: data.position_id,
+        reports_to:
+          data.reports_to || undefined,
+        position_id:
+          data.position_id || undefined,
       };
-      if (data.is_manager) {
-        await addManager(compId, devId, payload, token);
-      } else {
-        await addEmployee(compId, devId, payload, token);
+
+      setLoading(true);
+
+      try {
+        if (data.is_manager) {
+          await addManager(
+            companyId,
+            deviceId,
+            payload,
+            accessToken
+          );
+        } else {
+          await addEmployee(
+            companyId,
+            deviceId,
+            payload,
+            accessToken
+          );
+        }
+
+        Alert.alert(
+          'Success',
+          `${data.is_manager ? 'Manager' : 'Employee'} has been added successfully.`,
+          [
+            {
+              text: 'Done',
+              onPress: () =>
+                navigation.goBack(),
+            },
+          ]
+        );
+      } catch (error: any) {
+        console.error(
+          'Add employee error:',
+          error
+        );
+
+        Alert.alert(
+          'Unable to Add',
+          error?.response?.data?.message ||
+            error?.message ||
+            'Something went wrong while adding the employee.'
+        );
+      } finally {
+        setLoading(false);
       }
-      Alert.alert('Success', `${data.is_manager ? 'Manager' : 'Employee'} added`);
-      navigation.goBack();
-    } catch (error: any) {
-      Alert.alert('Error', error.response?.data?.message || error.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
 
-  // ---- Render dropdown helper (for role & position) ----
-  const renderDropdown = (
-    label: string,
-    value: string | undefined,
-    onPress: () => void,
-    placeholder: string,
-    error?: any
-  ) => {
-    const displayText = value
-      ? roles.find(r => r.role_id === value)?.role_name ||
-        positions.find(p => p.position_id === value)?.title ||
-        placeholder
-      : placeholder;
+  // =======================================================
+  // SELECTED ROLE / POSITION
+  // =======================================================
 
-    return (
-      <View style={styles.dropdownWrapper}>
-        <Text style={styles.dropdownLabel}>{label} *</Text>
-        <TouchableOpacity
-          style={[
-            styles.dropdownButton,
-            { borderColor: error ? ERROR_COLOR : BORDER_COLOR },
-          ]}
-          onPress={onPress}
-          activeOpacity={0.7}
-        >
-          <Text style={[styles.dropdownText, !value && styles.placeholderText]}>
-            {displayText}
-          </Text>
-          <Icon name="chevron-down" size={24} color={TEXT_SECONDARY} />
-        </TouchableOpacity>
-        {error && <Text style={styles.errorText}>{error.message}</Text>}
-      </View>
+  const selectedRole =
+    roles.find(
+      role =>
+        role.role_id ===
+        selectedRoleId
     );
-  };
 
-  // ---- Loading state ----
+  const selectedPosition =
+    positions.find(
+      position =>
+        position.position_id ===
+        selectedPositionId
+    );
+
+  // =======================================================
+  // LOADING OPTIONS
+  // =======================================================
+
   if (loadingOptions) {
     return (
-      <SafeAreaView style={styles.centeredContainer}>
-        <ActivityIndicator size="large" color={PRIMARY_COLOR} />
+      <SafeAreaView
+        edges={[
+          'top',
+          'bottom',
+        ]}
+        style={styles.safeArea}
+      >
+        <View style={styles.loadingScreen}>
+
+          <View style={styles.loadingIcon}>
+            <Icon
+              name="account-plus-outline"
+              size={30}
+              color={PRIMARY_COLOR}
+            />
+          </View>
+
+          <ActivityIndicator
+            size="small"
+            color={PRIMARY_COLOR}
+            style={{
+              marginTop: 18,
+            }}
+          />
+
+          <Text style={styles.loadingTitle}>
+            Preparing employee form
+          </Text>
+
+          <Text style={styles.loadingSubtitle}>
+            Loading roles and positions...
+          </Text>
+
+        </View>
       </SafeAreaView>
     );
   }
 
-  // ---- Main render ----
+  // =======================================================
+  // MAIN
+  // =======================================================
+
   return (
-    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
-      <ScrollView
-        contentContainerStyle={[
-          styles.scrollContent,
-          { paddingTop: insets.top + 16 },
-        ]}
-        keyboardShouldPersistTaps="handled"
+    <SafeAreaView
+      edges={[
+        'top',
+        'bottom',
+      ]}
+      style={styles.safeArea}
+    >
+      <KeyboardAvoidingView
+        style={styles.keyboardContainer}
+        behavior={
+          Platform.OS === 'ios'
+            ? 'padding'
+            : undefined
+        }
       >
-        {/* Manager toggle */}
-        <Controller
-          control={control}
-          name="is_manager"
-          render={({ field: { onChange, value } }) => (
-            <View style={styles.switchRow}>
-              <Text style={styles.switchLabel}>Add as Manager</Text>
-              <Switch
-                value={value}
-                onValueChange={onChange}
-                trackColor={{ false: '#ccc', true: PRIMARY_COLOR }}
-                thumbColor={value ? PRIMARY_COLOR : '#f4f3f4'}
+
+        {/* =================================================
+            HEADER
+        ================================================= */}
+
+        <LinearGradient
+          colors={GRADIENT_COLORS}
+          start={GRADIENT_START}
+          end={GRADIENT_END}
+          style={styles.header}
+        >
+
+          <View style={styles.headerRow}>
+
+            <TouchableOpacity
+              style={styles.backButton}
+              onPress={() =>
+                navigation.goBack()
+              }
+              activeOpacity={0.8}
+            >
+              <Icon
+                name="arrow-left"
+                size={22}
+                color="#FFFFFF"
+              />
+            </TouchableOpacity>
+
+            <View style={styles.headerIcon}>
+              <Icon
+                name="account-plus-outline"
+                size={24}
+                color="#FFFFFF"
               />
             </View>
-          )}
-        />
 
-        {/* Phone */}
-        <Controller
-          control={control}
-          name="phone"
-          render={({ field: { onChange, onBlur, value } }) => (
-            <TextInput
-              label="Phone *"
-              mode="outlined"
-              value={value}
-              onChangeText={onChange}
-              onBlur={onBlur}
-              keyboardType="phone-pad"
-              error={!!errors.phone}
-              style={styles.input}
-              theme={{ colors: { primary: PRIMARY_COLOR } }}
+            <View style={styles.headerText}>
+              <Text style={styles.headerTitle}>
+                Add Employee
+              </Text>
+
+              <Text style={styles.headerSubtitle}>
+                Administration
+              </Text>
+            </View>
+
+          </View>
+
+        </LinearGradient>
+
+        {/* =================================================
+            CONTENT
+        ================================================= */}
+
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={
+            styles.scrollContent
+          }
+        >
+
+          {/* =================================================
+              MODE SELECTOR
+          ================================================= */}
+
+          <View style={styles.modeCard}>
+
+            <View style={styles.modeIcon}>
+              <Icon
+                name={
+                  isManager
+                    ? 'account-tie-outline'
+                    : 'account-outline'
+                }
+                size={23}
+                color={PRIMARY_COLOR}
+              />
+            </View>
+
+            <View style={styles.modeContent}>
+
+              <Text style={styles.modeTitle}>
+                {isManager
+                  ? 'Adding a Manager'
+                  : 'Adding an Employee'}
+              </Text>
+
+              <Text style={styles.modeDescription}>
+                {isManager
+                  ? 'This person will be added with manager privileges.'
+                  : 'Add a regular employee to your organization.'}
+              </Text>
+
+            </View>
+
+            <Controller
+              control={control}
+              name="is_manager"
+              render={({
+                field: {
+                  onChange,
+                  value,
+                },
+              }) => (
+                <Switch
+                  value={value}
+                  onValueChange={onChange}
+                  color={PRIMARY_COLOR}
+                />
+              )}
             />
-          )}
-        />
-        {errors.phone && <Text style={styles.errorText}>{errors.phone.message}</Text>}
 
-        {/* Username */}
-        <Controller
-          control={control}
-          name="username"
-          render={({ field: { onChange, onBlur, value } }) => (
-            <TextInput
-              label="Username (optional)"
-              mode="outlined"
-              value={value || ''}
-              onChangeText={onChange}
-              onBlur={onBlur}
-              style={styles.input}
-              theme={{ colors: { primary: PRIMARY_COLOR } }}
+          </View>
+
+          {/* =================================================
+              BASIC INFORMATION
+          ================================================= */}
+
+          <SectionHeader
+            icon="account-outline"
+            title="Basic Information"
+            subtitle="Enter the employee's personal details"
+          />
+
+          <View style={styles.formCard}>
+
+            {/* PHONE */}
+
+            <Controller
+              control={control}
+              name="phone"
+              render={({
+                field: {
+                  onChange,
+                  onBlur,
+                  value,
+                },
+              }) => (
+                <FormInput
+                  label="Phone Number"
+                  placeholder="Enter phone number"
+                  icon="phone-outline"
+                  value={value}
+                  onChangeText={onChange}
+                  onBlur={onBlur}
+                  keyboardType="phone-pad"
+                  error={
+                    errors.phone?.message
+                  }
+                  required
+                />
+              )}
             />
-          )}
-        />
 
-        {/* Full Name */}
-        <Controller
-          control={control}
-          name="full_name"
-          render={({ field: { onChange, onBlur, value } }) => (
-            <TextInput
-              label="Full Name (optional)"
-              mode="outlined"
-              value={value || ''}
-              onChangeText={onChange}
-              onBlur={onBlur}
-              style={styles.input}
-              theme={{ colors: { primary: PRIMARY_COLOR } }}
+            {/* FULL NAME */}
+
+            <Controller
+              control={control}
+              name="full_name"
+              render={({
+                field: {
+                  onChange,
+                  onBlur,
+                  value,
+                },
+              }) => (
+                <FormInput
+                  label="Full Name"
+                  placeholder="Enter employee name"
+                  icon="account-outline"
+                  value={value || ''}
+                  onChangeText={onChange}
+                  onBlur={onBlur}
+                />
+              )}
             />
-          )}
-        />
 
-        {/* Employee ID */}
-        <Controller
-          control={control}
-          name="employee_id"
-          render={({ field: { onChange, onBlur, value } }) => (
-            <TextInput
-              label="Employee ID (optional)"
-              mode="outlined"
-              value={value || ''}
-              onChangeText={onChange}
-              onBlur={onBlur}
-              style={styles.input}
-              theme={{ colors: { primary: PRIMARY_COLOR } }}
+            {/* USERNAME */}
+
+            <Controller
+              control={control}
+              name="username"
+              render={({
+                field: {
+                  onChange,
+                  onBlur,
+                  value,
+                },
+              }) => (
+                <FormInput
+                  label="Username"
+                  placeholder="Enter username"
+                  icon="at"
+                  value={value || ''}
+                  onChangeText={onChange}
+                  onBlur={onBlur}
+                />
+              )}
             />
-          )}
-        />
 
-        {/* Role dropdown */}
-        {renderDropdown(
-          'Role',
-          selectedRoleId,
-          () => setRoleModalVisible(true),
-          'Select a role',
-          errors.role_id
-        )}
+            {/* EMPLOYEE ID */}
 
-        {/* Position dropdown */}
-        {renderDropdown(
-          'Position',
-          selectedPositionId,
-          () => setPositionModalVisible(true),
-          'Select a position (optional)',
-          errors.position_id
-        )}
+            <Controller
+              control={control}
+              name="employee_id"
+              render={({
+                field: {
+                  onChange,
+                  onBlur,
+                  value,
+                },
+              }) => (
+                <FormInput
+                  label="Employee ID"
+                  placeholder="e.g. EMP-001"
+                  icon="badge-account-outline"
+                  value={value || ''}
+                  onChangeText={onChange}
+                  onBlur={onBlur}
+                  isLast
+                />
+              )}
+            />
 
-        {/* Reports To – searchable dropdown */}
-        <View style={styles.dropdownWrapper}>
-          <Text style={styles.dropdownLabel}>Reports To (optional)</Text>
+          </View>
+
+          {/* =================================================
+              ORGANIZATION
+          ================================================= */}
+
+          <SectionHeader
+            icon="office-building-outline"
+            title="Organization"
+            subtitle="Assign role and position"
+          />
+
+          <View style={styles.formCard}>
+
+            {/* ROLE */}
+
+            <SelectField
+              label="Role"
+              required
+              icon="shield-account-outline"
+              value={
+                selectedRole?.role_name ||
+                ''
+              }
+              placeholder="Select a role"
+              error={
+                errors.role_id?.message
+              }
+              onPress={() =>
+                setRoleModalVisible(true)
+              }
+            />
+
+            {/* POSITION */}
+
+            <SelectField
+              label="Position"
+              icon="briefcase-outline"
+              value={
+                selectedPosition?.title ||
+                ''
+              }
+              placeholder="Select a position"
+              onPress={() =>
+                setPositionModalVisible(
+                  true
+                )
+              }
+              isLast
+            />
+
+          </View>
+
+          {/* =================================================
+              REPORTING
+          ================================================= */}
+
+          <SectionHeader
+            icon="account-supervisor-outline"
+            title="Reporting"
+            subtitle="Define the employee's reporting structure"
+          />
+
+          <View style={styles.formCard}>
+
+            <TouchableOpacity
+              style={styles.reportsField}
+              onPress={() =>
+                setReportsToModalVisible(
+                  true
+                )
+              }
+              activeOpacity={0.75}
+            >
+
+              <View style={styles.fieldIcon}>
+                <Icon
+                  name="account-supervisor-outline"
+                  size={21}
+                  color={PRIMARY_COLOR}
+                />
+              </View>
+
+              <View style={styles.reportsContent}>
+
+                <Text style={styles.fieldLabel}>
+                  Reports To
+                </Text>
+
+                {reportsToId ? (
+                  <>
+                    <Text
+                      numberOfLines={1}
+                      style={
+                        styles.selectedValue
+                      }
+                    >
+                      {selectedReportsToName ||
+                        'Selected manager'}
+                    </Text>
+
+                    <Text style={styles.selectedHint}>
+                      Tap to change
+                    </Text>
+                  </>
+                ) : (
+                  <Text
+                    style={
+                      styles.placeholderText
+                    }
+                  >
+                    Search for manager or supervisor
+                  </Text>
+                )}
+
+              </View>
+
+              <Icon
+                name="chevron-right"
+                size={22}
+                color={TEXT_SECONDARY}
+              />
+
+            </TouchableOpacity>
+
+            {reportsToId && (
+              <TouchableOpacity
+                style={styles.removeManager}
+                onPress={() => {
+                  setValue(
+                    'reports_to',
+                    ''
+                  );
+                  setSelectedReportsToName(
+                    ''
+                  );
+                }}
+              >
+                <Icon
+                  name="close-circle-outline"
+                  size={15}
+                  color={ERROR_COLOR}
+                />
+
+                <Text
+                  style={
+                    styles.removeManagerText
+                  }
+                >
+                  Remove reporting manager
+                </Text>
+              </TouchableOpacity>
+            )}
+
+          </View>
+
+          {/* =================================================
+              SUMMARY
+          ================================================= */}
+
+          <View style={styles.summaryCard}>
+
+            <View style={styles.summaryIcon}>
+              <Icon
+                name={
+                  isManager
+                    ? 'account-tie-outline'
+                    : 'account-check-outline'
+                }
+                size={22}
+                color={PRIMARY_COLOR}
+              />
+            </View>
+
+            <View style={styles.summaryContent}>
+
+              <Text style={styles.summaryTitle}>
+                Ready to add
+              </Text>
+
+              <Text style={styles.summaryText}>
+                {isManager
+                  ? 'Manager'
+                  : 'Employee'}
+                {selectedRole
+                  ? ` • ${selectedRole.role_name}`
+                  : ''}
+                {selectedPosition
+                  ? ` • ${selectedPosition.title}`
+                  : ''}
+              </Text>
+
+            </View>
+
+          </View>
+
+          {/* =================================================
+              SUBMIT
+          ================================================= */}
+
           <TouchableOpacity
-            style={[
-              styles.dropdownButton,
-              { borderColor: BORDER_COLOR },
-            ]}
-            onPress={() => setReportsToModalVisible(true)}
-            activeOpacity={0.7}
-          >
-            <Text style={[styles.dropdownText, !reportsToId && styles.placeholderText]}>
-              {reportsToId ? selectedReportsToName || 'Selected' : 'Search for user...'}
-            </Text>
-            <Icon name="account-search" size={24} color={TEXT_SECONDARY} />
-          </TouchableOpacity>
-        </View>
-
-        {/* Submit button */}
-        <View style={styles.buttonWrapper}>
-          <TouchableOpacity
-            onPress={handleSubmit(onSubmit)}
+            onPress={handleSubmit(
+              onSubmit
+            )}
             disabled={loading}
-            activeOpacity={0.8}
+            activeOpacity={0.85}
+            style={
+              styles.submitWrapper
+            }
           >
             <LinearGradient
-              colors={GRADIENT_COLORS}
+              colors={
+                GRADIENT_COLORS
+              }
               start={GRADIENT_START}
               end={GRADIENT_END}
-              style={styles.gradientButton}
+              style={
+                styles.submitButton
+              }
             >
+
               {loading ? (
-                <ActivityIndicator color="white" size="small" />
+                <ActivityIndicator
+                  color="#FFFFFF"
+                  size="small"
+                />
               ) : (
-                <Text style={styles.buttonText}>
-                  Add {isManager ? 'Manager' : 'Employee'}
-                </Text>
+                <>
+                  <Icon
+                    name={
+                      isManager
+                        ? 'account-tie-outline'
+                        : 'account-plus-outline'
+                    }
+                    size={21}
+                    color="#FFFFFF"
+                  />
+
+                  <Text
+                    style={
+                      styles.submitText
+                    }
+                  >
+                    Add{' '}
+                    {isManager
+                      ? 'Manager'
+                      : 'Employee'}
+                  </Text>
+
+                  <Icon
+                    name="arrow-right"
+                    size={20}
+                    color="#FFFFFF"
+                  />
+                </>
               )}
+
             </LinearGradient>
           </TouchableOpacity>
-        </View>
-      </ScrollView>
 
-      {/* ---- Role Modal ---- */}
-      <Modal
+          <Text style={styles.footerHint}>
+            You can update employee details later
+            from the employee profile.
+          </Text>
+
+        </ScrollView>
+
+      </KeyboardAvoidingView>
+
+      {/* ===================================================
+          ROLE MODAL
+      =================================================== */}
+
+      <SelectionModal
         visible={roleModalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setRoleModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text variant="titleMedium" style={styles.modalTitle}>
-                Select Role
-              </Text>
-              <TouchableOpacity onPress={() => setRoleModalVisible(false)}>
-                <Icon name="close" size={24} color={TEXT_SECONDARY} />
-              </TouchableOpacity>
-            </View>
-            <FlatList
-              data={roles}
-              keyExtractor={(item) => item.role_id}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={[
-                    styles.modalItem,
-                    selectedRoleId === item.role_id && styles.modalItemSelected,
-                  ]}
-                  onPress={() => {
-                    setValue('role_id', item.role_id);
-                    setRoleModalVisible(false);
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.modalItemText,
-                      selectedRoleId === item.role_id && styles.modalItemTextSelected,
-                    ]}
-                  >
-                    {item.role_name} (Level {item.role_level})
-                  </Text>
-                  {selectedRoleId === item.role_id && (
-                    <Icon name="check" size={20} color={PRIMARY_COLOR} />
-                  )}
-                </TouchableOpacity>
-              )}
-              contentContainerStyle={styles.modalList}
-            />
-          </View>
-        </View>
-      </Modal>
+        title="Select Role"
+        icon="shield-account-outline"
+        data={roles}
+        selectedId={selectedRoleId}
+        getId={item => item.role_id}
+        renderLabel={item =>
+          `${item.role_name} • Level ${item.role_level}`
+        }
+        onClose={() =>
+          setRoleModalVisible(false)
+        }
+        onSelect={item => {
+          setValue(
+            'role_id',
+            item.role_id,
+            {
+              shouldValidate: true,
+            }
+          );
 
-      {/* ---- Position Modal ---- */}
+          setRoleModalVisible(false);
+        }}
+      />
+
+      {/* ===================================================
+          POSITION MODAL
+      =================================================== */}
+
+      <SelectionModal
+        visible={
+          positionModalVisible
+        }
+        title="Select Position"
+        icon="briefcase-outline"
+        data={positions}
+        selectedId={
+          selectedPositionId
+        }
+        getId={item =>
+          item.position_id
+        }
+        renderLabel={item =>
+          item.title
+        }
+        onClose={() =>
+          setPositionModalVisible(
+            false
+          )
+        }
+        onSelect={item => {
+          setValue(
+            'position_id',
+            item.position_id
+          );
+
+          setPositionModalVisible(
+            false
+          );
+        }}
+      />
+
+      {/* ===================================================
+          REPORTS TO MODAL
+      =================================================== */}
+
       <Modal
-        visible={positionModalVisible}
+        visible={
+          reportsToModalVisible
+        }
         transparent
         animationType="slide"
-        onRequestClose={() => setPositionModalVisible(false)}
+        onRequestClose={() =>
+          setReportsToModalVisible(
+            false
+          )
+        }
       >
+
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text variant="titleMedium" style={styles.modalTitle}>
-                Select Position
-              </Text>
-              <TouchableOpacity onPress={() => setPositionModalVisible(false)}>
-                <Icon name="close" size={24} color={TEXT_SECONDARY} />
-              </TouchableOpacity>
-            </View>
-            <FlatList
-              data={positions}
-              keyExtractor={(item) => item.position_id}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={[
-                    styles.modalItem,
-                    selectedPositionId === item.position_id && styles.modalItemSelected,
-                  ]}
-                  onPress={() => {
-                    setValue('position_id', item.position_id);
-                    setPositionModalVisible(false);
-                  }}
+
+          <View
+            style={[
+              styles.modalContent,
+              styles.reportsModal,
+            ]}
+          >
+
+            {/* HEADER */}
+
+            <View
+              style={
+                styles.modalHeader
+              }
+            >
+
+              <View
+                style={
+                  styles.modalTitleContainer
+                }
+              >
+
+                <View
+                  style={
+                    styles.modalTitleIcon
+                  }
                 >
-                  <Text
-                    style={[
-                      styles.modalItemText,
-                      selectedPositionId === item.position_id && styles.modalItemTextSelected,
-                    ]}
-                  >
-                    {item.title}
-                  </Text>
-                  {selectedPositionId === item.position_id && (
-                    <Icon name="check" size={20} color={PRIMARY_COLOR} />
-                  )}
-                </TouchableOpacity>
-              )}
-              contentContainerStyle={styles.modalList}
-            />
-          </View>
-        </View>
-      </Modal>
+                  <Icon
+                    name="account-supervisor-outline"
+                    size={20}
+                    color={
+                      PRIMARY_COLOR
+                    }
+                  />
+                </View>
 
-      {/* ---- Reports To Search Modal (UPDATED with UserAvatar) ---- */}
-      <Modal
-        visible={reportsToModalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setReportsToModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, styles.reportsToModalContent]}>
-            <View style={styles.modalHeader}>
-              <Text variant="titleMedium" style={styles.modalTitle}>
-                Select Manager/Supervisor
-              </Text>
-              <TouchableOpacity onPress={() => setReportsToModalVisible(false)}>
-                <Icon name="close" size={24} color={TEXT_SECONDARY} />
+                <View>
+                  <Text
+                    style={
+                      styles.modalTitle
+                    }
+                  >
+                    Select Manager
+                  </Text>
+
+                  <Text
+                    style={
+                      styles.modalSubtitle
+                    }
+                  >
+                    Search employees
+                  </Text>
+                </View>
+
+              </View>
+
+              <TouchableOpacity
+                onPress={() =>
+                  setReportsToModalVisible(
+                    false
+                  )
+                }
+                style={
+                  styles.modalClose
+                }
+              >
+                <Icon
+                  name="close"
+                  size={20}
+                  color={
+                    TEXT_SECONDARY
+                  }
+                />
               </TouchableOpacity>
+
             </View>
 
-            <View style={styles.searchContainer}>
-              <Icon name="magnify" size={20} color={TEXT_SECONDARY} />
+            {/* SEARCH */}
+
+            <View
+              style={
+                styles.searchContainer
+              }
+            >
+
+              <Icon
+                name="magnify"
+                size={21}
+                color={
+                  TEXT_SECONDARY
+                }
+              />
+
               <RNTextInput
-                style={styles.searchInput}
-                placeholder="Search by name or username"
-                placeholderTextColor={TEXT_SECONDARY}
-                value={reportsToSearch}
-                onChangeText={handleReportsToSearch}
+                style={
+                  styles.searchInput
+                }
+                placeholder="Search name or username"
+                placeholderTextColor={
+                  '#9AA4B2'
+                }
+                value={
+                  reportsToSearch
+                }
+                onChangeText={
+                  handleReportsToSearch
+                }
                 autoFocus
               />
-              {reportsToSearch.length > 0 && (
-                <TouchableOpacity onPress={() => handleReportsToSearch('')}>
-                  <Icon name="close" size={20} color={TEXT_SECONDARY} />
+
+              {reportsToSearch.length >
+                0 && (
+                <TouchableOpacity
+                  onPress={() =>
+                    handleReportsToSearch(
+                      ''
+                    )
+                  }
+                >
+                  <Icon
+                    name="close-circle"
+                    size={19}
+                    color={
+                      '#9AA4B2'
+                    }
+                  />
                 </TouchableOpacity>
               )}
+
             </View>
 
+            {/* RESULTS */}
+
             {loadingReportsTo ? (
-              <ActivityIndicator size="large" color={PRIMARY_COLOR} style={{ marginTop: 20 }} />
+              <View
+                style={
+                  styles.searchLoading
+                }
+              >
+                <ActivityIndicator
+                  size="small"
+                  color={
+                    PRIMARY_COLOR
+                  }
+                />
+
+                <Text
+                  style={
+                    styles.searchLoadingText
+                  }
+                >
+                  Searching employees...
+                </Text>
+              </View>
             ) : (
               <FlatList
-                data={reportsToSuggestions}
-                keyExtractor={(item) => item.user_id}
-                renderItem={({ item }) => (
+                data={
+                  reportsToSuggestions
+                }
+                keyExtractor={item =>
+                  item.user_id
+                }
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={
+                  styles.modalList
+                }
+                renderItem={({
+                  item,
+                }) => (
                   <TouchableOpacity
-                    style={styles.modalItem}
-                    onPress={() => selectReportsTo(item)}
+                    style={
+                      styles.employeeResult
+                    }
+                    onPress={() =>
+                      selectReportsTo(
+                        item
+                      )
+                    }
+                    activeOpacity={
+                      0.75
+                    }
                   >
-                    <View style={styles.modalItemRow}>
-                      {/* 👇 Use UserAvatar component */}
-                      <UserAvatar
-                        userId={item.user_id}
-                        username={item.username}
-                        fullName={item.full_name}
-                        size={40}
-                        style={styles.avatar}
-                      />
-                      <View style={styles.userInfo}>
-                        <Text style={styles.modalItemText}>
-                          {item.full_name || item.username || item.user_id}
-                        </Text>
-                        {item.username && item.full_name && (
-                          <Text style={styles.userSubtext}>@{item.username}</Text>
+
+                    <UserAvatar
+                      userId={
+                        item.user_id
+                      }
+                      username={
+                        item.username
+                      }
+                      fullName={
+                        item.full_name
+                      }
+                      size={46}
+                      style={
+                        styles.avatar
+                      }
+                    />
+
+                    <View
+                      style={
+                        styles.employeeResultInfo
+                      }
+                    >
+
+                      <Text
+                        numberOfLines={
+                          1
+                        }
+                        style={
+                          styles.employeeName
+                        }
+                      >
+                        {item.full_name ||
+                          item.username ||
+                          item.user_id}
+                      </Text>
+
+                      {item.username &&
+                        item.full_name && (
+                          <Text
+                            style={
+                              styles.employeeMeta
+                            }
+                          >
+                            @{item.username}
+                          </Text>
                         )}
+
+                      <View
+                        style={
+                          styles.employeeMetaRow
+                        }
+                      >
+
                         {item.employee_id && (
-                          <Text style={styles.userSubtext}>ID: {item.employee_id}</Text>
+                          <Text
+                            style={
+                              styles.employeeMeta
+                            }
+                          >
+                            ID: {
+                              item.employee_id
+                            }
+                          </Text>
                         )}
+
                         {item.role_name && (
-                          <Text style={styles.userSubtext}>{item.role_name}</Text>
+                          <Text
+                            style={
+                              styles.employeeRole
+                            }
+                          >
+                            {item.role_name}
+                          </Text>
                         )}
+
                       </View>
+
                     </View>
+
+                    <Icon
+                      name="chevron-right"
+                      size={20}
+                      color={
+                        '#B4BCC8'
+                      }
+                    />
+
                   </TouchableOpacity>
                 )}
-                contentContainerStyle={styles.modalList}
                 ListEmptyComponent={
-                  reportsToSearch.length >= 2 ? (
-                    <Text style={styles.emptyText}>No users found</Text>
-                  ) : (
-                    <Text style={styles.emptyText}>Type at least 2 characters to search</Text>
-                  )
+                  <View
+                    style={
+                      styles.modalEmpty
+                    }
+                  >
+
+                    <View
+                      style={
+                        styles.modalEmptyIcon
+                      }
+                    >
+                      <Icon
+                        name={
+                          reportsToSearch.length >=
+                          2
+                            ? 'account-search-outline'
+                            : 'text-search'
+                        }
+                        size={27}
+                        color={
+                          PRIMARY_COLOR
+                        }
+                      />
+                    </View>
+
+                    <Text
+                      style={
+                        styles.modalEmptyTitle
+                      }
+                    >
+                      {reportsToSearch.length >=
+                      2
+                        ? 'No employees found'
+                        : 'Search for a manager'}
+                    </Text>
+
+                    <Text
+                      style={
+                        styles.modalEmptyText
+                      }
+                    >
+                      {reportsToSearch.length >=
+                      2
+                        ? 'Try a different name or username.'
+                        : 'Enter at least 2 characters to begin searching.'}
+                    </Text>
+
+                  </View>
                 }
               />
             )}
+
           </View>
+
         </View>
+
       </Modal>
+
     </SafeAreaView>
   );
 }
 
-// ---- Styles (add avatar style, remove old avatarPlaceholder) ----
+// =========================================================
+// SECTION HEADER COMPONENT
+// =========================================================
+
+function SectionHeader({
+  icon,
+  title,
+  subtitle,
+}: {
+  icon: string;
+  title: string;
+  subtitle: string;
+}) {
+  return (
+    <View
+      style={
+        styles.sectionHeader
+      }
+    >
+
+      <View
+        style={
+          styles.sectionHeaderIcon
+        }
+      >
+        <Icon
+          name={icon}
+          size={19}
+          color={PRIMARY_COLOR}
+        />
+      </View>
+
+      <View
+        style={
+          styles.sectionHeaderText
+        }
+      >
+
+        <Text
+          style={
+            styles.sectionHeaderTitle
+          }
+        >
+          {title}
+        </Text>
+
+        <Text
+          style={
+            styles.sectionHeaderSubtitle
+          }
+        >
+          {subtitle}
+        </Text>
+
+      </View>
+
+    </View>
+  );
+}
+
+// =========================================================
+// FORM INPUT COMPONENT
+// =========================================================
+
+function FormInput({
+  label,
+  placeholder,
+  icon,
+  value,
+  onChangeText,
+  onBlur,
+  keyboardType,
+  error,
+  required,
+  isLast,
+}: {
+  label: string;
+  placeholder: string;
+  icon: string;
+  value: string;
+  onChangeText: (text: string) => void;
+  onBlur: () => void;
+  keyboardType?: any;
+  error?: string;
+  required?: boolean;
+  isLast?: boolean;
+}) {
+  return (
+    <View
+      style={[
+        styles.inputWrapper,
+        !isLast &&
+          styles.inputDivider,
+      ]}
+    >
+
+      <View
+        style={styles.inputIcon}
+      >
+        <Icon
+          name={icon}
+          size={20}
+          color={PRIMARY_COLOR}
+        />
+      </View>
+
+      <View
+        style={
+          styles.inputContent
+        }
+      >
+
+        <Text
+          style={
+            styles.fieldLabel
+          }
+        >
+          {label}
+          {required && (
+            <Text
+              style={
+                styles.required
+              }
+            >
+              {' '}
+              *
+            </Text>
+          )}
+        </Text>
+
+        <RNTextInput
+          value={value}
+          onChangeText={
+            onChangeText
+          }
+          onBlur={onBlur}
+          placeholder={
+            placeholder
+          }
+          placeholderTextColor={
+            '#A0A8B5'
+          }
+          keyboardType={
+            keyboardType
+          }
+          style={[
+            styles.nativeInput,
+            error &&
+              styles.inputError,
+          ]}
+        />
+
+        {error && (
+          <Text
+            style={
+              styles.errorText
+            }
+          >
+            {error}
+          </Text>
+        )}
+
+      </View>
+
+    </View>
+  );
+}
+
+// =========================================================
+// SELECT FIELD COMPONENT
+// =========================================================
+
+function SelectField({
+  label,
+  icon,
+  value,
+  placeholder,
+  error,
+  required,
+  onPress,
+  isLast,
+}: {
+  label: string;
+  icon: string;
+  value: string;
+  placeholder: string;
+  error?: string;
+  required?: boolean;
+  onPress: () => void;
+  isLast?: boolean;
+}) {
+  return (
+    <TouchableOpacity
+      style={[
+        styles.selectField,
+        !isLast &&
+          styles.inputDivider,
+      ]}
+      onPress={onPress}
+      activeOpacity={0.75}
+    >
+
+      <View
+        style={styles.inputIcon}
+      >
+        <Icon
+          name={icon}
+          size={20}
+          color={PRIMARY_COLOR}
+        />
+      </View>
+
+      <View
+        style={
+          styles.selectContent
+        }
+      >
+
+        <Text
+          style={
+            styles.fieldLabel
+          }
+        >
+          {label}
+          {required && (
+            <Text
+              style={
+                styles.required
+              }
+            >
+              {' '}
+              *
+            </Text>
+          )}
+        </Text>
+
+        <Text
+          numberOfLines={1}
+          style={[
+            styles.selectValue,
+            !value &&
+              styles.placeholderText,
+          ]}
+        >
+          {value ||
+            placeholder}
+        </Text>
+
+        {error && (
+          <Text
+            style={
+              styles.errorText
+            }
+          >
+            {error}
+          </Text>
+        )}
+
+      </View>
+
+      <Icon
+        name="chevron-down"
+        size={21}
+        color={
+          TEXT_SECONDARY
+        }
+      />
+
+    </TouchableOpacity>
+  );
+}
+
+// =========================================================
+// GENERIC SELECTION MODAL
+// =========================================================
+
+function SelectionModal<
+  T
+>({
+  visible,
+  title,
+  icon,
+  data,
+  selectedId,
+  getId,
+  renderLabel,
+  onClose,
+  onSelect,
+}: {
+  visible: boolean;
+  title: string;
+  icon: string;
+  data: T[];
+  selectedId?: string;
+  getId: (item: T) => string;
+  renderLabel: (item: T) => string;
+  onClose: () => void;
+  onSelect: (item: T) => void;
+}) {
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={
+        onClose
+      }
+    >
+
+      <View
+        style={
+          styles.modalOverlay
+        }
+      >
+
+        <View
+          style={
+            styles.modalContent
+          }
+        >
+
+          {/* HEADER */}
+
+          <View
+            style={
+              styles.modalHeader
+            }
+          >
+
+            <View
+              style={
+                styles.modalTitleContainer
+              }
+            >
+
+              <View
+                style={
+                  styles.modalTitleIcon
+                }
+              >
+                <Icon
+                  name={icon}
+                  size={20}
+                  color={
+                    PRIMARY_COLOR
+                  }
+                />
+              </View>
+
+              <View>
+                <Text
+                  style={
+                    styles.modalTitle
+                  }
+                >
+                  {title}
+                </Text>
+
+                <Text
+                  style={
+                    styles.modalSubtitle
+                  }
+                >
+                  Choose one option
+                </Text>
+              </View>
+
+            </View>
+
+            <TouchableOpacity
+              onPress={
+                onClose
+              }
+              style={
+                styles.modalClose
+              }
+            >
+              <Icon
+                name="close"
+                size={20}
+                color={
+                  TEXT_SECONDARY
+                }
+              />
+            </TouchableOpacity>
+
+          </View>
+
+          {/* LIST */}
+
+          <FlatList
+            data={data}
+            keyExtractor={item =>
+              getId(item)
+            }
+            contentContainerStyle={
+              styles.modalList
+            }
+            renderItem={({
+              item,
+            }) => {
+              const id =
+                getId(item);
+
+              const selected =
+                selectedId === id;
+
+              return (
+                <TouchableOpacity
+                  style={[
+                    styles.selectionItem,
+                    selected &&
+                      styles.selectionItemSelected,
+                  ]}
+                  onPress={() =>
+                    onSelect(
+                      item
+                    )
+                  }
+                  activeOpacity={
+                    0.75
+                  }
+                >
+
+                  <View
+                    style={[
+                      styles.selectionIcon,
+                      selected && {
+                        backgroundColor:
+                          `${PRIMARY_COLOR}15`,
+                      },
+                    ]}
+                  >
+                    <Icon
+                      name={
+                        icon ===
+                        'briefcase-outline'
+                          ? 'briefcase-outline'
+                          : 'shield-account-outline'
+                      }
+                      size={18}
+                      color={
+                        selected
+                          ? PRIMARY_COLOR
+                          : '#7D8794'
+                      }
+                    />
+                  </View>
+
+                  <Text
+                    numberOfLines={
+                      2
+                    }
+                    style={[
+                      styles.selectionText,
+                      selected &&
+                        styles.selectionTextSelected,
+                    ]}
+                  >
+                    {renderLabel(
+                      item
+                    )}
+                  </Text>
+
+                  {selected && (
+                    <View
+                      style={
+                        styles.checkCircle
+                      }
+                    >
+                      <Icon
+                        name="check"
+                        size={15}
+                        color="#FFFFFF"
+                      />
+                    </View>
+                  )}
+
+                </TouchableOpacity>
+              );
+            }}
+            ListEmptyComponent={
+              <View
+                style={
+                  styles.modalEmpty
+                }
+              >
+
+                <View
+                  style={
+                    styles.modalEmptyIcon
+                  }
+                >
+                  <Icon
+                    name="database-off-outline"
+                    size={26}
+                    color={
+                      PRIMARY_COLOR
+                    }
+                  />
+                </View>
+
+                <Text
+                  style={
+                    styles.modalEmptyTitle
+                  }
+                >
+                  Nothing available
+                </Text>
+
+                <Text
+                  style={
+                    styles.modalEmptyText
+                  }
+                >
+                  No options are currently
+                  available.
+                </Text>
+
+              </View>
+            }
+          />
+
+        </View>
+
+      </View>
+
+    </Modal>
+  );
+}
+
+// =========================================================
+// STYLES
+// =========================================================
+
 const styles = StyleSheet.create({
+
+  // =======================================================
+  // BASE
+  // =======================================================
+
   safeArea: {
     flex: 1,
-    backgroundColor: BACKGROUND_COLOR,
+
+    backgroundColor:
+      BACKGROUND_COLOR,
   },
-  centeredContainer: {
+
+  keyboardContainer: {
     flex: 1,
+  },
+
+  // =======================================================
+  // HEADER
+  // =======================================================
+
+  header: {
+    paddingHorizontal: 18,
+    paddingVertical: 13,
+
+    borderBottomLeftRadius: 22,
+    borderBottomRightRadius: 22,
+
+    shadowColor: '#000',
+
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+
+    shadowOpacity: 0.12,
+
+    shadowRadius: 10,
+
+    elevation: 5,
+  },
+
+  headerRow: {
+    flexDirection: 'row',
+
+    alignItems: 'center',
+  },
+
+  backButton: {
+    width: 40,
+    height: 40,
+
+    alignItems: 'center',
     justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: BACKGROUND_COLOR,
-  },
-  scrollContent: {
-    paddingHorizontal: 24,
-    paddingBottom: 40,
-  },
-  switchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 8,
-    paddingHorizontal: 4,
-  },
-  switchLabel: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: TEXT_PRIMARY,
-  },
-  input: {
-    marginTop: 12,
-    backgroundColor: CARD_BACKGROUND,
-  },
-  dropdownWrapper: {
-    marginTop: 12,
-  },
-  dropdownLabel: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: TEXT_PRIMARY,
-    marginBottom: 4,
-  },
-  dropdownButton: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: CARD_BACKGROUND,
+
+    borderRadius: 11,
+
+    backgroundColor:
+      'rgba(255,255,255,0.14)',
+
     borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    minHeight: 56,
+
+    borderColor:
+      'rgba(255,255,255,0.18)',
   },
-  dropdownText: {
-    fontSize: 16,
-    color: TEXT_PRIMARY,
-  },
-  placeholderText: {
-    color: TEXT_SECONDARY,
-  },
-  errorText: {
-    color: ERROR_COLOR,
-    fontSize: 12,
-    marginTop: 4,
-    marginLeft: 4,
-  },
-  buttonWrapper: {
-    marginTop: 32,
-    borderRadius: 8,
-    overflow: 'hidden',
-  },
-  gradientButton: {
-    paddingVertical: 14,
+
+  headerIcon: {
+    width: 40,
+    height: 40,
+
+    marginLeft: 10,
+
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 54,
-    borderRadius: 8,
+
+    borderRadius: 11,
+
+    backgroundColor:
+      'rgba(255,255,255,0.14)',
   },
-  buttonText: {
+
+  headerText: {
+    marginLeft: 11,
+
+    flex: 1,
+  },
+
+  headerTitle: {
     color: '#FFFFFF',
-    fontSize: 16,
+
+    fontSize: 17,
+
+    fontWeight: '700',
+  },
+
+  headerSubtitle: {
+    marginTop: 2,
+
+    color:
+      'rgba(255,255,255,0.65)',
+
+    fontSize: 9,
+
+    fontWeight: '500',
+  },
+
+  // =======================================================
+  // CONTENT
+  // =======================================================
+
+  scrollContent: {
+    paddingHorizontal: 20,
+
+    paddingTop: 18,
+
+    paddingBottom: 45,
+  },
+
+  // =======================================================
+  // MODE CARD
+  // =======================================================
+
+  modeCard: {
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    padding: 14,
+
+    borderRadius: 15,
+
+    backgroundColor:
+      CARD_BACKGROUND,
+
+    borderWidth: 1,
+
+    borderColor:
+      '#E4E9F0',
+
+    shadowColor: '#000',
+
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+
+    shadowOpacity: 0.035,
+
+    shadowRadius: 7,
+
+    elevation: 1,
+  },
+
+  modeIcon: {
+    width: 43,
+    height: 43,
+
+    alignItems: 'center',
+    justifyContent: 'center',
+
+    borderRadius: 12,
+
+    backgroundColor:
+      `${PRIMARY_COLOR}12`,
+  },
+
+  modeContent: {
+    flex: 1,
+
+    marginLeft: 11,
+
+    marginRight: 7,
+  },
+
+  modeTitle: {
+    color: TEXT_PRIMARY,
+
+    fontSize: 13,
+
+    fontWeight: '700',
+  },
+
+  modeDescription: {
+    marginTop: 3,
+
+    color: TEXT_SECONDARY,
+
+    fontSize: 9,
+
+    lineHeight: 13,
+
+    fontWeight: '500',
+  },
+
+  // =======================================================
+  // SECTION HEADER
+  // =======================================================
+
+  sectionHeader: {
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    marginTop: 25,
+
+    marginBottom: 11,
+  },
+
+  sectionHeaderIcon: {
+    width: 36,
+    height: 36,
+
+    alignItems: 'center',
+    justifyContent: 'center',
+
+    borderRadius: 10,
+
+    backgroundColor:
+      `${PRIMARY_COLOR}10`,
+  },
+
+  sectionHeaderText: {
+    marginLeft: 10,
+
+    flex: 1,
+  },
+
+  sectionHeaderTitle: {
+    color: TEXT_PRIMARY,
+
+    fontSize: 15,
+
+    fontWeight: '700',
+  },
+
+  sectionHeaderSubtitle: {
+    marginTop: 2,
+
+    color: TEXT_SECONDARY,
+
+    fontSize: 9,
+
+    fontWeight: '500',
+  },
+
+  // =======================================================
+  // FORM CARD
+  // =======================================================
+
+  formCard: {
+    paddingHorizontal: 14,
+
+    borderRadius: 15,
+
+    backgroundColor:
+      CARD_BACKGROUND,
+
+    borderWidth: 1,
+
+    borderColor:
+      '#E5EAF0',
+
+    shadowColor: '#000',
+
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+
+    shadowOpacity: 0.03,
+
+    shadowRadius: 7,
+
+    elevation: 1,
+  },
+
+  // =======================================================
+  // INPUT
+  // =======================================================
+
+  inputWrapper: {
+    flexDirection: 'row',
+
+    alignItems: 'flex-start',
+
+    paddingVertical: 13,
+  },
+
+  inputDivider: {
+    borderBottomWidth: 1,
+
+    borderBottomColor:
+      '#EDF0F4',
+  },
+
+  inputIcon: {
+    width: 37,
+    height: 37,
+
+    alignItems: 'center',
+    justifyContent: 'center',
+
+    marginTop: 3,
+
+    borderRadius: 10,
+
+    backgroundColor:
+      `${PRIMARY_COLOR}0D`,
+  },
+
+  inputContent: {
+    flex: 1,
+
+    marginLeft: 11,
+  },
+
+  fieldLabel: {
+    color: TEXT_PRIMARY,
+
+    fontSize: 10,
+
     fontWeight: '600',
   },
+
+  required: {
+    color: ERROR_COLOR,
+  },
+
+  nativeInput: {
+    minHeight: 38,
+
+    marginTop: 2,
+
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+
+    color: TEXT_PRIMARY,
+
+    fontSize: 14,
+
+    fontWeight: '500',
+  },
+
+  inputError: {
+    color: ERROR_COLOR,
+  },
+
+  errorText: {
+    marginTop: 2,
+
+    color: ERROR_COLOR,
+
+    fontSize: 9,
+
+    lineHeight: 13,
+
+    fontWeight: '500',
+  },
+
+  // =======================================================
+  // SELECT
+  // =======================================================
+
+  selectField: {
+    minHeight: 67,
+
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    paddingVertical: 11,
+  },
+
+  selectContent: {
+    flex: 1,
+
+    marginLeft: 11,
+
+    marginRight: 8,
+  },
+
+  selectValue: {
+    marginTop: 5,
+
+    color: TEXT_PRIMARY,
+
+    fontSize: 13,
+
+    fontWeight: '500',
+  },
+
+  placeholderText: {
+    color: '#A0A8B5',
+
+    fontWeight: '400',
+  },
+
+  // =======================================================
+  // REPORTS TO
+  // =======================================================
+
+  reportsField: {
+    minHeight: 75,
+
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    paddingVertical: 13,
+  },
+
+  reportsContent: {
+    flex: 1,
+
+    marginLeft: 11,
+
+    marginRight: 8,
+  },
+
+  selectedValue: {
+    marginTop: 4,
+
+    color: TEXT_PRIMARY,
+
+    fontSize: 13,
+
+    fontWeight: '600',
+  },
+
+  selectedHint: {
+    marginTop: 2,
+
+    color: PRIMARY_COLOR,
+
+    fontSize: 8,
+
+    fontWeight: '600',
+  },
+
+  removeManager: {
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    paddingBottom: 12,
+
+    paddingLeft: 48,
+  },
+
+  removeManagerText: {
+    marginLeft: 5,
+
+    color: ERROR_COLOR,
+
+    fontSize: 9,
+
+    fontWeight: '600',
+  },
+
+  // =======================================================
+  // SUMMARY
+  // =======================================================
+
+  summaryCard: {
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    marginTop: 24,
+
+    padding: 13,
+
+    borderRadius: 14,
+
+    backgroundColor:
+      `${PRIMARY_COLOR}08`,
+
+    borderWidth: 1,
+
+    borderColor:
+      `${PRIMARY_COLOR}18`,
+  },
+
+  summaryIcon: {
+    width: 40,
+    height: 40,
+
+    alignItems: 'center',
+    justifyContent: 'center',
+
+    borderRadius: 11,
+
+    backgroundColor:
+      `${PRIMARY_COLOR}12`,
+  },
+
+  summaryContent: {
+    flex: 1,
+
+    marginLeft: 10,
+  },
+
+  summaryTitle: {
+    color: TEXT_PRIMARY,
+
+    fontSize: 11,
+
+    fontWeight: '700',
+  },
+
+  summaryText: {
+    marginTop: 3,
+
+    color: TEXT_SECONDARY,
+
+    fontSize: 9,
+
+    fontWeight: '500',
+  },
+
+  // =======================================================
+  // SUBMIT
+  // =======================================================
+
+  submitWrapper: {
+    marginTop: 16,
+
+    borderRadius: 14,
+
+    overflow: 'hidden',
+
+    shadowColor:
+      PRIMARY_COLOR,
+
+    shadowOffset: {
+      width: 0,
+      height: 6,
+    },
+
+    shadowOpacity: 0.2,
+
+    shadowRadius: 10,
+
+    elevation: 5,
+  },
+
+  submitButton: {
+    minHeight: 54,
+
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    justifyContent: 'center',
+
+    paddingHorizontal: 18,
+
+    gap: 9,
+  },
+
+  submitText: {
+    color: '#FFFFFF',
+
+    fontSize: 14,
+
+    fontWeight: '700',
+
+    flex: 0,
+  },
+
+  footerHint: {
+    marginTop: 10,
+
+    color: '#9AA3AF',
+
+    fontSize: 8,
+
+    lineHeight: 12,
+
+    textAlign: 'center',
+  },
+
+  // =======================================================
+  // LOADING
+  // =======================================================
+
+  loadingScreen: {
+    flex: 1,
+
+    alignItems: 'center',
+
+    justifyContent: 'center',
+
+    paddingHorizontal: 30,
+  },
+
+  loadingIcon: {
+    width: 68,
+    height: 68,
+
+    alignItems: 'center',
+
+    justifyContent: 'center',
+
+    borderRadius: 19,
+
+    backgroundColor:
+      `${PRIMARY_COLOR}12`,
+  },
+
+  loadingTitle: {
+    marginTop: 13,
+
+    color: TEXT_PRIMARY,
+
+    fontSize: 17,
+
+    fontWeight: '700',
+  },
+
+  loadingSubtitle: {
+    marginTop: 4,
+
+    color: TEXT_SECONDARY,
+
+    fontSize: 10,
+  },
+
+  // =======================================================
+  // MODAL
+  // =======================================================
+
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
+
     justifyContent: 'flex-end',
+
+    backgroundColor:
+      'rgba(15,23,42,0.48)',
   },
+
   modalContent: {
-    backgroundColor: CARD_BACKGROUND,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingBottom: 24,
-    maxHeight: '70%',
+    maxHeight: '75%',
+
+    backgroundColor:
+      CARD_BACKGROUND,
+
+    borderTopLeftRadius: 23,
+
+    borderTopRightRadius: 23,
+
+    paddingBottom: 20,
   },
-  reportsToModalContent: {
-    maxHeight: '80%',
+
+  reportsModal: {
+    maxHeight: '84%',
   },
+
   modalHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+
+    justifyContent:
+      'space-between',
+
+    paddingHorizontal: 18,
+
+    paddingVertical: 15,
+
     borderBottomWidth: 1,
-    borderBottomColor: BORDER_COLOR,
+
+    borderBottomColor:
+      '#E9EDF2',
   },
+
+  modalTitleContainer: {
+    flexDirection: 'row',
+
+    alignItems: 'center',
+  },
+
+  modalTitleIcon: {
+    width: 38,
+    height: 38,
+
+    alignItems: 'center',
+
+    justifyContent: 'center',
+
+    borderRadius: 10,
+
+    backgroundColor:
+      `${PRIMARY_COLOR}12`,
+  },
+
   modalTitle: {
-    fontWeight: '600',
+    marginLeft: 10,
+
     color: TEXT_PRIMARY,
+
+    fontSize: 14,
+
+    fontWeight: '700',
   },
-  modalList: {
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-  },
-  modalItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-  },
-  modalItemSelected: {
-    backgroundColor: SELECTED_ITEM_BG,
-  },
-  modalItemText: {
-    fontSize: 16,
-    color: TEXT_PRIMARY,
-  },
-  modalItemTextSelected: {
-    color: PRIMARY_COLOR,
-    fontWeight: '600',
-  },
-  // ---- Reports To search specific ----
-  modalItemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  avatar: {
-    marginRight: 12,
-  },
-  userInfo: {
-    flex: 1,
-  },
-  userSubtext: {
-    fontSize: 12,
-    color: TEXT_SECONDARY,
+
+  modalSubtitle: {
+    marginLeft: 10,
+
     marginTop: 2,
+
+    color: TEXT_SECONDARY,
+
+    fontSize: 9,
+
+    fontWeight: '500',
   },
+
+  modalClose: {
+    width: 35,
+    height: 35,
+
+    alignItems: 'center',
+
+    justifyContent: 'center',
+
+    borderRadius: 9,
+
+    backgroundColor:
+      '#F1F3F6',
+  },
+
+  modalList: {
+    paddingHorizontal: 14,
+
+    paddingTop: 7,
+
+    paddingBottom: 20,
+  },
+
+  // =======================================================
+  // SELECTION ITEMS
+  // =======================================================
+
+  selectionItem: {
+    minHeight: 58,
+
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    paddingHorizontal: 8,
+
+    paddingVertical: 8,
+
+    marginBottom: 4,
+
+    borderRadius: 11,
+  },
+
+  selectionItemSelected: {
+    backgroundColor:
+      SELECTED_ITEM_BG ||
+      `${PRIMARY_COLOR}0C`,
+  },
+
+  selectionIcon: {
+    width: 37,
+    height: 37,
+
+    alignItems: 'center',
+
+    justifyContent: 'center',
+
+    borderRadius: 10,
+
+    backgroundColor:
+      '#F3F5F8',
+  },
+
+  selectionText: {
+    flex: 1,
+
+    marginLeft: 11,
+
+    color: TEXT_PRIMARY,
+
+    fontSize: 12,
+
+    lineHeight: 17,
+
+    fontWeight: '500',
+  },
+
+  selectionTextSelected: {
+    color: PRIMARY_COLOR,
+
+    fontWeight: '700',
+  },
+
+  checkCircle: {
+    width: 23,
+    height: 23,
+
+    alignItems: 'center',
+
+    justifyContent: 'center',
+
+    borderRadius: 12,
+
+    backgroundColor:
+      PRIMARY_COLOR,
+
+    marginLeft: 7,
+  },
+
+  // =======================================================
+  // SEARCH
+  // =======================================================
+
   searchContainer: {
     flexDirection: 'row',
+
     alignItems: 'center',
-    backgroundColor: '#F5F5F5',
-    borderRadius: 8,
+
+    minHeight: 46,
+
     marginHorizontal: 16,
-    marginVertical: 12,
+
+    marginTop: 13,
+
+    marginBottom: 7,
+
     paddingHorizontal: 12,
-    paddingVertical: 4,
+
+    borderWidth: 1,
+
+    borderColor:
+      '#E1E6ED',
+
+    borderRadius: 11,
+
+    backgroundColor:
+      '#F8FAFC',
   },
+
   searchInput: {
     flex: 1,
-    height: 40,
+
+    height: 43,
+
     marginLeft: 8,
-    fontSize: 16,
+
+    paddingVertical: 0,
+
     color: TEXT_PRIMARY,
+
+    fontSize: 12,
   },
-  emptyText: {
-    textAlign: 'center',
-    marginTop: 20,
+
+  searchLoading: {
+    minHeight: 180,
+
+    alignItems: 'center',
+
+    justifyContent: 'center',
+  },
+
+  searchLoadingText: {
+    marginTop: 10,
+
     color: TEXT_SECONDARY,
+
+    fontSize: 10,
+  },
+
+  // =======================================================
+  // EMPLOYEE RESULTS
+  // =======================================================
+
+  employeeResult: {
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    paddingHorizontal: 8,
+
+    paddingVertical: 10,
+
+    marginBottom: 2,
+
+    borderRadius: 12,
+  },
+
+  employeeResultInfo: {
+    flex: 1,
+
+    marginLeft: 11,
+
+    marginRight: 8,
+  },
+
+  employeeName: {
+    color: TEXT_PRIMARY,
+
+    fontSize: 12,
+
+    fontWeight: '700',
+  },
+
+  employeeMetaRow: {
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    gap: 8,
+
+    marginTop: 3,
+  },
+
+  employeeMeta: {
+    color: TEXT_SECONDARY,
+
+    fontSize: 9,
+
+    fontWeight: '500',
+  },
+
+  employeeRole: {
+    color: PRIMARY_COLOR,
+
+    fontSize: 9,
+
+    fontWeight: '600',
+  },
+
+  avatar: {
+    marginRight: 1,
+  },
+
+  // =======================================================
+  // EMPTY MODAL
+  // =======================================================
+
+  modalEmpty: {
+    alignItems: 'center',
+
+    justifyContent: 'center',
+
+    paddingHorizontal: 30,
+
+    paddingVertical: 45,
+  },
+
+  modalEmptyIcon: {
+    width: 58,
+    height: 58,
+
+    alignItems: 'center',
+
+    justifyContent: 'center',
+
+    borderRadius: 16,
+
+    backgroundColor:
+      `${PRIMARY_COLOR}10`,
+  },
+
+  modalEmptyTitle: {
+    marginTop: 14,
+
+    color: TEXT_PRIMARY,
+
+    fontSize: 14,
+
+    fontWeight: '700',
+  },
+
+  modalEmptyText: {
+    marginTop: 5,
+
+    color: TEXT_SECONDARY,
+
+    fontSize: 10,
+
+    textAlign: 'center',
+
+    lineHeight: 15,
+  },
+  fieldIcon: {
+    width: 37,
+    height: 37,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    backgroundColor: `${PRIMARY_COLOR}0D`,
   },
 });

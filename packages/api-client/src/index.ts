@@ -12,6 +12,7 @@ export * from './positions';
 export * from './roles';
 export * from './users';      // 👈 New: phone endpoint
 export * from './avatars';    // 👈 New: avatar management
+export * from './chat';
 
 // ✅ Idempotency helpers (optional, but useful to expose)
 export * from './idempotency';

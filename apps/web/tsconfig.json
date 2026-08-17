@@ -16,7 +16,7 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "react-jsx",
+    "jsx": "preserve",
     "incremental": true,
     "plugins": [
       {
@@ -26,6 +26,12 @@
     "paths": {
       "@/*": [
         "./src/*"
+      ],
+      "@b2b/api-client": [
+        "../../packages/api-client/src"
+      ],
+      "@b2b/shared-types": [
+        "../../packages/shared-types/src"
       ]
     }
   },

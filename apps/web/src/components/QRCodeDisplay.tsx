@@ -7,8 +7,21 @@ interface Props {
 }
 
 const QRCodeDisplay: React.FC<Props> = ({ qrData, expiresIn }) => {
-  // Decode base64 to get the actual JSON string (contains session_id, signature, etc.)
-  const jsonString = atob(qrData);
+  console.log('[QRCodeDisplay] Received qrData (base64):', qrData);
+  console.log('[QRCodeDisplay] expiresIn:', expiresIn);
+
+  let jsonString: string;
+  try {
+    jsonString = atob(qrData);
+    console.log('[QRCodeDisplay] Decoded JSON string:', jsonString);
+  } catch (err) {
+    console.error('[QRCodeDisplay] Failed to decode base64:', err);
+    return (
+      <div className="text-red-500">
+        Error decoding QR data. Please refresh.
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col items-center">

@@ -178,3 +178,28 @@ export const updateEmployee = async (
     return response.data;
 };
 
+// 👇 Replace the old getUserDepartments with this
+
+/**
+ * Get departments of a specific user.
+ * The API returns `data` as an array of department objects directly.
+ */
+export const getUserDepartments = async (
+    companyId: string,
+    userId: string,
+    deviceId: string,
+    accessToken: string,
+  ): Promise<ApiResponse<Array<{
+    department_id: string;
+    department_name: string;
+    system_department_id: string;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+  }>>> => {
+    const url = `/companies/${companyId}/rbac/companies/${companyId}/users/${userId}/departments`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers });
+    // response.data is the full wrapper { success, data: [...], message, timestamp }
+    return response.data;
+  };

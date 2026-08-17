@@ -43,8 +43,11 @@ import EmployeeSearchScreen from '../screens/module/administration/EmployeeSearc
 import AvatarManagementScreen from '../screens/module/administration/AvatarManagementScreen';
 // Employee Detail
 import EmployeeDetailScreen from '../screens/module/administration/EmployeeDetailScreen';
-// 👇 NEW: User Phone Screen
+// User Phone
 import UserPhoneScreen from '../screens/module/administration/UserPhoneScreen';
+
+// 🆕 Chat Screen
+import ChatScreen from '../screens/module/chat/ChatScreen';
 
 export type RootStackParamList = {
   // Auth
@@ -91,8 +94,10 @@ export type RootStackParamList = {
 
   AvatarManagement: undefined;
   EmployeeDetail: { userId: string };
-  // 👇 NEW: User Phone
   UserPhone: { userId: string; userName?: string };
+
+  // 🆕 Chat
+  Chat: undefined;
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -244,11 +249,17 @@ export default function Navigation() {
           options={{ headerShown: true, title: 'Employee Details' }}
         />
 
-        {/* 👇 NEW: User Phone */}
         <Stack.Screen
           name="UserPhone"
           component={UserPhoneScreen}
           options={{ headerShown: true, title: 'User Phone' }}
+        />
+
+        {/* 🆕 Chat */}
+        <Stack.Screen
+          name="Chat"
+          component={ChatScreen}
+          options={{ headerShown: false }}
         />
       </Stack.Navigator>
     </NavigationContainer>
