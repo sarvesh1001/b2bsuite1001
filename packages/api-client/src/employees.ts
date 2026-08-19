@@ -126,11 +126,14 @@ export const addManager = async (
     return idempotentPost<ApiResponse<CompanyEmployee>>(url, payload, 'addManager', { headers });
 };
 
-// ========== NEW: Get full employee details ==========
+// ================================================================
+// NEW / UPDATED APIs for Employee Details and Update
+// ================================================================
 
 /**
  * Get full employee details including role, position, department, work center.
- * This uses the RBAC endpoint which returns rich data.
+ * Uses the RBAC GET endpoint: /companies/{companyId}/rbac/employees/{userId}
+ * Returns the employee data object inside `data`.
  */
 export const getEmployeeDetails = async (
     companyId: string,
@@ -138,26 +141,25 @@ export const getEmployeeDetails = async (
     deviceId: string,
     accessToken: string,
 ): Promise<CompanyEmployee & {
+    role_name?: string;
     position_title?: string;
     department_name?: string;
     work_center_code?: string;
-    role_name?: string;
+    hire_date?: string;
+    created_at?: string;
+    updated_at?: string;
 }> => {
     const url = `/companies/${companyId}/rbac/employees/${userId}`;
     const headers = getBaseHeaders(companyId, deviceId, accessToken);
     const response = await axiosInstance.get<ApiResponse<any>>(url, { headers });
-
-    // ✅ Log the full API response (including wrapper) for debugging
-    console.log('getEmployeeDetails response:', JSON.stringify(response.data, null, 2));
-
+    // The API returns { success, data: { ...employee }, message, timestamp }
     return response.data.data;
 };
 
-// ========== NEW: Update employee (PATCH) ==========
-
 /**
- * Update all fields of an employee using the PATCH endpoint.
- * Requires all fields to be provided.
+ * Update employee fields using PATCH.
+ * Supports partial updates; only provided fields will be updated.
+ * Endpoint: PATCH /companies/{companyId}/rbac/employees/{userId}
  */
 export const updateEmployee = async (
     companyId: string,
@@ -165,11 +167,15 @@ export const updateEmployee = async (
     deviceId: string,
     accessToken: string,
     payload: {
-        employee_id: string;
-        role_id: string;
-        position_id: string;
-        reports_to: string | null;
-        is_active: boolean;
+        employee_id?: string;
+        role_id?: string;
+        position_id?: string;
+        reports_to?: string | null;
+        is_active?: boolean;
+        phone?: string;
+        username?: string;
+        full_name?: string;
+        hire_date?: string;
     }
 ): Promise<ApiResponse<{ message: string }>> => {
     const url = `/companies/${companyId}/rbac/employees/${userId}`;
@@ -178,28 +184,22 @@ export const updateEmployee = async (
     return response.data;
 };
 
-// 👇 Replace the old getUserDepartments with this
-
-/**
- * Get departments of a specific user.
- * The API returns `data` as an array of department objects directly.
- */
+// ---- Get departments for a user ----
 export const getUserDepartments = async (
     companyId: string,
     userId: string,
     deviceId: string,
     accessToken: string,
-  ): Promise<ApiResponse<Array<{
+): Promise<ApiResponse<Array<{
     department_id: string;
     department_name: string;
     system_department_id: string;
     is_active: boolean;
     created_at: string;
     updated_at: string;
-  }>>> => {
+}>>> => {
     const url = `/companies/${companyId}/rbac/companies/${companyId}/users/${userId}/departments`;
     const headers = getBaseHeaders(companyId, deviceId, accessToken);
     const response = await axiosInstance.get(url, { headers });
-    // response.data is the full wrapper { success, data: [...], message, timestamp }
     return response.data;
-  };
+};

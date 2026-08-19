@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { useRouter } from 'next/router';
-import { listRoles, deleteRole } from '@b2b/api-client';
+import { axiosInstance } from '@b2b/api-client';
 import { useUserAuthStore } from '../../../store/userAuthStore';
 import { Role } from '@b2b/shared-types';
 
@@ -21,11 +21,7 @@ import {
 export default function RolesListScreen() {
   const router = useRouter();
 
-  const {
-    accessToken,
-    deviceId,
-    companyId,
-  } = useUserAuthStore();
+  const { accessToken, deviceId, companyId } = useUserAuthStore();
 
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
@@ -35,54 +31,91 @@ export default function RolesListScreen() {
   const [deleting, setDeleting] = useState(false);
 
   // =======================================================
+  // HELPER: REQUEST HEADERS
+  // =======================================================
+
+  const getHeaders = useCallback(() => {
+    if (!accessToken || !companyId || !deviceId) {
+      throw new Error('Missing authentication information');
+    }
+    return {
+      'X-Company-ID': companyId,
+      'X-Device-ID': deviceId,
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    };
+  }, [accessToken, companyId, deviceId]);
+
+  // =======================================================
   // FETCH ROLES
   // =======================================================
 
-  const fetchRoles = async (showRefresh = false) => {
-    if (!accessToken || !companyId || !deviceId) {
-      setLoading(false);
-      return;
-    }
+  const fetchRoles = useCallback(
+    async (showRefresh = false) => {
+      if (!accessToken || !companyId || !deviceId) {
+        setLoading(false);
+        return;
+      }
 
-    if (showRefresh) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
-    }
+      if (showRefresh) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
 
-    try {
-      const res = await listRoles(
-        companyId,
-        deviceId,
-        {
-          page: 1,
-          limit: 50,
-        },
-        accessToken
-      );
+      try {
+        const headers = getHeaders();
+        const response = await axiosInstance.get(
+          `/companies/${companyId}/rbac/roles`,
+          {
+            headers,
+            params: {
+              page: 1,
+              limit: 50,
+            },
+          }
+        );
 
-      setRoles(res.data?.roles || []);
-    } catch (error: any) {
-      console.error('Failed to load roles:', error);
+        // Parse response – adjust based on actual API structure
+        const data = response.data?.data || response.data || {};
+        const rolesList = data.roles || data || [];
 
-      window.alert(
-        error?.response?.data?.message ||
-          error?.message ||
-          'Failed to load roles'
-      );
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  };
+        setRoles(rolesList);
+      } catch (error: any) {
+        console.error('Failed to load roles:', error);
+
+        window.alert(
+          error?.response?.data?.message ||
+            error?.message ||
+            'Failed to load roles'
+        );
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [accessToken, companyId, deviceId, getHeaders]
+  );
 
   // =======================================================
-  // INITIAL LOAD
+  // INITIAL LOAD + REFRESH ON ROUTE CHANGE
   // =======================================================
 
   useEffect(() => {
     fetchRoles();
-  }, [accessToken, companyId, deviceId]);
+  }, [fetchRoles]);
+
+  useEffect(() => {
+    const handleRouteChange = (url: string) => {
+      if (url === router.asPath) {
+        fetchRoles(true);
+      }
+    };
+    router.events.on('routeChangeComplete', handleRouteChange);
+    return () => {
+      router.events.off('routeChangeComplete', handleRouteChange);
+    };
+  }, [fetchRoles, router]);
 
   // =======================================================
   // SEARCH
@@ -99,9 +132,7 @@ export default function RolesListScreen() {
       return (
         role.role_name?.toLowerCase().includes(query) ||
         role.description?.toLowerCase().includes(query) ||
-        String(role.role_level)
-          .toLowerCase()
-          .includes(query)
+        String(role.role_level).toLowerCase().includes(query)
       );
     });
   }, [roles, search]);
@@ -111,28 +142,23 @@ export default function RolesListScreen() {
   // =======================================================
 
   const handleDelete = async () => {
-    if (
-      !deleteTarget ||
-      !companyId ||
-      !deviceId ||
-      !accessToken
-    ) {
+    if (!deleteTarget || !companyId || !deviceId || !accessToken) {
       return;
     }
 
     setDeleting(true);
 
     try {
-      await deleteRole(
-        companyId,
-        deviceId,
-        deleteTarget.role_id,
-        accessToken
+      const headers = getHeaders();
+      await axiosInstance.delete(
+        `/companies/${companyId}/rbac/roles/${deleteTarget.role_id}`,
+        { headers }
       );
 
       setDeleteTarget(null);
 
-      await fetchRoles();
+      // Refresh the list
+      await fetchRoles(true);
     } catch (error: any) {
       console.error('Failed to delete role:', error);
 
@@ -155,7 +181,6 @@ export default function RolesListScreen() {
       <>
         <div className="rolesPage loadingPage">
           <div className="loadingContainer">
-
             <div className="skeletonHeader">
               <div className="skeleton skeletonSmall" />
               <div className="skeleton skeletonTitle" />
@@ -169,10 +194,7 @@ export default function RolesListScreen() {
 
             <div className="skeletonTable">
               {[1, 2, 3, 4].map((item) => (
-                <div
-                  key={item}
-                  className="skeletonRow"
-                >
+                <div key={item} className="skeletonRow">
                   <div className="skeleton skeletonAvatar" />
                   <div className="skeletonRowText">
                     <div className="skeleton skeletonRoleName" />
@@ -183,7 +205,6 @@ export default function RolesListScreen() {
                 </div>
               ))}
             </div>
-
           </div>
         </div>
 
@@ -199,21 +220,16 @@ export default function RolesListScreen() {
   return (
     <>
       <div className="rolesPage">
-
         {/* =================================================
             HEADER
         ================================================= */}
 
         <header className="pageHeader">
-
           <div className="headerInner">
-
             <div className="breadcrumb">
               <button
                 type="button"
-                onClick={() =>
-                  router.push('/administration')
-                }
+                onClick={() => router.push('/administration')}
               >
                 Administration
               </button>
@@ -224,41 +240,29 @@ export default function RolesListScreen() {
             </div>
 
             <div className="headerMain">
-
               <div className="titleArea">
-
                 <div className="titleIcon">
                   <FiShield />
                 </div>
 
                 <div>
                   <h1>Roles</h1>
-
-                  <p>
-                    Manage roles and access levels
-                    across your organization.
-                  </p>
+                  <p>Manage roles and access levels across your organization.</p>
                 </div>
-
               </div>
 
               <button
                 type="button"
                 className="addButton"
-                onClick={() =>
-                  router.push('/administration/roles/new')
-                }
+                onClick={() => router.push('/administration/roles/new')}
               >
                 <FiPlus />
                 <span>Add Role</span>
               </button>
-
             </div>
-
           </div>
 
           <div className="accentLine" />
-
         </header>
 
         {/* =================================================
@@ -266,73 +270,40 @@ export default function RolesListScreen() {
         ================================================= */}
 
         <main className="content">
-
           {/* =================================================
               SUMMARY
           ================================================= */}
 
           <div className="summaryGrid">
-
             <div className="summaryCard">
-
               <div className="summaryCardIcon blue">
                 <FiShield />
               </div>
-
               <div>
-                <span className="summaryLabel">
-                  Total Roles
-                </span>
-
+                <span className="summaryLabel">Total Roles</span>
                 <strong>{roles.length}</strong>
               </div>
-
             </div>
 
             <div className="summaryCard">
-
               <div className="summaryCardIcon purple">
                 <FiUsers />
               </div>
-
               <div>
-                <span className="summaryLabel">
-                  System Roles
-                </span>
-
-                <strong>
-                  {
-                    roles.filter(
-                      (role) => role.is_system_role
-                    ).length
-                  }
-                </strong>
+                <span className="summaryLabel">System Roles</span>
+                <strong>{roles.filter((role) => role.is_system_role).length}</strong>
               </div>
-
             </div>
 
             <div className="summaryCard">
-
               <div className="summaryCardIcon green">
                 <FiUsers />
               </div>
-
               <div>
-                <span className="summaryLabel">
-                  Custom Roles
-                </span>
-
-                <strong>
-                  {
-                    roles.filter(
-                      (role) => !role.is_system_role
-                    ).length
-                  }
-                </strong>
+                <span className="summaryLabel">Custom Roles</span>
+                <strong>{roles.filter((role) => !role.is_system_role).length}</strong>
               </div>
-
             </div>
-
           </div>
 
           {/* =================================================
@@ -340,20 +311,15 @@ export default function RolesListScreen() {
           ================================================= */}
 
           <div className="toolbar">
-
             <div className="toolbarLeft">
-
               <div className="searchBox">
-
                 <FiSearch />
 
                 <input
                   type="text"
                   placeholder="Search roles..."
                   value={search}
-                  onChange={(event) =>
-                    setSearch(event.target.value)
-                  }
+                  onChange={(event) => setSearch(event.target.value)}
                 />
 
                 {search && (
@@ -366,18 +332,12 @@ export default function RolesListScreen() {
                     <FiX />
                   </button>
                 )}
-
               </div>
-
             </div>
 
             <div className="toolbarRight">
-
               <span className="resultCount">
-                {filteredRoles.length}{' '}
-                {filteredRoles.length === 1
-                  ? 'role'
-                  : 'roles'}
+                {filteredRoles.length} {filteredRoles.length === 1 ? 'role' : 'roles'}
               </span>
 
               <button
@@ -387,51 +347,36 @@ export default function RolesListScreen() {
                 disabled={refreshing}
                 title="Refresh roles"
               >
-                <FiRefreshCw
-                  className={
-                    refreshing
-                      ? 'spinning'
-                      : ''
-                  }
-                />
-
+                <FiRefreshCw className={refreshing ? 'spinning' : ''} />
                 <span>Refresh</span>
               </button>
-
             </div>
-
           </div>
 
           {/* =================================================
               EMPTY SEARCH
           ================================================= */}
 
-          {roles.length > 0 &&
-            filteredRoles.length === 0 && (
-              <div className="emptyState">
-
-                <div className="emptyIcon">
-                  <FiSearch />
-                </div>
-
-                <h2>No roles found</h2>
-
-                <p>
-                  No roles match "
-                  <strong>{search}</strong>".
-                  Try a different search.
-                </p>
-
-                <button
-                  type="button"
-                  className="secondaryButton"
-                  onClick={() => setSearch('')}
-                >
-                  Clear Search
-                </button>
-
+          {roles.length > 0 && filteredRoles.length === 0 && (
+            <div className="emptyState">
+              <div className="emptyIcon">
+                <FiSearch />
               </div>
-            )}
+
+              <h2>No roles found</h2>
+              <p>
+                No roles match "<strong>{search}</strong>". Try a different search.
+              </p>
+
+              <button
+                type="button"
+                className="secondaryButton"
+                onClick={() => setSearch('')}
+              >
+                Clear Search
+              </button>
+            </div>
+          )}
 
           {/* =================================================
               NO ROLES
@@ -439,29 +384,21 @@ export default function RolesListScreen() {
 
           {roles.length === 0 && (
             <div className="emptyState">
-
               <div className="emptyIcon purpleEmpty">
                 <FiShield />
               </div>
 
               <h2>No roles yet</h2>
-
-              <p>
-                Create your first role to start
-                managing permissions and access.
-              </p>
+              <p>Create your first role to start managing permissions and access.</p>
 
               <button
                 type="button"
                 className="addButton emptyAddButton"
-                onClick={() =>
-                  router.push('/administration/roles/new')
-                }
+                onClick={() => router.push('/administration/roles/new')}
               >
                 <FiPlus />
                 Create First Role
               </button>
-
             </div>
           )}
 
@@ -471,111 +408,67 @@ export default function RolesListScreen() {
 
           {filteredRoles.length > 0 && (
             <div className="rolesTable">
-
               <div className="tableHeader">
-
                 <span>ROLE</span>
                 <span>LEVEL</span>
                 <span>TYPE</span>
                 <span>DESCRIPTION</span>
-                <span className="actionsHeader">
-                  ACTIONS
-                </span>
-
+                <span className="actionsHeader">ACTIONS</span>
               </div>
 
               {filteredRoles.map((role, index) => (
-
-                <div
-                  key={role.role_id}
-                  className="roleRow"
-                >
-
+                <div key={role.role_id} className="roleRow">
                   {/* ROLE */}
                   <div className="roleIdentity">
-
                     <div
                       className="roleAvatar"
                       style={{
-                        backgroundColor:
-                          role.is_system_role
-                            ? '#f1eafe'
-                            : '#eff6ff',
-
-                        color:
-                          role.is_system_role
-                            ? '#7c3aed'
-                            : '#2563eb',
+                        backgroundColor: role.is_system_role ? '#f1eafe' : '#eff6ff',
+                        color: role.is_system_role ? '#7c3aed' : '#2563eb',
                       }}
                     >
-                      {role.role_name
-                        ?.charAt(0)
-                        .toUpperCase() || 'R'}
+                      {role.role_name?.charAt(0).toUpperCase() || 'R'}
                     </div>
 
                     <div className="roleIdentityText">
-
-                      <strong>
-                        {role.role_name}
-                      </strong>
-
-                      <span>
-                        Role #{String(index + 1).padStart(2, '0')}
-                      </span>
-
+                      <strong>{role.role_name}</strong>
+                      <span>Role #{String(index + 1).padStart(2, '0')}</span>
                     </div>
-
                   </div>
 
                   {/* LEVEL */}
                   <div>
-                    <span className="levelBadge">
-                      Level {role.role_level}
-                    </span>
+                    <span className="levelBadge">Level {role.role_level}</span>
                   </div>
 
                   {/* TYPE */}
                   <div>
                     <span
                       className={
-                        role.is_system_role
-                          ? 'typeBadge system'
-                          : 'typeBadge custom'
+                        role.is_system_role ? 'typeBadge system' : 'typeBadge custom'
                       }
                     >
                       <span className="statusDot" />
-
-                      {role.is_system_role
-                        ? 'System Role'
-                        : 'Custom Role'}
+                      {role.is_system_role ? 'System Role' : 'Custom Role'}
                     </span>
                   </div>
 
                   {/* DESCRIPTION */}
                   <div className="descriptionCell">
-
                     {role.description ? (
-                      <span title={role.description}>
-                        {role.description}
-                      </span>
+                      <span title={role.description}>{role.description}</span>
                     ) : (
-                      <span className="noDescription">
-                        No description
-                      </span>
+                      <span className="noDescription">No description</span>
                     )}
-
                   </div>
 
                   {/* ACTIONS */}
                   <div className="rowActions">
-
                     <button
                       type="button"
                       className="rowAction editAction"
                       onClick={() =>
-                        router.push(
-                          `/administration/roles/edit?roleId=${role.role_id}`
-                        )
+                        router.push(`/administration/roles/edit?roleId=${role.role_id}`)
                       }
                       title="Edit role"
                     >
@@ -586,9 +479,7 @@ export default function RolesListScreen() {
                       <button
                         type="button"
                         className="rowAction deleteAction"
-                        onClick={() =>
-                          setDeleteTarget(role)
-                        }
+                        onClick={() => setDeleteTarget(role)}
                         title="Delete role"
                       >
                         <FiTrash2 />
@@ -596,20 +487,13 @@ export default function RolesListScreen() {
                     )}
 
                     {role.is_system_role && (
-                      <span
-                        className="protectedIcon"
-                        title="System roles cannot be deleted"
-                      >
+                      <span className="protectedIcon" title="System roles cannot be deleted">
                         <FiShield />
                       </span>
                     )}
-
                   </div>
-
                 </div>
-
               ))}
-
             </div>
           )}
 
@@ -619,94 +503,50 @@ export default function RolesListScreen() {
 
           {filteredRoles.length > 0 && (
             <div className="mobileRoleList">
-
               {filteredRoles.map((role, index) => (
-
-                <div
-                  key={role.role_id}
-                  className="mobileRoleCard"
-                >
-
+                <div key={role.role_id} className="mobileRoleCard">
                   <div className="mobileRoleTop">
-
                     <div
                       className="roleAvatar"
                       style={{
-                        backgroundColor:
-                          role.is_system_role
-                            ? '#f1eafe'
-                            : '#eff6ff',
-
-                        color:
-                          role.is_system_role
-                            ? '#7c3aed'
-                            : '#2563eb',
+                        backgroundColor: role.is_system_role ? '#f1eafe' : '#eff6ff',
+                        color: role.is_system_role ? '#7c3aed' : '#2563eb',
                       }}
                     >
-                      {role.role_name
-                        ?.charAt(0)
-                        .toUpperCase() || 'R'}
+                      {role.role_name?.charAt(0).toUpperCase() || 'R'}
                     </div>
 
                     <div className="mobileRoleTitle">
-
-                      <strong>
-                        {role.role_name}
-                      </strong>
-
-                      <span>
-                        Role #{String(index + 1).padStart(2, '0')}
-                      </span>
-
+                      <strong>{role.role_name}</strong>
+                      <span>Role #{String(index + 1).padStart(2, '0')}</span>
                     </div>
 
-                    <button
-                      type="button"
-                      className="mobileMore"
-                      title="Actions"
-                    >
+                    <button type="button" className="mobileMore" title="Actions">
                       <FiMoreHorizontal />
                     </button>
-
                   </div>
 
                   <div className="mobileBadges">
-
-                    <span className="levelBadge">
-                      Level {role.role_level}
-                    </span>
+                    <span className="levelBadge">Level {role.role_level}</span>
 
                     <span
                       className={
-                        role.is_system_role
-                          ? 'typeBadge system'
-                          : 'typeBadge custom'
+                        role.is_system_role ? 'typeBadge system' : 'typeBadge custom'
                       }
                     >
                       <span className="statusDot" />
-
-                      {role.is_system_role
-                        ? 'System Role'
-                        : 'Custom Role'}
+                      {role.is_system_role ? 'System Role' : 'Custom Role'}
                     </span>
-
                   </div>
 
-                  {role.description && (
-                    <p className="mobileDescription">
-                      {role.description}
-                    </p>
-                  )}
+                  {role.description && <p className="mobileDescription">{role.description}</p>}
 
                   <div className="mobileActions">
-
                     <button
                       type="button"
                       className="mobileEditButton"
                       onClick={() =>
-                        router.push(
-                          `/administration/roles/edit?roleId=${role.role_id}`
-                        )
+                        router.push(`/administration/roles/edit?roleId=${role.role_id}`)
                       }
                     >
                       <FiEdit2 />
@@ -717,24 +557,17 @@ export default function RolesListScreen() {
                       <button
                         type="button"
                         className="mobileDeleteButton"
-                        onClick={() =>
-                          setDeleteTarget(role)
-                        }
+                        onClick={() => setDeleteTarget(role)}
                       >
                         <FiTrash2 />
                         Delete
                       </button>
                     )}
-
                   </div>
-
                 </div>
-
               ))}
-
             </div>
           )}
-
         </main>
 
         {/* =================================================
@@ -745,17 +578,12 @@ export default function RolesListScreen() {
           <div
             className="modalBackdrop"
             onMouseDown={(event) => {
-              if (
-                event.target === event.currentTarget &&
-                !deleting
-              ) {
+              if (event.target === event.currentTarget && !deleting) {
                 setDeleteTarget(null);
               }
             }}
           >
-
             <div className="deleteModal">
-
               <div className="deleteModalIcon">
                 <FiAlertTriangle />
               </div>
@@ -763,10 +591,7 @@ export default function RolesListScreen() {
               <button
                 type="button"
                 className="modalClose"
-                onClick={() =>
-                  !deleting &&
-                  setDeleteTarget(null)
-                }
+                onClick={() => !deleting && setDeleteTarget(null)}
                 disabled={deleting}
               >
                 <FiX />
@@ -775,22 +600,15 @@ export default function RolesListScreen() {
               <h2>Delete role?</h2>
 
               <p>
-                You are about to permanently delete
-                <strong>
-                  {' '}
-                  {deleteTarget.role_name}
-                </strong>
-                . This action cannot be undone.
+                You are about to permanently delete <strong>{deleteTarget.role_name}</strong>.
+                This action cannot be undone.
               </p>
 
               <div className="deleteModalActions">
-
                 <button
                   type="button"
                   className="cancelDelete"
-                  onClick={() =>
-                    setDeleteTarget(null)
-                  }
+                  onClick={() => setDeleteTarget(null)}
                   disabled={deleting}
                 >
                   Cancel
@@ -814,14 +632,10 @@ export default function RolesListScreen() {
                     </>
                   )}
                 </button>
-
               </div>
-
             </div>
-
           </div>
         )}
-
       </div>
 
       <style jsx>{styles}</style>
@@ -830,7 +644,7 @@ export default function RolesListScreen() {
 }
 
 // =========================================================
-// STYLES
+// STYLES (unchanged from original)
 // =========================================================
 
 const styles = `

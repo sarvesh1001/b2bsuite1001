@@ -530,10 +530,9 @@ export default function EmployeeSearchScreen() {
         key={item.user_id}
         className="employeeCard"
         onClick={() =>
-          router.push(
-            `/module/administration/employee-detail?userId=${item.user_id}`
-          )
+          router.push(`/administration/employees/${item.user_id}`)
         }
+        
       >
         {/* Avatar */}
         <div className="employeeAvatar">

@@ -20,13 +20,8 @@ import {
   FiAlertCircle,
 } from 'react-icons/fi';
 
-import {
-  getPosition,
-  updatePosition,
-  getRootDepartments,
-  listWorkCenters,
-} from '@b2b/api-client';
-
+// ✅ Use axiosInstance directly – no idempotent wrappers
+import { axiosInstance } from '@b2b/api-client';
 import { useUserAuthStore } from '../../../store/userAuthStore';
 
 // =========================================================
@@ -386,6 +381,22 @@ export default function EditPositionScreen() {
     watch('work_center_code');
 
   // =======================================================
+  // HELPER: REQUEST HEADERS
+  // =======================================================
+
+  const getHeaders = () => {
+    if (!accessToken || !companyId || !deviceId) {
+      throw new Error('Missing authentication information');
+    }
+    return {
+      'X-Company-ID': companyId,
+      'X-Device-ID': deviceId,
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    };
+  };
+
+  // =======================================================
   // LOAD DATA
   // =======================================================
 
@@ -420,78 +431,53 @@ export default function EditPositionScreen() {
         setLoading(true);
         setLoadError(null);
 
-        const [
-          positionRes,
-          deptRes,
-          wcRes,
-        ] = await Promise.all([
-          getPosition(
-            companyId,
-            deviceId,
-            positionId,
-            accessToken
-          ),
+        const headers = getHeaders();
 
-          getRootDepartments(
-            companyId,
-            deviceId,
-            accessToken
+        // ✅ Use axiosInstance directly for all three calls
+        const [positionRes, deptRes, wcRes] = await Promise.all([
+          axiosInstance.get(
+            `/companies/${companyId}/positions/${positionId}`,
+            { headers }
           ),
-
-          listWorkCenters(
-            companyId,
-            deviceId,
+          axiosInstance.get(
+            `/companies/${companyId}/departments/root`,
+            { headers }
+          ),
+          axiosInstance.get(
+            `/companies/${companyId}/attendance/work-centers`,
             {
-              page: 1,
-              page_size: 100,
-            },
-            accessToken
+              headers,
+              params: {
+                page: 1,
+                page_size: 100,
+              },
+            }
           ),
         ]);
 
-        const position =
-          positionRes.data;
+        // Parse responses (adjust based on actual API structure)
+        const position = positionRes.data?.data || positionRes.data;
+        const departmentsData = deptRes.data?.data || deptRes.data || [];
+        const workCentersData = wcRes.data?.data || wcRes.data || [];
 
         if (!position) {
-          throw new Error(
-            'Position not found.'
-          );
+          throw new Error('Position not found.');
         }
 
-        setDepartments(
-          deptRes.data || []
-        );
-
-        setWorkCenters(
-          wcRes.data || []
-        );
+        setDepartments(departmentsData);
+        setWorkCenters(workCentersData);
 
         reset({
           title: position.title || '',
-          department_id:
-            position.department_id || '',
-          work_center_code:
-            position.work_center_code ||
-            null,
-          is_open:
-            Boolean(position.is_open),
-          is_schedulable:
-            Boolean(position.is_schedulable),
-          attendance_required:
-            Boolean(
-              position.attendance_required
-            ),
-          overtime_allowed:
-            Boolean(
-              position.overtime_allowed
-            ),
+          department_id: position.department_id || '',
+          work_center_code: position.work_center_code || null,
+          is_open: Boolean(position.is_open),
+          is_schedulable: Boolean(position.is_schedulable),
+          attendance_required: Boolean(position.attendance_required),
+          overtime_allowed: Boolean(position.overtime_allowed),
         });
       } catch (error: any) {
-        console.error(
-          'Failed to load position:',
-          error
-        );
-
+        console.error('Failed to load position:', error);
         setLoadError(
           error?.response?.data?.message ||
             error?.message ||
@@ -533,26 +519,19 @@ export default function EditPositionScreen() {
 
       const payload = {
         ...data,
-        work_center_code:
-          data.work_center_code ||
-          undefined,
+        work_center_code: data.work_center_code || undefined,
       };
 
-      await updatePosition(
-        companyId,
-        deviceId,
-        positionId,
+      // ✅ Use axiosInstance.put directly
+      await axiosInstance.put(
+        `/companies/${companyId}/positions/${positionId}`,
         payload,
-        accessToken
+        { headers: getHeaders() }
       );
 
       router.back();
     } catch (error: any) {
-      console.error(
-        'Failed to update position:',
-        error
-      );
-
+      console.error('Failed to update position:', error);
       alert(
         error?.response?.data?.message ||
           error?.message ||
@@ -1227,7 +1206,7 @@ export default function EditPositionScreen() {
 }
 
 // =========================================================
-// STYLES
+// STYLES (unchanged)
 // =========================================================
 
 const styles = `

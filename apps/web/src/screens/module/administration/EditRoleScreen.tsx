@@ -1,4 +1,10 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, {
+  useEffect,
+  useState,
+  useMemo,
+  useCallback,
+  useRef,
+} from 'react';
 import { useRouter } from 'next/router';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -24,14 +30,8 @@ import {
   FiRefreshCw,
 } from 'react-icons/fi';
 
-import {
-  getRole,
-  updateRole,
-  getRootDepartments,
-  getRolePermissionsDetailed,
-  getRoleDepartments,
-} from '@b2b/api-client';
-
+// ✅ Use axiosInstance directly – no idempotent wrappers
+import { axiosInstance } from '@b2b/api-client';
 import { useUserAuthStore } from '../../../store/userAuthStore';
 
 // =========================================================
@@ -51,7 +51,7 @@ type PermissionItem = {
 };
 
 // =========================================================
-// MODULE COLORS
+// MODULE COLORS & ICONS (unchanged)
 // =========================================================
 
 const MODULE_COLORS: Record<string, string> = {
@@ -93,26 +93,22 @@ const MODULE_ICONS: Record<string, string> = {
 };
 
 // =========================================================
-// ZOD
+// ZOD SCHEMA (role_level as string for editing)
 // =========================================================
 
 const schema = z.object({
-  role_name: z
-    .string()
-    .min(1, 'Role name is required')
-    .optional(),
-
+  role_name: z.string().min(1, 'Role name is required'),
   role_level: z
-    .number()
-    .int()
-    .min(1, 'Level must be at least 1')
-    .max(1000, 'Level cannot exceed 1000')
-    .optional(),
-
-  description: z
     .string()
-    .nullable()
-    .optional(),
+    .min(1, 'Role level is required')
+    .refine(
+      (value) => {
+        const num = Number(value);
+        return Number.isInteger(num) && num >= 1 && num <= 1000;
+      },
+      { message: 'Level must be between 1 and 1000' }
+    ),
+  description: z.string().nullable().optional(),
 });
 
 type FormData = z.infer<typeof schema>;
@@ -124,12 +120,17 @@ type FormData = z.infer<typeof schema>;
 export default function EditRoleScreen() {
   const router = useRouter();
   const { roleId } = router.query;
+  const isCreateMode = !roleId || roleId === 'new';
 
-  const {
-    accessToken,
-    deviceId,
-    companyId,
-  } = useUserAuthStore();
+  const { accessToken, deviceId, companyId } = useUserAuthStore();
+
+  // Helper to build headers (reused everywhere)
+  const getHeaders = useCallback(() => ({
+    'X-Company-ID': companyId!,
+    'X-Device-ID': deviceId!,
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${accessToken!}`,
+  }), [companyId, deviceId, accessToken]);
 
   // -------------------------------------------------------
   // State
@@ -139,50 +140,29 @@ export default function EditRoleScreen() {
   const [saving, setSaving] = useState(false);
   const [isSystemRole, setIsSystemRole] = useState(false);
 
-  const [allDepartments, setAllDepartments] = useState<
-    DepartmentItem[]
-  >([]);
+  const [allDepartments, setAllDepartments] = useState<DepartmentItem[]>([]);
+  const [loadingDepartments, setLoadingDepartments] = useState(true);
 
-  const [loadingDepartments, setLoadingDepartments] =
-    useState(true);
+  const [originalDepartmentIds, setOriginalDepartmentIds] = useState<string[]>([]);
+  const [originalPermissionNames, setOriginalPermissionNames] = useState<string[]>([]);
 
-  const [originalDepartmentIds, setOriginalDepartmentIds] =
-    useState<string[]>([]);
-
-  const [originalPermissionNames, setOriginalPermissionNames] =
-    useState<string[]>([]);
-
-  const [selectedDepartmentIds, setSelectedDepartmentIds] =
-    useState<string[]>([]);
-
-  const [selectedPermissions, setSelectedPermissions] =
-    useState<Record<string, string[]>>({});
-
-  const [permissionCache, setPermissionCache] =
-    useState<Record<string, PermissionItem[]>>({});
+  const [selectedDepartmentIds, setSelectedDepartmentIds] = useState<string[]>([]);
+  const [selectedPermissions, setSelectedPermissions] = useState<Record<string, string[]>>({});
+  const [permissionCache, setPermissionCache] = useState<Record<string, PermissionItem[]>>({});
 
   // Department modal
   const [deptModalOpen, setDeptModalOpen] = useState(false);
   const [tempDeptIds, setTempDeptIds] = useState<string[]>([]);
-  const [departmentSearch, setDepartmentSearch] =
-    useState('');
+  const [departmentSearch, setDepartmentSearch] = useState('');
 
   // Permission modal
   const [permModalOpen, setPermModalOpen] = useState(false);
-  const [currentModule, setCurrentModule] =
-    useState<string | null>(null);
-
-  const [tempPermsForModule, setTempPermsForModule] =
-    useState<string[]>([]);
-
-  const [loadingPermissions, setLoadingPermissions] =
-    useState(false);
-
-  const [permissionSearch, setPermissionSearch] =
-    useState('');
+  const [currentModule, setCurrentModule] = useState<string | null>(null);
+  const [tempPermsForModule, setTempPermsForModule] = useState<string[]>([]);
+  const [permissionSearch, setPermissionSearch] = useState('');
 
   // -------------------------------------------------------
-  // Form
+  // React Hook Form
   // -------------------------------------------------------
 
   const {
@@ -194,127 +174,163 @@ export default function EditRoleScreen() {
     resolver: zodResolver(schema),
     defaultValues: {
       role_name: '',
-      role_level: 100,
+      role_level: '100',
       description: '',
     },
   });
 
-  // =======================================================
-  // FETCH ROLE
-  // =======================================================
+  const fetchedRef = useRef(false);
+  const permissionsLoadedRef = useRef<Record<string, boolean>>({});
+
+  // -------------------------------------------------------
+  // Load all module permissions upfront (cached) – using axiosInstance
+  // -------------------------------------------------------
+
+  const loadAllModulePermissions = useCallback(
+    async (departments: DepartmentItem[]) => {
+      if (!accessToken || !companyId || !deviceId) return;
+
+      const moduleCodes = Array.from(
+        new Set(
+          departments
+            .map((dept) => dept.module_code)
+            .filter((code): code is string => !!code)
+        )
+      );
+
+      const modulesToLoad = moduleCodes.filter(
+        (moduleCode) => !permissionsLoadedRef.current[moduleCode]
+      );
+
+      if (modulesToLoad.length === 0) return;
+
+      try {
+        const results = await Promise.all(
+          modulesToLoad.map(async (moduleCode) => {
+            // Use axiosInstance – adjust endpoint if needed
+            const response = await axiosInstance.get(
+              `/companies/${companyId}/hr/permissions/module/${moduleCode}`,
+              { headers: getHeaders() }
+            );
+            const permissions = response.data?.data || response.data || [];
+            return { moduleCode, permissions };
+          })
+        );
+
+        setPermissionCache((prev) => {
+          const next = { ...prev };
+          results.forEach(({ moduleCode, permissions }) => {
+            next[moduleCode] = permissions;
+            permissionsLoadedRef.current[moduleCode] = true;
+          });
+          return next;
+        });
+      } catch (error) {
+        console.error('Failed to load module permissions:', error);
+        alert('Could not load all permissions. Some may be missing.');
+      }
+    },
+    [accessToken, companyId, deviceId, getHeaders]
+  );
+
+  // -------------------------------------------------------
+  // Fetch initial data (departments, role, permissions)
+  // -------------------------------------------------------
 
   useEffect(() => {
-    if (!roleId || !accessToken || !companyId || !deviceId) {
-      if (!roleId) {
+    const fetchData = async () => {
+      if (!accessToken || !companyId || !deviceId) {
+        alert('Authentication required.');
+        router.back();
         return;
       }
 
-      return;
-    }
-
-    const fetchData = async () => {
       setLoading(true);
       setLoadingDepartments(true);
 
       try {
-        const [
-          roleRes,
-          deptRes,
-          permRes,
-          roleDeptRes,
-        ] = await Promise.all([
-          getRole(
-            companyId,
-            deviceId,
-            roleId as string,
-            accessToken
-          ),
+        // 1) Load departments – adjust endpoint as needed
+        const deptRes = await axiosInstance.get(
+          `/companies/${companyId}/departments/root`,
+          { headers: getHeaders() }
+        );
+        const departments = deptRes.data?.data || deptRes.data || [];
+        setAllDepartments(departments);
 
-          getRootDepartments(
-            companyId,
-            deviceId,
-            accessToken
-          ),
+        // 2) Load all module permissions upfront (cached)
+        await loadAllModulePermissions(departments);
 
-          getRolePermissionsDetailed(
-            companyId,
-            deviceId,
-            roleId as string,
-            accessToken
-          ),
+        // 3) If create mode, set defaults and finish
+        if (isCreateMode) {
+          reset({
+            role_name: '',
+            role_level: '100',
+            description: '',
+          });
+          setSelectedDepartmentIds([]);
+          setSelectedPermissions({});
+          setOriginalDepartmentIds([]);
+          setOriginalPermissionNames([]);
+          setIsSystemRole(false);
+          setLoading(false);
+          setLoadingDepartments(false);
+          fetchedRef.current = true;
+          return;
+        }
 
-          getRoleDepartments(
-            companyId,
-            deviceId,
-            roleId as string,
-            accessToken
+        // 4) Edit mode: load role, permissions, departments
+        const [roleRes, permRes, roleDeptRes] = await Promise.all([
+          axiosInstance.get(
+            `/companies/${companyId}/rbac/roles/${roleId}`,
+            { headers: getHeaders() }
+          ),
+          axiosInstance.get(
+            `/companies/${companyId}/rbac/roles/${roleId}/permissions`,
+            { headers: getHeaders() }
+          ),
+          axiosInstance.get(
+            `/companies/${companyId}/rbac/roles/${roleId}/departments`,
+            { headers: getHeaders() }
           ),
         ]);
 
-        const role = roleRes.data;
-
+        const role = roleRes.data?.data || roleRes.data;
         if (!role) {
-          alert('Role not found');
+          alert('Role not found.');
           router.back();
           return;
         }
 
         setIsSystemRole(role.is_system_role);
 
-        setAllDepartments(deptRes.data || []);
-
-        // Departments
-        const deptIds = (roleDeptRes.data || []).map(
+        const deptIds = (roleDeptRes.data?.data || roleDeptRes.data || []).map(
           (d: DepartmentItem) => d.department_id
         );
-
         setOriginalDepartmentIds(deptIds);
         setSelectedDepartmentIds(deptIds);
 
-        // Permissions
-        const perms = permRes.data || [];
-
-        const permNames = perms.map(
-          (p: PermissionItem) => p.permission_name
-        );
-
+        const perms = permRes.data?.data || permRes.data || [];
+        const permNames = perms.map((p: PermissionItem) => p.permission_name);
         setOriginalPermissionNames(permNames);
 
         const grouped: Record<string, string[]> = {};
-        const cache: Record<string, PermissionItem[]> = {};
-
         perms.forEach((p: PermissionItem) => {
-          const module = p.module || 'other';
-
-          if (!grouped[module]) {
-            grouped[module] = [];
-          }
-
-          grouped[module].push(p.permission_name);
-
-          if (!cache[module]) {
-            cache[module] = [];
-          }
-
-          cache[module].push(p);
+          const mod = p.module || 'other';
+          if (!grouped[mod]) grouped[mod] = [];
+          grouped[mod].push(p.permission_name);
         });
-
         setSelectedPermissions(grouped);
-        setPermissionCache(cache);
 
         reset({
           role_name: role.role_name,
-          role_level: role.role_level,
+          role_level: String(role.role_level ?? ''),
           description: role.description || '',
         });
+
+        fetchedRef.current = true;
       } catch (error: any) {
-        console.error(error);
-
-        alert(
-          error?.message ||
-            'Failed to load role'
-        );
-
+        console.error('Failed to load data:', error);
+        alert(error?.message || 'Something went wrong.');
         router.back();
       } finally {
         setLoading(false);
@@ -322,76 +338,49 @@ export default function EditRoleScreen() {
       }
     };
 
-    fetchData();
-  }, [
-    roleId,
-    accessToken,
-    companyId,
-    deviceId,
-    reset,
-    router,
-  ]);
+    if (!fetchedRef.current) {
+      fetchData();
+    }
+  }, [roleId, accessToken, companyId, deviceId, reset, isCreateMode, loadAllModulePermissions, router, getHeaders]);
 
-  // =======================================================
-  // PERMISSION FETCH
-  // =======================================================
+  // -------------------------------------------------------
+  // Memoized helpers
+  // -------------------------------------------------------
 
-  const fetchPermissionsForModule = useCallback(
-    async (
-      moduleCode: string
-    ): Promise<PermissionItem[]> => {
-      if (permissionCache[moduleCode]) {
-        return permissionCache[moduleCode];
-      }
-
-      if (!accessToken || !companyId || !deviceId) {
-        return [];
-      }
-
-      try {
-        const response = await fetch(
-          `${process.env.NEXT_PUBLIC_API_BASE_URL}/companies/${companyId}/hr/permissions/module/${moduleCode}`,
-          {
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              'X-Device-ID': deviceId,
-              'X-Company-ID': companyId,
-            },
-          }
-        );
-
-        const json = await response.json();
-
-        const data = json.data || [];
-
-        setPermissionCache(prev => ({
-          ...prev,
-          [moduleCode]: data,
-        }));
-
-        return data;
-      } catch (error) {
-        console.error(
-          'Failed to fetch permissions',
-          error
-        );
-
-        alert('Could not load permissions');
-
-        return [];
-      }
-    },
-    [
-      accessToken,
-      companyId,
-      deviceId,
-      permissionCache,
-    ]
+  const selectedDepartments = useMemo(
+    () => allDepartments.filter((dept) => selectedDepartmentIds.includes(dept.department_id)),
+    [allDepartments, selectedDepartmentIds]
   );
 
-  // =======================================================
-  // DEPARTMENT MODAL
-  // =======================================================
+  const filteredDepartments = useMemo(() => {
+    const query = departmentSearch.trim().toLowerCase();
+    if (!query) return allDepartments;
+    return allDepartments.filter((dept) =>
+      dept.department_name.toLowerCase().includes(query)
+    );
+  }, [allDepartments, departmentSearch]);
+
+  const totalPermissionCount = useMemo(
+    () =>
+      Object.values(selectedPermissions).reduce(
+        (total, perms) => total + perms.length,
+        0
+      ),
+    [selectedPermissions]
+  );
+
+  const getDeptName = (id: string) =>
+    allDepartments.find((d) => d.department_id === id)?.department_name || id;
+
+  const getModuleColor = (module: string) =>
+    MODULE_COLORS[module.toLowerCase()] || '#64748B';
+
+  const getModuleIcon = (module: string) =>
+    MODULE_ICONS[module.toLowerCase()] || '🔐';
+
+  // -------------------------------------------------------
+  // Department modal handlers
+  // -------------------------------------------------------
 
   const openDeptModal = () => {
     setTempDeptIds([...selectedDepartmentIds]);
@@ -400,24 +389,16 @@ export default function EditRoleScreen() {
   };
 
   const toggleTempDept = (id: string) => {
-    setTempDeptIds(prev =>
-      prev.includes(id)
-        ? prev.filter(d => d !== id)
-        : [...prev, id]
+    setTempDeptIds((prev) =>
+      prev.includes(id) ? prev.filter((d) => d !== id) : [...prev, id]
     );
   };
 
   const toggleAllTempDepts = () => {
-    if (
-      tempDeptIds.length === allDepartments.length
-    ) {
+    if (tempDeptIds.length === allDepartments.length) {
       setTempDeptIds([]);
     } else {
-      setTempDeptIds(
-        allDepartments.map(
-          d => d.department_id
-        )
-      );
+      setTempDeptIds(allDepartments.map((d) => d.department_id));
     }
   };
 
@@ -426,312 +407,172 @@ export default function EditRoleScreen() {
     setDeptModalOpen(false);
   };
 
-  // =======================================================
-  // PERMISSION MODAL
-  // =======================================================
+  // -------------------------------------------------------
+  // Permission modal handlers
+  // -------------------------------------------------------
 
   const openPermissionModal = () => {
     if (selectedDepartmentIds.length === 0) {
-      alert(
-        'Please select at least one department first.'
-      );
+      alert('Please select at least one department first.');
       return;
     }
-
-    setPermModalOpen(true);
-    setCurrentModule(null);
     setPermissionSearch('');
+    setCurrentModule(null);
+    setPermModalOpen(true);
   };
 
   const closePermissionModal = () => {
     setPermModalOpen(false);
     setCurrentModule(null);
     setPermissionSearch('');
-    setTempPermsForModule([]);
   };
 
-  const handleDepartmentSelect = async (
-    dept: DepartmentItem
-  ) => {
+  // No API call – all permissions already cached
+  const handleDepartmentSelect = (dept: DepartmentItem) => {
     if (!dept.module_code) {
-      alert(
-        'This department does not have a module assigned.'
-      );
+      alert('This department does not have a module assigned.');
       return;
     }
-
-    setCurrentModule(dept.module_code);
-    setLoadingPermissions(true);
+    const moduleCode = dept.module_code;
+    setCurrentModule(moduleCode);
     setPermissionSearch('');
-
-    const permissions =
-      await fetchPermissionsForModule(
-        dept.module_code
-      );
-
-    const currentlySelected =
-      selectedPermissions[
-        dept.module_code
-      ] || [];
-
-    setTempPermsForModule(
-      currentlySelected.filter(permission =>
-        permissions.some(
-          p =>
-            p.permission_name ===
-            permission
-        )
-      )
-    );
-
-    setLoadingPermissions(false);
+    setTempPermsForModule(selectedPermissions[moduleCode] || []);
   };
 
-  const toggleTempPermission = (
-    permName: string
-  ) => {
-    setTempPermsForModule(prev =>
-      prev.includes(permName)
-        ? prev.filter(
-            p => p !== permName
-          )
-        : [...prev, permName]
+  const toggleTempPermission = (permissionName: string) => {
+    setTempPermsForModule((prev) =>
+      prev.includes(permissionName)
+        ? prev.filter((p) => p !== permissionName)
+        : [...prev, permissionName]
     );
   };
 
   const toggleAllTempPermissions = () => {
     if (!currentModule) return;
-
-    const perms =
-      permissionCache[currentModule] || [];
-
-    const names = perms.map(
-      p => p.permission_name
-    );
-
-    const allSelected =
-      names.length > 0 &&
-      names.every(
-        p =>
-          tempPermsForModule.includes(p)
-      );
-
-    if (allSelected) {
-      setTempPermsForModule([]);
-    } else {
-      setTempPermsForModule(names);
-    }
+    const permissions = permissionCache[currentModule] || [];
+    const names = permissions.map((p) => p.permission_name);
+    const allSelected = names.length > 0 && names.every((name) => tempPermsForModule.includes(name));
+    setTempPermsForModule(allSelected ? [] : names);
   };
 
   const saveModulePermissions = () => {
     if (!currentModule) return;
-
-    setSelectedPermissions(prev => ({
+    setSelectedPermissions((prev) => ({
       ...prev,
-      [currentModule]:
-        tempPermsForModule,
+      [currentModule]: [...tempPermsForModule],
     }));
-
     setCurrentModule(null);
     setTempPermsForModule([]);
+    setPermissionSearch('');
   };
 
   const cancelDepartmentPermissions = () => {
     setCurrentModule(null);
     setTempPermsForModule([]);
+    setPermissionSearch('');
   };
 
   const confirmAllPermissions = () => {
     setPermModalOpen(false);
     setCurrentModule(null);
-    setTempPermsForModule([]);
+    setPermissionSearch('');
   };
 
-  // =======================================================
-  // SUBMIT
-  // =======================================================
+  const currentPermissions = currentModule ? permissionCache[currentModule] || [] : [];
+  const filteredPermissions = useMemo(() => {
+    const query = permissionSearch.trim().toLowerCase();
+    if (!query) return currentPermissions;
+    return currentPermissions.filter(
+      (perm) =>
+        perm.permission_name.toLowerCase().includes(query) ||
+        perm.description?.toLowerCase().includes(query)
+    );
+  }, [currentPermissions, permissionSearch]);
+
+  // -------------------------------------------------------
+  // Submit handler (create vs update) – using axiosInstance
+  // -------------------------------------------------------
 
   const onSubmit = async (data: FormData) => {
-    if (
-      !accessToken ||
-      !companyId ||
-      !deviceId ||
-      !roleId
-    ) {
+    if (!accessToken || !companyId || !deviceId) {
+      alert('Authentication required.');
       return;
     }
 
     setSaving(true);
 
     try {
-      const addDeptIds =
-        selectedDepartmentIds.filter(
-          id =>
-            !originalDepartmentIds.includes(id)
+      // Compute selected permissions for departments that are currently selected
+      const selectedModuleCodes = new Set(
+        allDepartments
+          .filter((dept) => selectedDepartmentIds.includes(dept.department_id))
+          .map((dept) => dept.module_code)
+          .filter((code): code is string => !!code)
+      );
+
+      const allSelectedPerms = Object.entries(selectedPermissions)
+        .filter(([moduleCode]) => selectedModuleCodes.has(moduleCode))
+        .flatMap(([, permissions]) => permissions);
+
+      if (isCreateMode) {
+        // ---- CREATE ----
+        const payload = {
+          role_name: data.role_name,
+          role_level: Number(data.role_level),
+          description: data.description || '',
+          department_ids: selectedDepartmentIds,
+          permission_names: allSelectedPerms,
+        };
+
+        await axiosInstance.post(
+          `/companies/${companyId}/rbac/roles`,
+          payload,
+          { headers: getHeaders() }
         );
-
-      const removeDeptIds =
-        originalDepartmentIds.filter(
-          id =>
-            !selectedDepartmentIds.includes(id)
-        );
-
-      const addDeptNames =
-        addDeptIds.map(id => {
-          const dept =
-            allDepartments.find(
-              d =>
-                d.department_id === id
-            );
-
-          return dept
-            ? dept.department_name
-            : id;
-        });
-
-      const removeDeptNames =
-        removeDeptIds.map(id => {
-          const dept =
-            allDepartments.find(
-              d =>
-                d.department_id === id
-            );
-
-          return dept
-            ? dept.department_name
-            : id;
-        });
-
-      const allSelectedPerms =
-        Object.values(
-          selectedPermissions
-        ).flat();
-
-      const addPerms =
-        allSelectedPerms.filter(
-          p =>
-            !originalPermissionNames.includes(
-              p
-            )
-        );
-
-      const removePerms =
-        originalPermissionNames.filter(
-          p =>
-            !allSelectedPerms.includes(p)
-        );
-
-      const payload: any = {
-        role_name: data.role_name,
-        description: data.description,
-
-        add_departments:
-          addDeptNames,
-
-        remove_departments:
-          removeDeptNames,
-
-        add_permissions:
-          addPerms,
-
-        remove_permissions:
-          removePerms,
-      };
-
-      if (
-        data.role_level !== undefined
-      ) {
-        payload.role_level =
-          data.role_level;
+        alert('Role created successfully.');
+        router.back();
+        return;
       }
 
-      await updateRole(
-        companyId,
-        deviceId,
-        roleId as string,
+      // ---- UPDATE ----
+      const addDeptIds = selectedDepartmentIds.filter((id) => !originalDepartmentIds.includes(id));
+      const removeDeptIds = originalDepartmentIds.filter((id) => !selectedDepartmentIds.includes(id));
+
+      const addPerms = allSelectedPerms.filter(
+        (perm) => !originalPermissionNames.includes(perm)
+      );
+      const removePerms = originalPermissionNames.filter(
+        (perm) => !allSelectedPerms.includes(perm)
+      );
+
+      const payload = {
+        role_name: data.role_name,
+        role_level: Number(data.role_level),
+        description: data.description || '',
+        add_departments: addDeptIds,      // department IDs
+        remove_departments: removeDeptIds, // department IDs
+        add_permissions: addPerms,
+        remove_permissions: removePerms,
+      };
+
+      await axiosInstance.put(
+        `/companies/${companyId}/rbac/roles/${roleId}`,
         payload,
-        accessToken
+        { headers: getHeaders() }
       );
-
-      alert(
-        'Role updated successfully'
-      );
-
+      alert('Role updated successfully.');
       router.back();
     } catch (error: any) {
-      const message =
-        error?.response?.data?.message ||
-        error?.message ||
-        'Update failed';
-
+      const message = error?.response?.data?.message || error?.message || 'Unable to save the role.';
       alert(message);
     } finally {
       setSaving(false);
     }
   };
 
-  // =======================================================
-  // HELPERS
-  // =======================================================
-
-  const getDeptName = (id: string) =>
-    allDepartments.find(
-      d => d.department_id === id
-    )?.department_name || id;
-
-  const getModuleColor = (
-    module: string
-  ) =>
-    MODULE_COLORS[
-      module.toLowerCase()
-    ] || '#64748B';
-
-  const getModuleIcon = (
-    module: string
-  ) =>
-    MODULE_ICONS[
-      module.toLowerCase()
-    ] || '🔐';
-
-  const totalPermissions = Object.values(
-    selectedPermissions
-  ).flat().length;
-
-  const moduleCount =
-    Object.keys(
-      selectedPermissions
-    ).filter(
-      module =>
-        selectedPermissions[module]
-          ?.length > 0
-    ).length;
-
-  const filteredDepartments =
-    allDepartments.filter(dept =>
-      dept.department_name
-        .toLowerCase()
-        .includes(
-          departmentSearch.toLowerCase()
-        )
-    );
-
-  const currentPermissions =
-    currentModule
-      ? permissionCache[currentModule] || []
-      : [];
-
-  const filteredPermissions =
-    currentPermissions.filter(permission =>
-      permission.permission_name
-        .toLowerCase()
-        .includes(
-          permissionSearch.toLowerCase()
-        )
-    );
-
-  // =======================================================
+  // -------------------------------------------------------
   // LOADING
-  // =======================================================
+  // -------------------------------------------------------
 
   if (loading) {
     return (
@@ -739,42 +580,32 @@ export default function EditRoleScreen() {
         <div className="rolePage loadingPage">
           <div className="loadingCard">
             <div className="spinner" />
-
-            <h2>Loading role</h2>
-
-            <p>
-              Fetching role configuration and
-              permissions...
-            </p>
+            <h2>{isCreateMode ? 'Preparing new role' : 'Loading role'}</h2>
+            <p>{isCreateMode ? 'Loading departments...' : 'Fetching role configuration...'}</p>
           </div>
         </div>
-
         <style jsx>{styles}</style>
       </>
     );
   }
 
-  // =======================================================
-  // MAIN
-  // =======================================================
+  // -------------------------------------------------------
+  // MAIN RENDER
+  // -------------------------------------------------------
 
   return (
     <>
       <div className="rolePage">
-
         {/* =================================================
             HEADER
         ================================================= */}
 
         <header className="pageHeader">
           <div className="headerInner">
-
             <button
               type="button"
               className="backButton"
-              onClick={() =>
-                router.back()
-              }
+              onClick={() => router.back()}
               aria-label="Go back"
             >
               <FiArrowLeft />
@@ -790,18 +621,18 @@ export default function EditRoleScreen() {
                 <FiChevronRight />
                 <span>Roles</span>
                 <FiChevronRight />
-                <span>Edit</span>
+                <span>{isCreateMode ? 'Create' : 'Edit'}</span>
               </div>
 
-              <h1>Edit Role</h1>
-
+              <h1>{isCreateMode ? 'Create Role' : 'Edit Role'}</h1>
               <p>
-                Configure role details,
-                departments and permissions
+                {isCreateMode
+                  ? 'Define a new role and assign departments and permissions.'
+                  : 'Configure role details, departments, and permissions.'}
               </p>
             </div>
 
-            {isSystemRole && (
+            {!isCreateMode && isSystemRole && (
               <div className="systemBadge">
                 <FiLock />
                 System Role
@@ -817,202 +648,110 @@ export default function EditRoleScreen() {
         ================================================= */}
 
         <main className="pageContent">
+          {/* =================================================
+              SYSTEM NOTICE (edit mode only)
+          ================================================= */}
+
+          {!isCreateMode && isSystemRole && (
+            <div className="systemNotice">
+              <div className="noticeIcon">
+                <FiInfo />
+              </div>
+              <div>
+                <strong>System role</strong>
+                <p>
+                  This role is protected by the system. You can modify its information and
+                  permissions, but it cannot be deleted.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* =================================================
               ROLE INFORMATION
           ================================================= */}
 
           <section className="card">
-
             <div className="cardHeader">
-
               <div className="cardHeaderIcon blue">
                 <FiShield />
               </div>
-
               <div>
                 <h2>Role Information</h2>
-                <p>
-                  Basic information about this
-                  role
-                </p>
+                <p>Basic details about this role</p>
               </div>
-
             </div>
 
-            {isSystemRole && (
-              <div className="systemNotice">
-                <div className="noticeIcon">
-                  <FiInfo />
-                </div>
-
-                <div>
-                  <strong>
-                    System role
-                  </strong>
-
-                  <p>
-                    This is a built-in system
-                    role. Its permissions can
-                    be configured, but the role
-                    itself cannot be deleted.
-                  </p>
-                </div>
-              </div>
-            )}
-
             <div className="formGrid">
-
-              {/* Role name */}
-
+              {/* Role Name */}
               <Controller
                 control={control}
                 name="role_name"
                 render={({ field }) => (
                   <div className="field">
-
                     <label>
-                      Role Name
-                      <span>*</span>
+                      Role Name <span>*</span>
                     </label>
-
                     <input
                       {...field}
                       placeholder="e.g. HR Manager"
-                      className={
-                        errors.role_name
-                          ? 'input error'
-                          : 'input'
-                      }
+                      className={errors.role_name ? 'input error' : 'input'}
                     />
-
-                    {errors.role_name && (
-                      <p className="fieldError">
-                        {
-                          errors.role_name
-                            .message
-                        }
-                      </p>
-                    )}
-
+                    {errors.role_name && <p className="fieldError">{errors.role_name.message}</p>}
                   </div>
                 )}
               />
 
-              {/* Role level */}
-
+              {/* Role Level (string) */}
               <Controller
                 control={control}
                 name="role_level"
-                render={({
-                  field: {
-                    onChange,
-                    onBlur,
-                    value,
-                  },
-                }) => (
+                render={({ field: { onChange, onBlur, value } }) => (
                   <div className="field">
-
                     <label>
-                      Role Level
-                      <span>*</span>
+                      Role Level <span>*</span>
                     </label>
-
                     <div className="inputWithHint">
                       <input
-                        type="number"
-                        min={1}
-                        max={1000}
-                        value={
-                          value ?? ''
-                        }
-                        onChange={e => {
-                          const raw =
-                            e.target.value;
-
-                          if (
-                            raw === ''
-                          ) {
-                            onChange(
-                              undefined
-                            );
-                            return;
-                          }
-
-                          const num =
-                            Number(raw);
-
-                          if (
-                            !isNaN(num)
-                          ) {
-                            onChange(
-                              Math.min(
-                                Math.max(
-                                  1,
-                                  num
-                                ),
-                                1000
-                              )
-                            );
-                          }
+                        type="text"
+                        inputMode="numeric"
+                        value={value ?? ''}
+                        onChange={(e) => {
+                          const numericText = e.target.value.replace(/[^0-9]/g, '');
+                          onChange(numericText);
                         }}
                         onBlur={onBlur}
-                        className={
-                          errors.role_level
-                            ? 'input error'
-                            : 'input'
-                        }
+                        placeholder="1–1000"
+                        className={errors.role_level ? 'input error' : 'input'}
+                        maxLength={4}
                       />
-
-                      <span>
-                        1–1000
-                      </span>
+                      <span>/ 1000</span>
                     </div>
-
-                    {errors.role_level && (
-                      <p className="fieldError">
-                        {
-                          errors.role_level
-                            .message
-                        }
-                      </p>
-                    )}
-
+                    {errors.role_level && <p className="fieldError">{errors.role_level.message}</p>}
                   </div>
                 )}
               />
 
               {/* Description */}
-
               <Controller
                 control={control}
                 name="description"
                 render={({ field }) => (
                   <div className="field full">
-
                     <label>
-                      Description
-                      <small>
-                        Optional
-                      </small>
+                      Description <small>Optional</small>
                     </label>
-
                     <textarea
                       {...field}
-                      value={
-                        field.value ?? ''
-                      }
+                      value={field.value ?? ''}
                       rows={4}
                       placeholder="Describe what this role is responsible for..."
                       className="textarea"
                     />
-
                   </div>
                 )}
               />
-
             </div>
-
           </section>
 
           {/* =================================================
@@ -1020,131 +759,63 @@ export default function EditRoleScreen() {
           ================================================= */}
 
           <section className="card">
-
             <div className="cardHeader">
-
               <div className="cardHeaderIcon purple">
                 <FiUsers />
               </div>
-
               <div className="cardHeaderMain">
-
                 <div>
-                  <h2>
-                    Departments
-                  </h2>
-
-                  <p>
-                    Assign this role to
-                    one or more departments
-                  </p>
+                  <h2>Departments</h2>
+                  <p>Choose departments this role can access</p>
                 </div>
-
                 <div className="countBadge purpleBadge">
-                  {
-                    selectedDepartmentIds.length
-                  } selected
+                  {selectedDepartmentIds.length} selected
                 </div>
-
               </div>
-
             </div>
 
             <div className="selectionPanel">
-
-              <div className="selectionPanelTop">
-
-                <div className="selectionSummary">
-
-                  <div className="summaryDot purpleDot" />
-
-                  <span>
-                    {
-                      selectedDepartmentIds.length
-                    }{' '}
-                    department
-                    {selectedDepartmentIds.length !==
-                    1
-                      ? 's'
-                      : ''}{' '}
-                    assigned
-                  </span>
-
+              {selectedDepartments.length > 0 ? (
+                <div className="chipList">
+                  {selectedDepartments.slice(0, 6).map((dept) => (
+                    <div key={dept.department_id} className="selectionChip purpleChip">
+                      <span>{dept.department_name}</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSelectedDepartmentIds((prev) =>
+                            prev.filter((id) => id !== dept.department_id)
+                          )
+                        }
+                        aria-label={`Remove ${dept.department_name}`}
+                      >
+                        <FiX />
+                      </button>
+                    </div>
+                  ))}
+                  {selectedDepartments.length > 6 && (
+                    <div className="selectionChip moreChip">
+                      <span>+{selectedDepartments.length - 6} more</span>
+                    </div>
+                  )}
                 </div>
-
-                <button
-                  type="button"
-                  className="outlineButton"
-                  onClick={
-                    openDeptModal
-                  }
-                >
-                  <FiPlus />
-                  Manage Departments
-                </button>
-
-              </div>
-
-              {selectedDepartmentIds.length ===
-              0 ? (
+              ) : (
                 <div className="emptySelection">
                   <FiUsers />
-
-                  <span>
-                    No departments assigned
-                  </span>
-
-                  <button
-                    type="button"
-                    onClick={
-                      openDeptModal
-                    }
-                  >
+                  <span>No departments selected</span>
+                  <button type="button" onClick={openDeptModal}>
                     Add a department
                   </button>
                 </div>
-              ) : (
-                <div className="chipList">
-
-                  {selectedDepartmentIds.map(
-                    id => (
-                      <div
-                        key={id}
-                        className="selectionChip purpleChip"
-                      >
-                        <span>
-                          {getDeptName(
-                            id
-                          )}
-                        </span>
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setSelectedDepartmentIds(
-                              prev =>
-                                prev.filter(
-                                  item =>
-                                    item !==
-                                    id
-                                )
-                            )
-                          }
-                          aria-label={`Remove ${getDeptName(
-                            id
-                          )}`}
-                        >
-                          <FiX />
-                        </button>
-                      </div>
-                    )
-                  )}
-
-                </div>
               )}
 
+              <div className="selectionPanelTop">
+                <button type="button" className="outlineButton" onClick={openDeptModal}>
+                  <FiPlus />
+                  {selectedDepartments.length > 0 ? 'Change Departments' : 'Select Departments'}
+                </button>
+              </div>
             </div>
-
           </section>
 
           {/* =================================================
@@ -1152,212 +823,100 @@ export default function EditRoleScreen() {
           ================================================= */}
 
           <section className="card">
-
             <div className="cardHeader">
-
               <div className="cardHeaderIcon green">
                 <FiKey />
               </div>
-
               <div className="cardHeaderMain">
-
                 <div>
-                  <h2>
-                    Permissions
-                  </h2>
-
-                  <p>
-                    Control what this role can
-                    access and perform
-                  </p>
+                  <h2>Permissions</h2>
+                  <p>Control what this role can access and perform</p>
                 </div>
-
                 <div className="permissionStats">
-
                   <div>
-                    <strong>
-                      {totalPermissions}
-                    </strong>
-
-                    <span>
-                      Permissions
-                    </span>
+                    <strong>{totalPermissionCount}</strong>
+                    <span>Permissions</span>
                   </div>
-
                   <div>
-                    <strong>
-                      {moduleCount}
-                    </strong>
-
-                    <span>
-                      Modules
-                    </span>
+                    <strong>{Object.keys(selectedPermissions).filter((m) => (selectedPermissions[m] || []).length > 0).length}</strong>
+                    <span>Modules</span>
                   </div>
-
                 </div>
-
               </div>
-
             </div>
 
             <div className="permissionContainer">
-
-              {selectedDepartmentIds.length ===
-              0 ? (
+              {selectedDepartmentIds.length === 0 ? (
                 <div className="permissionEmpty">
-
                   <div className="largeEmptyIcon">
                     <FiLock />
                   </div>
-
-                  <h3>
-                    Select departments first
-                  </h3>
-
+                  <h3>Select departments first</h3>
                   <p>
-                    Permissions are organized
-                    by department and module.
-                    Assign a department before
-                    configuring permissions.
+                    Permissions are organized by department and module. Assign a department
+                    before configuring permissions.
                   </p>
-
-                  <button
-                    type="button"
-                    className="primarySmallButton"
-                    onClick={
-                      openDeptModal
-                    }
-                  >
+                  <button type="button" className="primarySmallButton" onClick={openDeptModal}>
                     <FiUsers />
                     Select Departments
                   </button>
-
                 </div>
               ) : (
                 <>
-
                   <div className="permissionTopBar">
-
                     <div>
-                      <strong>
-                        Module Access
-                      </strong>
-
-                      <span>
-                        Choose a department
-                        to configure its
-                        permissions
-                      </span>
+                      <strong>Module Access</strong>
+                      <span>Choose a department to configure its permissions</span>
                     </div>
-
-                    <button
-                      type="button"
-                      className="outlineButton"
-                      onClick={
-                        openPermissionModal
-                      }
-                    >
+                    <button type="button" className="outlineButton" onClick={openPermissionModal}>
                       <FiKey />
                       Manage Permissions
                     </button>
-
                   </div>
 
                   <div className="permissionModuleGrid">
-
                     {allDepartments
-                      .filter(d =>
-                        selectedDepartmentIds.includes(
-                          d.department_id
-                        )
-                      )
-                      .map(dept => {
-
-                        const module =
-                          dept.module_code ||
-                          'other';
-
-                        const color =
-                          getModuleColor(
-                            module
-                          );
-
-                        const count =
-                          selectedPermissions[
-                            module
-                          ]?.length || 0;
+                      .filter((d) => selectedDepartmentIds.includes(d.department_id))
+                      .map((dept) => {
+                        const module = dept.module_code || 'other';
+                        const color = getModuleColor(module);
+                        const count = selectedPermissions[module]?.length || 0;
 
                         return (
                           <button
                             type="button"
-                            key={
-                              dept.department_id
-                            }
+                            key={dept.department_id}
                             className="permissionModule"
-                            onClick={() =>
-                              handleDepartmentSelect(
-                                dept
-                              )
-                            }
-                            disabled={
-                              !dept.module_code
-                            }
+                            onClick={() => handleDepartmentSelect(dept)}
+                            disabled={!dept.module_code}
                             style={
                               {
-                                '--module-color':
-                                  color,
+                                '--module-color': color,
                                 '--module-soft': `${color}12`,
                                 '--module-border': `${color}30`,
                               } as React.CSSProperties
                             }
                           >
-
-                            <div className="permissionModuleIcon">
-                              {
-                                getModuleIcon(
-                                  module
-                                )
-                              }
-                            </div>
-
+                            <div className="permissionModuleIcon">{getModuleIcon(module)}</div>
                             <div className="permissionModuleInfo">
-
-                              <strong>
-                                {
-                                  dept.department_name
-                                }
-                              </strong>
-
+                              <strong>{dept.department_name}</strong>
                               <span>
                                 {dept.module_code
-                                  ? `${count} permission${
-                                      count !==
-                                      1
-                                        ? 's'
-                                        : ''
-                                    } selected`
+                                  ? `${count} permission${count !== 1 ? 's' : ''} selected`
                                   : 'No module assigned'}
                               </span>
-
                             </div>
-
                             <div className="permissionModuleArrow">
                               <FiChevronRight />
                             </div>
-
                           </button>
                         );
                       })}
-
                   </div>
-
                 </>
               )}
-
             </div>
-
           </section>
-
         </main>
 
         {/* =================================================
@@ -1365,38 +924,22 @@ export default function EditRoleScreen() {
         ================================================= */}
 
         <div className="saveBar">
-
           <div className="saveBarInner">
-
             <div className="saveInfo">
-
               <div className="saveStatusDot" />
-
               <div>
-                <strong>
-                  Ready to save changes
-                </strong>
-
+                <strong>Ready to save changes</strong>
                 <span>
-                  {
-                    selectedDepartmentIds.length
-                  }{' '}
-                  departments ·{' '}
-                  {totalPermissions}{' '}
-                  permissions
+                  {selectedDepartmentIds.length} departments · {totalPermissionCount} permissions
                 </span>
               </div>
-
             </div>
 
             <div className="saveActions">
-
               <button
                 type="button"
                 className="cancelButton"
-                onClick={() =>
-                  router.back()
-                }
+                onClick={() => router.back()}
                 disabled={saving}
               >
                 Cancel
@@ -1405,9 +948,7 @@ export default function EditRoleScreen() {
               <button
                 type="button"
                 className="saveButton"
-                onClick={handleSubmit(
-                  onSubmit
-                )}
+                onClick={handleSubmit(onSubmit)}
                 disabled={saving}
               >
                 {saving ? (
@@ -1418,17 +959,13 @@ export default function EditRoleScreen() {
                 ) : (
                   <>
                     <FiSave />
-                    Save Changes
+                    {isCreateMode ? 'Create Role' : 'Save Changes'}
                   </>
                 )}
               </button>
-
             </div>
-
           </div>
-
         </div>
-
       </div>
 
       {/* ===================================================
@@ -1436,201 +973,84 @@ export default function EditRoleScreen() {
       =================================================== */}
 
       {deptModalOpen && (
-        <div
-          className="modalOverlay"
-          onClick={() =>
-            setDeptModalOpen(false)
-          }
-        >
-
-          <div
-            className="modal departmentModal"
-            onClick={e =>
-              e.stopPropagation()
-            }
-          >
-
+        <div className="modalOverlay" onClick={() => setDeptModalOpen(false)}>
+          <div className="modal departmentModal" onClick={(e) => e.stopPropagation()}>
             <div className="modalHeader">
-
               <div>
-                <h3>
-                  Select Departments
-                </h3>
-
-                <p>
-                  Choose the departments
-                  this role belongs to
-                </p>
+                <h3>Select Departments</h3>
+                <p>{tempDeptIds.length} selected</p>
               </div>
-
-              <button
-                type="button"
-                className="modalClose"
-                onClick={() =>
-                  setDeptModalOpen(false)
-                }
-              >
+              <button type="button" className="modalClose" onClick={() => setDeptModalOpen(false)}>
                 <FiX />
               </button>
-
             </div>
 
             <div className="modalToolbar">
-
               <div className="searchBox">
                 <FiSearch />
-
                 <input
-                  value={
-                    departmentSearch
-                  }
-                  onChange={e =>
-                    setDepartmentSearch(
-                      e.target.value
-                    )
-                  }
+                  value={departmentSearch}
+                  onChange={(e) => setDepartmentSearch(e.target.value)}
                   placeholder="Search departments..."
                 />
               </div>
-
-              <button
-                type="button"
-                className="selectAllButton"
-                onClick={
-                  toggleAllTempDepts
-                }
-              >
-                {tempDeptIds.length ===
-                  allDepartments.length &&
-                allDepartments.length > 0
+              <button type="button" className="selectAllButton" onClick={toggleAllTempDepts}>
+                {tempDeptIds.length === allDepartments.length && allDepartments.length > 0
                   ? 'Deselect All'
                   : 'Select All'}
               </button>
-
             </div>
 
             <div className="modalBody">
-
               {loadingDepartments ? (
                 <div className="modalLoading">
                   <div className="spinner small" />
-                  <span>
-                    Loading departments...
-                  </span>
+                  <span>Loading departments...</span>
                 </div>
-              ) : filteredDepartments.length ===
-                0 ? (
+              ) : filteredDepartments.length === 0 ? (
                 <div className="modalEmpty">
                   <FiSearch />
-                  <span>
-                    No departments found
-                  </span>
+                  <span>No departments found</span>
                 </div>
               ) : (
                 <div className="departmentList">
-
-                  {filteredDepartments.map(
-                    dept => {
-
-                      const checked =
-                        tempDeptIds.includes(
-                          dept.department_id
-                        );
-
-                      return (
-                        <button
-                          type="button"
-                          key={
-                            dept.department_id
-                          }
-                          className={
-                            checked
-                              ? 'departmentRow selected'
-                              : 'departmentRow'
-                          }
-                          onClick={() =>
-                            toggleTempDept(
-                              dept.department_id
-                            )
-                          }
-                        >
-
-                          <div
-                            className={
-                              checked
-                                ? 'customCheckbox checked'
-                                : 'customCheckbox'
-                            }
-                          >
-                            {checked && (
-                              <FiCheck />
-                            )}
-                          </div>
-
-                          <div className="departmentRowInfo">
-
-                            <strong>
-                              {
-                                dept.department_name
-                              }
-                            </strong>
-
-                            {dept.module_code && (
-                              <span>
-                                {dept.module_code}
-                              </span>
-                            )}
-
-                          </div>
-
-                          {checked && (
-                            <FiCheck className="rowCheck" />
-                          )}
-
-                        </button>
-                      );
-                    }
-                  )}
-
+                  {filteredDepartments.map((dept) => {
+                    const checked = tempDeptIds.includes(dept.department_id);
+                    return (
+                      <button
+                        type="button"
+                        key={dept.department_id}
+                        className={checked ? 'departmentRow selected' : 'departmentRow'}
+                        onClick={() => toggleTempDept(dept.department_id)}
+                      >
+                        <div className={checked ? 'customCheckbox checked' : 'customCheckbox'}>
+                          {checked && <FiCheck />}
+                        </div>
+                        <div className="departmentRowInfo">
+                          <strong>{dept.department_name}</strong>
+                          {dept.module_code && <span>{dept.module_code}</span>}
+                        </div>
+                        {checked && <FiCheck className="rowCheck" />}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
-
             </div>
 
             <div className="modalFooter">
-
-              <span>
-                {tempDeptIds.length}{' '}
-                selected
-              </span>
-
+              <span>{tempDeptIds.length} selected</span>
               <div>
-                <button
-                  type="button"
-                  className="modalCancelButton"
-                  onClick={() =>
-                    setDeptModalOpen(false)
-                  }
-                >
+                <button type="button" className="modalCancelButton" onClick={() => setDeptModalOpen(false)}>
                   Cancel
                 </button>
-
-                <button
-                  type="button"
-                  className="modalPrimaryButton"
-                  onClick={
-                    confirmDepartments
-                  }
-                >
+                <button type="button" className="modalPrimaryButton" onClick={confirmDepartments}>
                   <FiCheck />
                   Confirm Selection
                 </button>
               </div>
-
             </div>
-
           </div>
-
         </div>
       )}
 
@@ -1639,365 +1059,155 @@ export default function EditRoleScreen() {
       =================================================== */}
 
       {permModalOpen && (
-        <div
-          className="modalOverlay"
-          onClick={
-            closePermissionModal
-          }
-        >
-
-          <div
-            className="modal permissionModal"
-            onClick={e =>
-              e.stopPropagation()
-            }
-          >
-
+        <div className="modalOverlay" onClick={closePermissionModal}>
+          <div className="modal permissionModal" onClick={(e) => e.stopPropagation()}>
             <div className="modalHeader">
-
               <div>
-
                 {currentModule ? (
                   <>
                     <div className="modalBackTitle">
-                      <button
-                        type="button"
-                        onClick={
-                          cancelDepartmentPermissions
-                        }
-                      >
+                      <button type="button" onClick={cancelDepartmentPermissions}>
                         <FiArrowLeft />
                       </button>
-
                       <h3>
-                        {getModuleIcon(
-                          currentModule
-                        )}{' '}
-                        {allDepartments.find(
-                          d =>
-                            d.module_code ===
-                            currentModule
-                        )?.department_name ||
-                          currentModule}
+                        {getModuleIcon(currentModule)}{' '}
+                        {allDepartments.find((d) => d.module_code === currentModule)?.department_name || currentModule}
                       </h3>
                     </div>
-
-                    <p>
-                      Select permissions for
-                      this module
-                    </p>
+                    <p>{tempPermsForModule.length} selected</p>
                   </>
                 ) : (
                   <>
-                    <h3>
-                      Manage Permissions
-                    </h3>
-
-                    <p>
-                      Select a department to
-                      configure its permissions
-                    </p>
+                    <h3>Manage Permissions</h3>
+                    <p>Select a department to configure its permissions</p>
                   </>
                 )}
-
               </div>
-
-              <button
-                type="button"
-                className="modalClose"
-                onClick={
-                  closePermissionModal
-                }
-              >
+              <button type="button" className="modalClose" onClick={closePermissionModal}>
                 <FiX />
               </button>
-
             </div>
 
-            {currentModule === null ? (
+            {!currentModule ? (
               <>
                 <div className="modalBody permissionDepartmentBody">
-
-                  {selectedDepartmentIds.length ===
-                  0 ? (
-                    <div className="modalEmpty">
-                      <FiUsers />
-
-                      <span>
-                        No departments
-                        selected
-                      </span>
+                  <div className="permissionIntro">
+                    <div className="permissionIntroIcon">
+                      <FiKey />
                     </div>
-                  ) : (
-                    <div className="permissionDepartmentList">
-
-                      {allDepartments
-                        .filter(d =>
-                          selectedDepartmentIds.includes(
-                            d.department_id
-                          )
-                        )
-                        .map(dept => {
-
-                          const module =
-                            dept.module_code ||
-                            'other';
-
-                          const color =
-                            getModuleColor(
-                              module
-                            );
-
-                          const count =
-                            selectedPermissions[
-                              module
-                            ]?.length || 0;
-
-                          return (
-                            <button
-                              type="button"
-                              key={
-                                dept.department_id
-                              }
-                              className="permissionDepartmentRow"
-                              disabled={
-                                !dept.module_code
-                              }
-                              onClick={() =>
-                                handleDepartmentSelect(
-                                  dept
-                                )
-                              }
-                              style={
-                                {
-                                  '--module-color':
-                                    color,
-                                  '--module-soft': `${color}12`,
-                                } as React.CSSProperties
-                              }
-                            >
-
-                              <div className="permissionDepartmentIcon">
-                                {
-                                  getModuleIcon(
-                                    module
-                                  )
-                                }
-                              </div>
-
-                              <div className="permissionDepartmentInfo">
-
-                                <strong>
-                                  {
-                                    dept.department_name
-                                  }
-                                </strong>
-
-                                <span>
-                                  {dept.module_code ||
-                                    'No module assigned'}
-                                </span>
-
-                              </div>
-
-                              <div className="permissionCount">
-                                {count}
-                              </div>
-
-                              <FiChevronRight />
-
-                            </button>
-                          );
-                        })}
-
+                    <div>
+                      <strong>Choose a department</strong>
+                      <span>Select a department to manage its permissions.</span>
                     </div>
-                  )}
+                  </div>
 
+                  <div className="permissionDepartmentList">
+                    {allDepartments
+                      .filter((d) => selectedDepartmentIds.includes(d.department_id))
+                      .map((dept) => {
+                        const module = dept.module_code || 'other';
+                        const color = getModuleColor(module);
+                        const count = selectedPermissions[module]?.length || 0;
+                        return (
+                          <button
+                            type="button"
+                            key={dept.department_id}
+                            className="permissionDepartmentRow"
+                            disabled={!dept.module_code}
+                            onClick={() => handleDepartmentSelect(dept)}
+                            style={
+                              {
+                                '--module-color': color,
+                                '--module-soft': `${color}12`,
+                              } as React.CSSProperties
+                            }
+                          >
+                            <div className="permissionDepartmentIcon">{getModuleIcon(module)}</div>
+                            <div className="permissionDepartmentInfo">
+                              <strong>{dept.department_name}</strong>
+                              <span>{dept.module_code || 'No module assigned'}</span>
+                            </div>
+                            <div className="permissionCount">{count}</div>
+                            <FiChevronRight />
+                          </button>
+                        );
+                      })}
+                  </div>
                 </div>
 
                 <div className="modalFooter">
-
-                  <span>
-                    {totalPermissions}{' '}
-                    permissions selected
-                  </span>
-
-                  <button
-                    type="button"
-                    className="modalPrimaryButton"
-                    onClick={
-                      confirmAllPermissions
-                    }
-                  >
+                  <span>{totalPermissionCount} permissions selected</span>
+                  <button type="button" className="modalPrimaryButton" onClick={confirmAllPermissions}>
                     <FiCheck />
                     Done
                   </button>
-
                 </div>
               </>
             ) : (
               <>
                 <div className="permissionToolbar">
-
                   <div className="searchBox permissionSearch">
                     <FiSearch />
-
                     <input
-                      value={
-                        permissionSearch
-                      }
-                      onChange={e =>
-                        setPermissionSearch(
-                          e.target.value
-                        )
-                      }
+                      value={permissionSearch}
+                      onChange={(e) => setPermissionSearch(e.target.value)}
                       placeholder="Search permissions..."
                     />
                   </div>
-
-                  <button
-                    type="button"
-                    className="selectAllButton"
-                    onClick={
-                      toggleAllTempPermissions
-                    }
-                  >
-                    {currentPermissions.length >
-                      0 &&
-                    tempPermsForModule.length ===
-                      currentPermissions.length
+                  <button type="button" className="selectAllButton" onClick={toggleAllTempPermissions}>
+                    {currentPermissions.length > 0 &&
+                    tempPermsForModule.length === currentPermissions.length
                       ? 'Deselect All'
                       : 'Select All'}
                   </button>
-
                 </div>
 
                 <div className="modalBody permissionBody">
-
-                  {loadingPermissions ? (
-                    <div className="modalLoading">
-                      <div className="spinner small" />
-
-                      <span>
-                        Loading permissions...
-                      </span>
-                    </div>
-                  ) : filteredPermissions.length ===
-                    0 ? (
+                  {filteredPermissions.length === 0 ? (
                     <div className="modalEmpty">
                       <FiKey />
-
-                      <span>
-                        No permissions found
-                      </span>
+                      <span>No permissions found</span>
                     </div>
                   ) : (
                     <div className="permissionList">
-
-                      {filteredPermissions.map(
-                        perm => {
-
-                          const checked =
-                            tempPermsForModule.includes(
-                              perm.permission_name
-                            );
-
-                          return (
-                            <button
-                              type="button"
-                              key={
-                                perm.permission_name
-                              }
-                              className={
-                                checked
-                                  ? 'permissionRow selected'
-                                  : 'permissionRow'
-                              }
-                              onClick={() =>
-                                toggleTempPermission(
-                                  perm.permission_name
-                                )
-                              }
-                            >
-
-                              <div
-                                className={
-                                  checked
-                                    ? 'customCheckbox checked'
-                                    : 'customCheckbox'
-                                }
-                              >
-                                {checked && (
-                                  <FiCheck />
-                                )}
-                              </div>
-
-                              <div className="permissionRowInfo">
-
-                                <strong>
-                                  {
-                                    perm.permission_name
-                                  }
-                                </strong>
-
-                                {perm.description && (
-                                  <span>
-                                    {
-                                      perm.description
-                                    }
-                                  </span>
-                                )}
-
-                              </div>
-
-                            </button>
-                          );
-                        }
-                      )}
-
+                      {filteredPermissions.map((perm) => {
+                        const checked = tempPermsForModule.includes(perm.permission_name);
+                        return (
+                          <button
+                            type="button"
+                            key={perm.permission_name}
+                            className={checked ? 'permissionRow selected' : 'permissionRow'}
+                            onClick={() => toggleTempPermission(perm.permission_name)}
+                          >
+                            <div className={checked ? 'customCheckbox checked' : 'customCheckbox'}>
+                              {checked && <FiCheck />}
+                            </div>
+                            <div className="permissionRowInfo">
+                              <strong>{perm.permission_name}</strong>
+                              {perm.description && <span>{perm.description}</span>}
+                            </div>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
-
                 </div>
 
                 <div className="modalFooter">
-
-                  <span>
-                    {
-                      tempPermsForModule.length
-                    }{' '}
-                    selected
-                  </span>
-
+                  <span>{tempPermsForModule.length} selected</span>
                   <div>
-                    <button
-                      type="button"
-                      className="modalCancelButton"
-                      onClick={
-                        cancelDepartmentPermissions
-                      }
-                    >
+                    <button type="button" className="modalCancelButton" onClick={cancelDepartmentPermissions}>
                       Cancel
                     </button>
-
-                    <button
-                      type="button"
-                      className="modalPrimaryButton"
-                      onClick={
-                        saveModulePermissions
-                      }
-                    >
+                    <button type="button" className="modalPrimaryButton" onClick={saveModulePermissions}>
                       <FiCheck />
                       Save Permissions
                     </button>
                   </div>
-
                 </div>
               </>
             )}
-
           </div>
-
         </div>
       )}
 
@@ -2007,7 +1217,7 @@ export default function EditRoleScreen() {
 }
 
 // =========================================================
-// STYLES
+// STYLES (unchanged from original except for added .moreChip)
 // =========================================================
 
 const styles = `
@@ -2324,7 +1534,7 @@ const styles = `
   ======================================================= */
 
   .systemNotice {
-    margin: 18px 22px 0;
+    margin: 0;
 
     display: flex;
     gap: 11px;
@@ -2621,7 +1831,7 @@ const styles = `
   }
 
   .chipList {
-    margin-top: 15px;
+    margin-bottom: 15px;
 
     display: flex;
     flex-wrap: wrap;
@@ -2650,6 +1860,12 @@ const styles = `
     background: #faf5ff;
 
     color: #6d28d9;
+  }
+
+  .moreChip {
+    border-color: #e2e8f0;
+    background: #f8fafc;
+    color: #64748b;
   }
 
   .selectionChip button {
@@ -3499,6 +2715,51 @@ const styles = `
 
   .permissionDepartmentBody {
     padding: 12px;
+  }
+
+  .permissionIntro {
+    display: flex;
+    gap: 10px;
+
+    margin-bottom: 12px;
+
+    padding: 12px;
+
+    border-radius: 11px;
+
+    background: #faf5ff;
+
+    border: 1px solid #ddd6fe;
+  }
+
+  .permissionIntroIcon {
+    width: 37px;
+    height: 37px;
+
+    flex-shrink: 0;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    border-radius: 10px;
+
+    background: #f3e8ff;
+
+    color: #7c3aed;
+  }
+
+  .permissionIntro strong {
+    color: #334155;
+
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .permissionIntro span {
+    color: #94a3b8;
+
+    font-size: 9px;
   }
 
   .permissionDepartmentList {

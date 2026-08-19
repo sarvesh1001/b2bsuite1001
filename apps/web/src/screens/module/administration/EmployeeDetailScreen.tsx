@@ -13,12 +13,12 @@ import {
   FiChevronRight,
   FiHash,
   FiHome,
-  FiMapPin,
   FiShield,
   FiUser,
   FiUsers,
   FiCheckCircle,
   FiXCircle,
+  FiPhone, // <-- phone icon added
 } from 'react-icons/fi';
 
 // =========================================================
@@ -530,10 +530,11 @@ export default function EmployeeDetailScreen() {
               accentColor="#7C3AED"
             />
 
+            {/* Phone field added as per new API */}
             <DetailItem
-              icon={<FiMapPin />}
-              label="Work Center"
-              value={employee.work_center_code}
+              icon={<FiPhone />}
+              label="Phone"
+              value={employee.phone}
               accentColor="#F97316"
             />
 

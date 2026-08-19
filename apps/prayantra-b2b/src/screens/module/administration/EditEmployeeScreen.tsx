@@ -136,10 +136,22 @@ export default function EditEmployeeScreen() {
     useState(false);
 
   // -------------------------------------------------------
-  // Form
+  // Current form values (editable)
   // -------------------------------------------------------
 
   const [employeeId, setEmployeeId] =
+    useState('');
+
+  const [fullName, setFullName] =
+    useState('');
+
+  const [username, setUsername] =
+    useState('');
+
+  const [phone, setPhone] =
+    useState('');
+
+  const [hireDate, setHireDate] =
     useState('');
 
   const [roleId, setRoleId] =
@@ -153,6 +165,21 @@ export default function EditEmployeeScreen() {
 
   const [isActive, setIsActive] =
     useState(true);
+
+  // -------------------------------------------------------
+  // Original values (to detect changes)
+  // -------------------------------------------------------
+
+  const [originalValues, setOriginalValues] = useState({
+    employeeId: '',
+    fullName: '',
+    username: '',
+    phone: '',
+    hireDate: '',
+    roleId: '',
+    positionId: '',
+    isActive: true,
+  });
 
   // -------------------------------------------------------
   // Options
@@ -203,7 +230,7 @@ export default function EditEmployeeScreen() {
     useState(false);
 
   // -------------------------------------------------------
-  // Validation
+  // Validation errors
   // -------------------------------------------------------
 
   const [errors, setErrors] =
@@ -381,8 +408,8 @@ export default function EditEmployeeScreen() {
           ),
         ]);
 
-        const employee =
-          employeeRaw as any;
+        // The GET API returns { success, data: { ... } }
+        const employee = (employeeRaw as any)?.data || employeeRaw;
 
         if (!employee) {
           throw new Error(
@@ -390,25 +417,45 @@ export default function EditEmployeeScreen() {
           );
         }
 
-        setEmployeeId(
-          employee.employee_id || ''
-        );
+        // Set current values
+        const empId = employee.employee_id || '';
+        const full = employee.full_name || '';
+        const uname = employee.username || '';
+        const ph = employee.phone || '';
+        const role = employee.role_id || '';
+        const pos = employee.position_id || '';
+        const active = employee.is_active ?? true;
 
-        setRoleId(
-          employee.role_id || ''
-        );
+        let hire = '';
+        if (employee.hire_date) {
+          const dateObj = new Date(employee.hire_date);
+          if (!isNaN(dateObj.getTime())) {
+            hire = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD
+          }
+        }
 
-        setPositionId(
-          employee.position_id || ''
-        );
+        setEmployeeId(empId);
+        setFullName(full);
+        setUsername(uname);
+        setPhone(ph);
+        setHireDate(hire);
+        setRoleId(role);
+        setPositionId(pos);
+        setIsActive(active);
+        // reports_to is not returned; default to null
+        setReportsTo(null);
 
-        setReportsTo(
-          employee.reports_to ?? null
-        );
-
-        setIsActive(
-          employee.is_active ?? true
-        );
+        // Store original values for change detection
+        setOriginalValues({
+          employeeId: empId,
+          fullName: full,
+          username: uname,
+          phone: ph,
+          hireDate: hire,
+          roleId: role,
+          positionId: pos,
+          isActive: active,
+        });
 
         setRoles(
           rolesResponse.data?.roles ||
@@ -582,6 +629,21 @@ export default function EditEmployeeScreen() {
         'Please select a position';
     }
 
+    if (phone.trim()) {
+      const phoneClean = phone.trim().replace(/\s/g, '');
+      if (!/^\+?[0-9]{10,15}$/.test(phoneClean)) {
+        newErrors.phone =
+          'Phone must be 10-15 digits, optionally starting with +';
+      }
+    }
+
+    if (hireDate.trim()) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(hireDate.trim())) {
+        newErrors.hireDate =
+          'Hire date must be in YYYY-MM-DD format';
+      }
+    }
+
     setErrors(newErrors);
 
     return (
@@ -615,21 +677,87 @@ export default function EditEmployeeScreen() {
     setSaving(true);
 
     try {
-      const payload = {
-        employee_id:
-          employeeId.trim(),
+      // Build payload with only changed fields
+      const payload: any = {};
 
-        role_id: roleId,
-
-        position_id:
-          positionId,
-
-        reports_to:
-          reportsTo || null,
-
-        is_active:
-          isActive,
+      // Helper to add field if changed
+      const addIfChanged = (
+        key: string,
+        current: any,
+        original: any
+      ) => {
+        if (current !== original) {
+          payload[key] = current;
+        }
       };
+
+      // Compare all fields except reports_to (handled separately)
+      addIfChanged(
+        'employee_id',
+        employeeId.trim(),
+        originalValues.employeeId
+      );
+      addIfChanged(
+        'full_name',
+        fullName.trim() || undefined,
+        originalValues.fullName
+      );
+      addIfChanged(
+        'username',
+        username.trim() || undefined,
+        originalValues.username
+      );
+      addIfChanged(
+        'phone',
+        phone.trim().replace(/\s/g, '') || undefined,
+        originalValues.phone
+      );
+      addIfChanged(
+        'role_id',
+        roleId,
+        originalValues.roleId
+      );
+      addIfChanged(
+        'position_id',
+        positionId,
+        originalValues.positionId
+      );
+      addIfChanged(
+        'is_active',
+        isActive,
+        originalValues.isActive
+      );
+
+      // Handle hire_date: compare formatted dates
+      const currentHire = hireDate.trim();
+      const originalHire = originalValues.hireDate;
+      if (currentHire !== originalHire) {
+        if (currentHire) {
+          const dateObj = new Date(currentHire);
+          if (!isNaN(dateObj.getTime())) {
+            payload.hire_date = dateObj.toISOString();
+          }
+        } else {
+          payload.hire_date = null; // or undefined? We'll set to null to clear
+        }
+      }
+
+      // Handle reports_to: we don't have original, so only send if not null
+      // (since we assume it was null originally, we only need to send if user selected someone)
+      if (reportsTo !== null) {
+        payload.reports_to = reportsTo;
+      }
+      // If reportsTo is null, we don't send it (keep existing value, which we assume is null)
+
+      // If no fields changed, show a message
+      if (Object.keys(payload).length === 0) {
+        Alert.alert(
+          'No Changes',
+          'You haven\'t modified any fields.'
+        );
+        setSaving(false);
+        return;
+      }
 
       await updateEmployee(
         companyId,
@@ -825,16 +953,25 @@ export default function EditEmployeeScreen() {
                   styles.employeeSummaryTitle
                 }
               >
-                Employee Profile
+                {fullName || 'Employee'}
               </Text>
+
+              {username && (
+                <Text
+                  style={
+                    styles.employeeSummaryUsername
+                  }
+                >
+                  @{username}
+                </Text>
+              )}
 
               <Text
                 style={
                   styles.employeeSummarySubtitle
                 }
               >
-                Update role, position and reporting
-                structure
+                Update all employee details
               </Text>
 
             </View>
@@ -879,7 +1016,7 @@ export default function EditEmployeeScreen() {
           </View>
 
           {/* =================================================
-              BASIC INFORMATION
+              BASIC INFORMATION (Editable)
           ================================================= */}
 
           <View style={styles.sectionHeader}>
@@ -908,7 +1045,7 @@ export default function EditEmployeeScreen() {
                   styles.sectionSubtitle
                 }
               >
-                Basic employee identification
+                All fields are editable
               </Text>
             </View>
 
@@ -921,12 +1058,12 @@ export default function EditEmployeeScreen() {
             <View style={styles.field}>
 
               <Text style={styles.label}>
-                Employee ID
+                Employee ID *
               </Text>
 
               <View
                 style={[
-                  styles.readOnlyInput,
+                  styles.textInputContainer,
                   errors.employeeId &&
                     styles.inputError,
                 ]}
@@ -935,38 +1072,20 @@ export default function EditEmployeeScreen() {
                   name="identifier"
                   size={19}
                   color={TEXT_SECONDARY}
+                  style={styles.inputIconLeft}
                 />
 
                 <TextInput
-                  style={
-                    styles.readOnlyInputText
-                  }
+                  style={styles.textInput}
                   value={employeeId}
-                  editable={false}
+                  onChangeText={setEmployeeId}
                   placeholder="EMP-2024-001"
                   placeholderTextColor={
                     TEXT_SECONDARY
                   }
                 />
 
-                <View
-                  style={
-                    styles.lockIcon
-                  }
-                >
-                  <Icon
-                    name="lock-outline"
-                    size={15}
-                    color={TEXT_SECONDARY}
-                  />
-                </View>
               </View>
-
-              <Text
-                style={styles.fieldHint}
-              >
-                Employee ID cannot be changed.
-              </Text>
 
               {errors.employeeId && (
                 <HelperText
@@ -976,6 +1095,162 @@ export default function EditEmployeeScreen() {
                   }
                 >
                   {errors.employeeId}
+                </HelperText>
+              )}
+
+            </View>
+
+            {/* Full Name */}
+
+            <View style={styles.field}>
+
+              <Text style={styles.label}>
+                Full Name
+              </Text>
+
+              <View style={styles.textInputContainer}>
+                <Icon
+                  name="account-outline"
+                  size={19}
+                  color={TEXT_SECONDARY}
+                  style={styles.inputIconLeft}
+                />
+
+                <TextInput
+                  style={styles.textInput}
+                  value={fullName}
+                  onChangeText={setFullName}
+                  placeholder="Enter full name"
+                  placeholderTextColor={
+                    TEXT_SECONDARY
+                  }
+                />
+
+              </View>
+
+            </View>
+
+            {/* Username */}
+
+            <View style={styles.field}>
+
+              <Text style={styles.label}>
+                Username
+              </Text>
+
+              <View style={styles.textInputContainer}>
+                <Icon
+                  name="at"
+                  size={19}
+                  color={TEXT_SECONDARY}
+                  style={styles.inputIconLeft}
+                />
+
+                <TextInput
+                  style={styles.textInput}
+                  value={username}
+                  onChangeText={setUsername}
+                  placeholder="Enter username"
+                  placeholderTextColor={
+                    TEXT_SECONDARY
+                  }
+                  autoCapitalize="none"
+                />
+
+              </View>
+
+            </View>
+
+            {/* Phone */}
+
+            <View style={styles.field}>
+
+              <Text style={styles.label}>
+                Phone
+              </Text>
+
+              <View
+                style={[
+                  styles.textInputContainer,
+                  errors.phone &&
+                    styles.inputError,
+                ]}
+              >
+                <Icon
+                  name="phone-outline"
+                  size={19}
+                  color={TEXT_SECONDARY}
+                  style={styles.inputIconLeft}
+                />
+
+                <TextInput
+                  style={styles.textInput}
+                  value={phone}
+                  onChangeText={setPhone}
+                  placeholder="+91 9876543210"
+                  placeholderTextColor={
+                    TEXT_SECONDARY
+                  }
+                  keyboardType="phone-pad"
+                />
+
+              </View>
+
+              {errors.phone && (
+                <HelperText
+                  type="error"
+                  style={
+                    styles.helperText
+                  }
+                >
+                  {errors.phone}
+                </HelperText>
+              )}
+
+            </View>
+
+            {/* Hire Date */}
+
+            <View style={styles.field}>
+
+              <Text style={styles.label}>
+                Hire Date
+              </Text>
+
+              <View
+                style={[
+                  styles.textInputContainer,
+                  errors.hireDate &&
+                    styles.inputError,
+                ]}
+              >
+                <Icon
+                  name="calendar-outline"
+                  size={19}
+                  color={TEXT_SECONDARY}
+                  style={styles.inputIconLeft}
+                />
+
+                <TextInput
+                  style={styles.textInput}
+                  value={hireDate}
+                  onChangeText={setHireDate}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor={
+                    TEXT_SECONDARY
+                  }
+                />
+
+              </View>
+
+              {errors.hireDate && (
+                <HelperText
+                  type="error"
+                  style={
+                    styles.helperText
+                  }
+                >
+                  {errors.hireDate}
                 </HelperText>
               )}
 
@@ -1033,7 +1308,7 @@ export default function EditEmployeeScreen() {
             <View style={styles.field}>
 
               <Text style={styles.label}>
-                Role
+                Role *
               </Text>
 
               <TouchableOpacity
@@ -1136,7 +1411,7 @@ export default function EditEmployeeScreen() {
             >
 
               <Text style={styles.label}>
-                Position
+                Position *
               </Text>
 
               <TouchableOpacity
@@ -2554,6 +2829,16 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 
+  employeeSummaryUsername: {
+    marginTop: 1,
+
+    color: TEXT_SECONDARY,
+
+    fontSize: 11,
+
+    fontWeight: '500',
+  },
+
   employeeSummarySubtitle: {
     marginTop: 3,
 
@@ -2688,10 +2973,10 @@ const styles = StyleSheet.create({
   },
 
   // =======================================================
-  // READ ONLY
+  // TEXT INPUT
   // =======================================================
 
-  readOnlyInput: {
+  textInputContainer: {
     minHeight: 50,
 
     flexDirection: 'row',
@@ -2707,13 +2992,15 @@ const styles = StyleSheet.create({
       BORDER_COLOR,
 
     backgroundColor:
-      '#F8FAFC',
+      '#FFFFFF',
   },
 
-  readOnlyInputText: {
-    flex: 1,
+  inputIconLeft: {
+    marginRight: 9,
+  },
 
-    marginLeft: 9,
+  textInput: {
+    flex: 1,
 
     paddingVertical: 0,
 
@@ -2721,28 +3008,7 @@ const styles = StyleSheet.create({
 
     fontSize: 14,
 
-    fontWeight: '600',
-  },
-
-  lockIcon: {
-    width: 27,
-    height: 27,
-
-    alignItems: 'center',
-    justifyContent: 'center',
-
-    borderRadius: 7,
-
-    backgroundColor:
-      '#EEF2F6',
-  },
-
-  fieldHint: {
-    marginTop: 5,
-
-    color: '#94A3B8',
-
-    fontSize: 9,
+    fontWeight: '500',
   },
 
   // =======================================================

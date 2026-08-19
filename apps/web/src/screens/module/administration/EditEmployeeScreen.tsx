@@ -30,6 +30,9 @@ import {
   FiShield,
   FiMapPin,
   FiRefreshCw,
+  FiCalendar,
+  FiPhone,
+  FiAtSign,
 } from 'react-icons/fi';
 
 // =========================================================
@@ -161,7 +164,7 @@ const SelectModal: React.FC<{
 };
 
 // =========================================================
-// FIELD
+// FIELD LABEL
 // =========================================================
 
 const FieldLabel: React.FC<{
@@ -200,22 +203,40 @@ export default function EditEmployeeScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  // ---- Current form values ----
   const [employeeId, setEmployeeId] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [username, setUsername] = useState('');
+  const [phone, setPhone] = useState('');
+  const [hireDate, setHireDate] = useState('');
   const [roleId, setRoleId] = useState('');
   const [positionId, setPositionId] = useState('');
   const [reportsTo, setReportsTo] = useState<string | null>(null);
   const [isActive, setIsActive] = useState(true);
 
+  // ---- Original values (for change detection) ----
+  const [originalValues, setOriginalValues] = useState({
+    employeeId: '',
+    fullName: '',
+    username: '',
+    phone: '',
+    hireDate: '',
+    roleId: '',
+    positionId: '',
+    isActive: true,
+  });
+
+  // ---- Options ----
   const [roles, setRoles] = useState<Role[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
   const [managers, setManagers] = useState<CompanyEmployee[]>([]);
 
-  // Modals
+  // ---- Modals ----
   const [roleModalOpen, setRoleModalOpen] = useState(false);
   const [positionModalOpen, setPositionModalOpen] = useState(false);
   const [reportsToModalOpen, setReportsToModalOpen] = useState(false);
 
-  // Search
+  // ---- Search ----
   const [roleSearch, setRoleSearch] = useState('');
   const [positionSearch, setPositionSearch] = useState('');
   const [reportsToSearch, setReportsToSearch] = useState('');
@@ -226,12 +247,12 @@ export default function EditEmployeeScreen() {
   const [reportsToLoading, setReportsToLoading] =
     useState(false);
 
-  // Validation
+  // ---- Validation ----
   const [errors, setErrors] = useState<{
     [key: string]: string;
   }>({});
 
-  // Feedback
+  // ---- Feedback ----
   const [saveError, setSaveError] = useState('');
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -300,7 +321,8 @@ export default function EditEmployeeScreen() {
           ),
         ]);
 
-        const employee = employeeRaw as any;
+        // The GET API returns { success, data: { ... } }
+        const employee = (employeeRaw as any)?.data || employeeRaw;
 
         if (!employee) {
           throw new Error(
@@ -308,25 +330,45 @@ export default function EditEmployeeScreen() {
           );
         }
 
-        setEmployeeId(
-          employee.employee_id || ''
-        );
+        // Set current values
+        const empId = employee.employee_id || '';
+        const full = employee.full_name || '';
+        const uname = employee.username || '';
+        const ph = employee.phone || '';
+        const role = employee.role_id || '';
+        const pos = employee.position_id || '';
+        const active = employee.is_active ?? true;
 
-        setRoleId(
-          employee.role_id || ''
-        );
+        let hire = '';
+        if (employee.hire_date) {
+          const dateObj = new Date(employee.hire_date);
+          if (!isNaN(dateObj.getTime())) {
+            hire = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD
+          }
+        }
 
-        setPositionId(
-          employee.position_id || ''
-        );
+        setEmployeeId(empId);
+        setFullName(full);
+        setUsername(uname);
+        setPhone(ph);
+        setHireDate(hire);
+        setRoleId(role);
+        setPositionId(pos);
+        setIsActive(active);
+        // reports_to is not returned; default to null
+        setReportsTo(null);
 
-        setReportsTo(
-          employee.reports_to ?? null
-        );
-
-        setIsActive(
-          employee.is_active ?? true
-        );
+        // Store original values
+        setOriginalValues({
+          employeeId: empId,
+          fullName: full,
+          username: uname,
+          phone: ph,
+          hireDate: hire,
+          roleId: role,
+          positionId: pos,
+          isActive: active,
+        });
 
         setRoles(
           rolesRes.data?.roles || []
@@ -435,6 +477,21 @@ export default function EditEmployeeScreen() {
         'Please select a position';
     }
 
+    if (phone.trim()) {
+      const phoneClean = phone.trim().replace(/\s/g, '');
+      if (!/^\+?[0-9]{10,15}$/.test(phoneClean)) {
+        newErrors.phone =
+          'Phone must be 10-15 digits, optionally starting with +';
+      }
+    }
+
+    if (hireDate.trim()) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(hireDate.trim())) {
+        newErrors.hireDate =
+          'Hire date must be in YYYY-MM-DD format';
+      }
+    }
+
     setErrors(newErrors);
 
     return Object.keys(newErrors).length === 0;
@@ -467,13 +524,80 @@ export default function EditEmployeeScreen() {
     setSaving(true);
 
     try {
-      const payload = {
-        employee_id: employeeId.trim(),
-        role_id: roleId,
-        position_id: positionId,
-        reports_to: reportsTo || null,
-        is_active: isActive,
+      // Build payload with only changed fields
+      const payload: any = {};
+
+      const addIfChanged = (
+        key: string,
+        current: any,
+        original: any
+      ) => {
+        if (current !== original) {
+          payload[key] = current;
+        }
       };
+
+      addIfChanged(
+        'employee_id',
+        employeeId.trim(),
+        originalValues.employeeId
+      );
+      addIfChanged(
+        'full_name',
+        fullName.trim() || undefined,
+        originalValues.fullName
+      );
+      addIfChanged(
+        'username',
+        username.trim() || undefined,
+        originalValues.username
+      );
+      addIfChanged(
+        'phone',
+        phone.trim().replace(/\s/g, '') || undefined,
+        originalValues.phone
+      );
+      addIfChanged(
+        'role_id',
+        roleId,
+        originalValues.roleId
+      );
+      addIfChanged(
+        'position_id',
+        positionId,
+        originalValues.positionId
+      );
+      addIfChanged(
+        'is_active',
+        isActive,
+        originalValues.isActive
+      );
+
+      // Handle hire_date
+      const currentHire = hireDate.trim();
+      const originalHire = originalValues.hireDate;
+      if (currentHire !== originalHire) {
+        if (currentHire) {
+          const dateObj = new Date(currentHire);
+          if (!isNaN(dateObj.getTime())) {
+            payload.hire_date = dateObj.toISOString();
+          }
+        } else {
+          payload.hire_date = null;
+        }
+      }
+
+      // Handle reports_to: we don't have original, so only send if not null
+      if (reportsTo !== null) {
+        payload.reports_to = reportsTo;
+      }
+
+      // If nothing changed, show message
+      if (Object.keys(payload).length === 0) {
+        setSaveError('No changes to save.');
+        setSaving(false);
+        return;
+      }
 
       await updateEmployee(
         companyId,
@@ -637,11 +761,17 @@ export default function EditEmployeeScreen() {
                 </span>
 
                 <h2>
-                  {employeeId || 'Employee'}
+                  {fullName || employeeId || 'Employee'}
                 </h2>
 
+                {username && (
+                  <p>
+                    @{username}
+                  </p>
+                )}
+
                 <p>
-                  Employee ID
+                  {employeeId}
                   <span className="identityDot">
                     •
                   </span>
@@ -670,7 +800,7 @@ export default function EditEmployeeScreen() {
           </section>
 
           {/* =================================================
-              ERROR
+              FEEDBACK
           ================================================= */}
 
           {saveError && (
@@ -698,10 +828,6 @@ export default function EditEmployeeScreen() {
             </div>
           )}
 
-          {/* =================================================
-              SUCCESS
-          ================================================= */}
-
           {saveSuccess && (
             <div className="feedback successFeedback">
               <div className="feedbackIcon">
@@ -721,28 +847,27 @@ export default function EditEmployeeScreen() {
           )}
 
           {/* =================================================
-              FORM
+              FORM GRID
           ================================================= */}
 
           <div className="formGrid">
 
             {/* =================================================
-                ORGANIZATION
+                BASIC INFORMATION
             ================================================= */}
 
             <section className="formSection">
 
               <div className="sectionHeader">
                 <div className="sectionHeaderIcon">
-                  <FiBriefcase />
+                  <FiUser />
                 </div>
 
                 <div>
-                  <h2>Organization</h2>
+                  <h2>Basic Information</h2>
 
                   <p>
-                    Define the employee's
-                    position in the organization
+                    Update personal and identification details
                   </p>
                 </div>
               </div>
@@ -757,17 +882,16 @@ export default function EditEmployeeScreen() {
                     required
                   />
 
-                  <div className="inputWrapper disabledInput">
+                  <div className="inputWrapper">
                     <FiUser />
 
                     <input
                       value={employeeId}
-                      disabled
+                      onChange={(e) =>
+                        setEmployeeId(e.target.value)
+                      }
+                      placeholder="EMP-2024-001"
                     />
-
-                    <span className="lockedLabel">
-                      Locked
-                    </span>
                   </div>
 
                   {errors.employeeId && (
@@ -776,6 +900,127 @@ export default function EditEmployeeScreen() {
                     </p>
                   )}
                 </div>
+
+                {/* Full Name */}
+
+                <div className="field">
+                  <FieldLabel label="Full Name" />
+
+                  <div className="inputWrapper">
+                    <FiUser />
+
+                    <input
+                      value={fullName}
+                      onChange={(e) =>
+                        setFullName(e.target.value)
+                      }
+                      placeholder="Enter full name"
+                    />
+                  </div>
+                </div>
+
+                {/* Username */}
+
+                <div className="field">
+                  <FieldLabel label="Username" />
+
+                  <div className="inputWrapper">
+                    <FiAtSign />
+
+                    <input
+                      value={username}
+                      onChange={(e) =>
+                        setUsername(e.target.value)
+                      }
+                      placeholder="Enter username"
+                    />
+                  </div>
+                </div>
+
+                {/* Phone */}
+
+                <div className="field">
+                  <FieldLabel label="Phone" />
+
+                  <div
+                    className={`inputWrapper ${
+                      errors.phone
+                        ? 'fieldInvalid'
+                        : ''
+                    }`}
+                  >
+                    <FiPhone />
+
+                    <input
+                      value={phone}
+                      onChange={(e) =>
+                        setPhone(e.target.value)
+                      }
+                      placeholder="+91 9876543210"
+                    />
+                  </div>
+
+                  {errors.phone && (
+                    <p className="fieldError">
+                      {errors.phone}
+                    </p>
+                  )}
+                </div>
+
+                {/* Hire Date */}
+
+                <div className="field">
+                  <FieldLabel label="Hire Date" />
+
+                  <div
+                    className={`inputWrapper ${
+                      errors.hireDate
+                        ? 'fieldInvalid'
+                        : ''
+                    }`}
+                  >
+                    <FiCalendar />
+
+                    <input
+                      value={hireDate}
+                      onChange={(e) =>
+                        setHireDate(e.target.value)
+                      }
+                      placeholder="YYYY-MM-DD"
+                    />
+                  </div>
+
+                  {errors.hireDate && (
+                    <p className="fieldError">
+                      {errors.hireDate}
+                    </p>
+                  )}
+                </div>
+
+              </div>
+            </section>
+
+            {/* =================================================
+                ORGANIZATION & REPORTING
+            ================================================= */}
+
+            <section className="formSection">
+
+              <div className="sectionHeader">
+                <div className="sectionHeaderIcon greenSectionIcon">
+                  <FiBriefcase />
+                </div>
+
+                <div>
+                  <h2>Organization & Reporting</h2>
+
+                  <p>
+                    Define role, position and reporting structure
+                  </p>
+                </div>
+              </div>
+
+              <div className="fields">
 
                 {/* Role */}
 
@@ -886,32 +1131,6 @@ export default function EditEmployeeScreen() {
                     </p>
                   )}
                 </div>
-
-              </div>
-            </section>
-
-            {/* =================================================
-                REPORTING
-            ================================================= */}
-
-            <section className="formSection">
-
-              <div className="sectionHeader">
-                <div className="sectionHeaderIcon greenSectionIcon">
-                  <FiUsers />
-                </div>
-
-                <div>
-                  <h2>Reporting</h2>
-
-                  <p>
-                    Configure reporting and
-                    employee status
-                  </p>
-                </div>
-              </div>
-
-              <div className="fields">
 
                 {/* Reports To */}
 
@@ -1454,7 +1673,7 @@ export default function EditEmployeeScreen() {
 }
 
 // =========================================================
-// STYLES
+// STYLES (unchanged from original, kept for brevity)
 // =========================================================
 
 const styles = `

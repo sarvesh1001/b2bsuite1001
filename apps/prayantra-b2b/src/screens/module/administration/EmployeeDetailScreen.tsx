@@ -673,12 +673,11 @@ export default function EmployeeDetailScreen() {
             accent="#10B981"
           />
 
+          {/* Replaced Work Center with Phone */}
           <DetailRow
-            icon="factory"
-            label="Work Center"
-            value={
-              employee.work_center_code
-            }
+            icon="phone-outline"
+            label="Phone"
+            value={employee.phone}
             accent="#F97316"
           />
 

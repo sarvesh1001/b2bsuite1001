@@ -157,7 +157,7 @@ export default function EmployeesListScreen() {
         className="employeeCard"
         onClick={() =>
           router.push(
-            `/module/administration/edit-employee?userId=${item.user_id}`
+            `/administration/employees/edit?userId=${item.user_id}`
           )
         }
       >
@@ -330,9 +330,7 @@ export default function EmployeesListScreen() {
                 <button
                   type="button"
                   onClick={() =>
-                    router.push(
-                      '/module/administration'
-                    )
+                    router.push('/administration')
                   }
                 >
                   Administration
@@ -355,9 +353,7 @@ export default function EmployeesListScreen() {
               type="button"
               className="addEmployeeButton"
               onClick={() =>
-                router.push(
-                  '/module/administration/add-employee'
-                )
+                router.push('/administration/employees/add')
               }
             >
               <FiUserPlus />
@@ -533,9 +529,7 @@ export default function EmployeesListScreen() {
                   type="button"
                   className="primaryButton"
                   onClick={() =>
-                    router.push(
-                      '/module/administration/add-employee'
-                    )
+                    router.push('/administration/employees/add')
                   }
                 >
                   <FiUserPlus />
@@ -564,9 +558,7 @@ export default function EmployeesListScreen() {
           type="button"
           className="mobileAddButton"
           onClick={() =>
-            router.push(
-              '/module/administration/add-employee'
-            )
+            router.push('/administration/employees/add')
           }
           aria-label="Add employee"
         >
@@ -602,9 +594,7 @@ function EmployeeHeader({
             type="button"
             className="backButton"
             onClick={() =>
-              router.push(
-                '/module/administration'
-              )
+              router.push('/administration')
             }
             aria-label="Back"
           >
@@ -648,7 +638,7 @@ function EmployeeHeader({
 }
 
 // =========================================================
-// STYLES
+// STYLES (unchanged)
 // =========================================================
 
 const styles = `

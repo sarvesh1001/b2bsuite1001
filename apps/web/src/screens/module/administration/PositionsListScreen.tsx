@@ -1,9 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import {
-  listPositions,
-  deletePosition,
-} from '@b2b/api-client';
+import { axiosInstance } from '@b2b/api-client';
 import { useUserAuthStore } from '../../../store/userAuthStore';
 import { Position } from '@b2b/shared-types';
 
@@ -48,6 +45,17 @@ export default function PositionsListScreen() {
   const [deleting, setDeleting] = useState(false);
 
   // =========================================================
+  // HELPER: REQUEST HEADERS
+  // =========================================================
+
+  const getHeaders = () => ({
+    'X-Company-ID': companyId!,
+    'X-Device-ID': deviceId!,
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${accessToken!}`,
+  });
+
+  // =========================================================
   // FETCH POSITIONS
   // =========================================================
 
@@ -65,22 +73,29 @@ export default function PositionsListScreen() {
     }
 
     try {
-      const res = await listPositions(
-        companyId,
-        deviceId,
+      const headers = getHeaders();
+      const response = await axiosInstance.get(
+        `/companies/${companyId}/positions`, // ✅ fixed: removed "/hr"
         {
-          limit: 100,
-          offset: 0,
-        },
-        accessToken
+          headers,
+          params: {
+            limit: 100,
+            offset: 0,
+          },
+        }
       );
 
-      setPositions(res.data?.positions || []);
+      // Parse response – adjust based on actual API structure
+      const data = response.data?.data || response.data || {};
+      const positionsList = data.positions || data || [];
+
+      setPositions(positionsList);
     } catch (error: any) {
       console.error('Failed to load positions:', error);
 
       alert(
-        error?.message ||
+        error?.response?.data?.message ||
+          error?.message ||
           'Failed to load positions. Please try again.'
       );
     } finally {
@@ -110,21 +125,22 @@ export default function PositionsListScreen() {
     setDeleting(true);
 
     try {
-      await deletePosition(
-        companyId,
-        deviceId,
-        deleteTarget.position_id,
-        accessToken
+      const headers = getHeaders();
+      await axiosInstance.delete(
+        `/companies/${companyId}/positions/${deleteTarget.position_id}`, // ✅ fixed: removed "/hr"
+        { headers }
       );
 
       setDeleteTarget(null);
 
+      // Refresh the list
       await fetchPositions(false);
     } catch (error: any) {
       console.error('Failed to delete position:', error);
 
       alert(
-        error?.message ||
+        error?.response?.data?.message ||
+          error?.message ||
           'Failed to delete position. Please try again.'
       );
     } finally {
@@ -216,7 +232,7 @@ export default function PositionsListScreen() {
                 type="button"
                 className="backButton"
                 onClick={() =>
-                  router.push('/module/administration')
+                  router.push('/administration')
                 }
                 aria-label="Back to Administration"
               >
@@ -230,7 +246,14 @@ export default function PositionsListScreen() {
               <div className="headerTitleBlock">
 
                 <div className="breadcrumb">
-                  <span>Administration</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      router.push('/administration')
+                    }
+                  >
+                    Administration
+                  </button>
                   <span className="breadcrumbSeparator">
                     /
                   </span>
@@ -270,9 +293,7 @@ export default function PositionsListScreen() {
                 type="button"
                 className="addButton"
                 onClick={() =>
-                  router.push(
-                    '/module/administration/create-position'
-                  )
+                  router.push('/administration/positions/new')
                 }
               >
                 <FiPlus />
@@ -610,7 +631,7 @@ export default function PositionsListScreen() {
                               className="rowAction edit"
                               onClick={() =>
                                 router.push(
-                                  `/module/administration/edit-position?positionId=${position.position_id}`
+                                  `/administration/positions/edit?positionId=${position.position_id}`
                                 )
                               }
                               title="Edit position"
@@ -666,9 +687,7 @@ export default function PositionsListScreen() {
                 type="button"
                 className="emptyAction"
                 onClick={() =>
-                  router.push(
-                    '/module/administration/create-position'
-                  )
+                  router.push('/administration/positions/new')
                 }
               >
                 <FiPlus />
@@ -788,7 +807,7 @@ function StatusBadge({
 }
 
 // =========================================================
-// STYLES
+// STYLES (unchanged – keep exactly as before)
 // =========================================================
 
 const styles = `
@@ -942,6 +961,20 @@ const styles = `
 
     font-size: 10px;
     font-weight: 650;
+  }
+
+  .breadcrumb button {
+    all: unset;
+
+    color: #64748b;
+
+    cursor: pointer;
+
+    transition: color 0.18s ease;
+  }
+
+  .breadcrumb button:hover {
+    color: #2563eb;
   }
 
   .breadcrumbSeparator {

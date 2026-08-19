@@ -1,12 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/router';
-import {
-  useForm,
-  Controller,
-} from 'react-hook-form';
-import {
-  zodResolver,
-} from '@hookform/resolvers/zod';
+import { useForm, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 
 import {
@@ -15,23 +10,20 @@ import {
   FiChevronDown,
   FiChevronRight,
   FiEdit3,
-  FiGrid,
-  FiInfo,
   FiKey,
   FiMinus,
   FiPlus,
   FiSearch,
   FiShield,
-  FiTrash2,
-  FiUser,
   FiUsers,
   FiX,
   FiSave,
   FiAlertTriangle,
-  FiRefreshCw,
+  FiInfo,
+  FiChevronLeft,
 } from 'react-icons/fi';
 
-// ✅ Use axiosInstance directly
+// ✅ Only import axiosInstance – no idempotent wrappers
 import { axiosInstance } from '@b2b/api-client';
 import { useUserAuthStore } from '../../../store/userAuthStore';
 
@@ -52,38 +44,28 @@ type PermissionItem = {
 };
 
 // =========================================================
-// SCHEMA
+// SCHEMA (only for basic info)
 // =========================================================
 
 const schema = z.object({
-  role_name: z
-    .string()
-    .min(1, 'Role name is required'),
-
+  role_name: z.string().min(1, 'Role name is required'),
   role_level: z
-    .number()
-    .int()
-    .min(1, 'Level must be at least 1')
-    .max(1000, 'Level cannot exceed 1000'),
-
-  description: z
     .string()
-    .nullable()
-    .optional(),
-
-  add_departments: z.array(z.string()),
-
-  remove_departments: z.array(z.string()),
-
-  add_permissions: z.array(z.string()),
-
-  remove_permissions: z.array(z.string()),
+    .min(1, 'Role level is required')
+    .refine(
+      (value) => {
+        const num = Number(value);
+        return Number.isInteger(num) && num >= 1 && num <= 1000;
+      },
+      { message: 'Level must be between 1 and 1000' }
+    ),
+  description: z.string().nullable().optional(),
 });
 
 type FormData = z.infer<typeof schema>;
 
 // =========================================================
-// MODULE COLORS
+// MODULE HELPERS (unchanged)
 // =========================================================
 
 const MODULE_COLORS: Record<string, string> = {
@@ -124,40 +106,6 @@ const MODULE_ICONS: Record<string, string> = {
   operations: '📋',
 };
 
-// =========================================================
-// DEPARTMENT → MODULE
-// =========================================================
-
-const DEPARTMENT_TO_MODULE_KEY: Record<string, string> = {
-  Academics: 'academics',
-  Accounting: 'accounting',
-  Administration: 'administration',
-  Attendance: 'attendance',
-  Finance: 'finance',
-  HR: 'hr',
-  IT: 'it',
-  Inventory: 'inventory',
-  Logistics: 'logistics',
-  Marketing: 'marketing',
-  Operations: 'operations',
-  Payroll: 'payroll',
-  Procurement: 'procurement',
-  Production: 'production',
-  Sales: 'sales',
-
-  'Company Management': 'administration',
-  'Employee Management': 'hr',
-  'Manager Management': 'hr',
-  'Quality Assurance': 'operations',
-  'Quality Control': 'operations',
-  'R&D': 'administration',
-  'Customer Support': 'administration',
-};
-
-// =========================================================
-// HELPERS
-// =========================================================
-
 function getModuleColor(module?: string) {
   return MODULE_COLORS[module || ''] || '#64748B';
 }
@@ -168,14 +116,9 @@ function getModuleIcon(module?: string) {
 
 function formatModuleName(module?: string) {
   if (!module) return 'General';
-
   return module
     .split(/[-_]/)
-    .map(
-      word =>
-        word.charAt(0).toUpperCase() +
-        word.slice(1).toLowerCase()
-    )
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(' ');
 }
 
@@ -186,678 +129,437 @@ function formatModuleName(module?: string) {
 export default function EditRoleScreen() {
   const router = useRouter();
   const { roleId } = router.query;
-  const isCreateMode = !roleId; // 👈 New flag
+  const isCreateMode = !roleId || roleId === 'new';
 
-  const {
-    accessToken,
-    deviceId,
-    companyId,
-  } = useUserAuthStore();
+  const { accessToken, deviceId, companyId } = useUserAuthStore();
 
-  // =======================================================
-  // STATE
-  // =======================================================
+  // ---------- Helper for headers ----------
+  const getHeaders = useCallback(() => ({
+    'X-Company-ID': companyId!,
+    'X-Device-ID': deviceId!,
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${accessToken!}`,
+  }), [companyId, deviceId, accessToken]);
 
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-
-  const [error, setError] = useState<string | null>(null);
-
-  const [isSystemRole, setIsSystemRole] =
-    useState(false);
-
-  const [roleNotFound, setRoleNotFound] =
-    useState(false);
-
-  // Departments
-  const [allDepartments, setAllDepartments] =
-    useState<DepartmentItem[]>([]);
-
-  const [loadingDepartments, setLoadingDepartments] =
-    useState(true);
-
-  const [currentDepartments, setCurrentDepartments] =
-    useState<DepartmentItem[]>([]);
-
-  // Permissions
-  const [currentPermissions, setCurrentPermissions] =
-    useState<PermissionItem[]>([]);
-
-  // Add permission
-  const [addModule, setAddModule] =
-    useState('');
-
-  const [addPermissionsList, setAddPermissionsList] =
-    useState<PermissionItem[]>([]);
-
-  const [loadingAddPermissions, setLoadingAddPermissions] =
-    useState(false);
-
-  const [addPermissionModalOpen, setAddPermissionModalOpen] =
-    useState(false);
-
-  const [addSearchQuery, setAddSearchQuery] =
-    useState('');
-
-  const [tempAddPermissions, setTempAddPermissions] =
-    useState<string[]>([]);
-
-  // Remove permission
-  const [removeModule, setRemoveModule] =
-    useState('');
-
-  const [removePermissionsList, setRemovePermissionsList] =
-    useState<PermissionItem[]>([]);
-
-  const [loadingRemovePermissions, setLoadingRemovePermissions] =
-    useState(false);
-
-  const [removePermissionModalOpen, setRemovePermissionModalOpen] =
-    useState(false);
-
-  const [removeSearchQuery, setRemoveSearchQuery] =
-    useState('');
-
-  const [tempRemovePermissions, setTempRemovePermissions] =
-    useState<string[]>([]);
-
-  // Department modals
-  const [addDeptModalOpen, setAddDeptModalOpen] =
-    useState(false);
-
-  const [removeDeptModalOpen, setRemoveDeptModalOpen] =
-    useState(false);
-
-  // Module selector
-  const [moduleSelectorOpen, setModuleSelectorOpen] =
-    useState<'add' | 'remove' | null>(null);
-
-  const [moduleSearch, setModuleSearch] =
-    useState('');
-
-  // =======================================================
-  // FORM
-  // =======================================================
-
+  // ---------- Basic info form ----------
   const {
     control,
     handleSubmit,
     reset,
-    watch,
-    setValue,
-    formState: {
-      errors,
-      isDirty,
-    },
+    formState: { errors, isDirty },
   } = useForm<FormData>({
     resolver: zodResolver(schema),
-
     defaultValues: {
       role_name: '',
-      role_level: 1,
+      role_level: '',
       description: '',
-      add_departments: [],
-      remove_departments: [],
-      add_permissions: [],
-      remove_permissions: [],
     },
   });
 
-  const addDeptIds =
-    watch('add_departments') || [];
+  // ---------- State ----------
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isSystemRole, setIsSystemRole] = useState(false);
+  const [roleNotFound, setRoleNotFound] = useState(false);
 
-  const removeDeptIds =
-    watch('remove_departments') || [];
+  // Departments
+  const [allDepartments, setAllDepartments] = useState<DepartmentItem[]>([]);
+  const [loadingDepartments, setLoadingDepartments] = useState(true);
 
-  const addPermissions =
-    watch('add_permissions') || [];
+  // Department & permission selections
+  const [originalDepartmentIds, setOriginalDepartmentIds] = useState<string[]>([]);
+  const [originalPermissionNames, setOriginalPermissionNames] = useState<string[]>([]);
+  const [selectedDepartmentIds, setSelectedDepartmentIds] = useState<string[]>([]);
+  const [selectedPermissions, setSelectedPermissions] = useState<Record<string, string[]>>({});
 
-  const removePermissions =
-    watch('remove_permissions') || [];
+  // Permission cache (module -> PermissionItem[])
+  const [permissionCache, setPermissionCache] = useState<Record<string, PermissionItem[]>>({});
+  const permissionsLoadedRef = useRef<Record<string, boolean>>({});
 
-  // =======================================================
-  // MODULES
-  // =======================================================
+  // Department modal
+  const [deptModalOpen, setDeptModalOpen] = useState(false);
+  const [tempDeptIds, setTempDeptIds] = useState<string[]>([]);
+  const [departmentSearch, setDepartmentSearch] = useState('');
 
-  const modules = useMemo(
-    () =>
-      Array.from(
+  // Permission modal
+  const [permModalOpen, setPermModalOpen] = useState(false);
+  const [currentModule, setCurrentModule] = useState<string | null>(null);
+  const [tempPermsForModule, setTempPermsForModule] = useState<string[]>([]);
+  const [permissionSearch, setPermissionSearch] = useState('');
+
+  // To avoid double fetch
+  const fetchedRef = useRef(false);
+
+  // ---------- Load all module permissions (cached) ----------
+  const loadAllModulePermissions = useCallback(
+    async (departments: DepartmentItem[]) => {
+      if (!accessToken || !companyId || !deviceId) return;
+
+      const moduleCodes = Array.from(
         new Set(
-          allDepartments
-            .map(d => d.module_code)
-            .filter(Boolean) as string[]
+          departments
+            .map((dept) => dept.module_code)
+            .filter((code): code is string => !!code)
         )
-      ),
-    [allDepartments]
-  );
+      );
 
-  const filteredModules = useMemo(() => {
-    const query = moduleSearch
-      .trim()
-      .toLowerCase();
+      const modulesToLoad = moduleCodes.filter(
+        (moduleCode) => !permissionsLoadedRef.current[moduleCode]
+      );
 
-    if (!query) return modules;
-
-    return modules.filter(module =>
-      formatModuleName(module)
-        .toLowerCase()
-        .includes(query)
-    );
-  }, [modules, moduleSearch]);
-
-  // =======================================================
-  // FETCH DATA
-  // =======================================================
-
-  useEffect(() => {
-    // --- AUTH CHECK ---
-    if (!accessToken || !companyId || !deviceId) {
-      setError('Missing authentication information.');
-      setLoading(false);
-      return;
-    }
-
-    // --- CREATE MODE: only load departments ---
-    if (isCreateMode) {
-      const fetchDepartmentsOnly = async () => {
-        setLoading(true);
-        setLoadingDepartments(true);
-        setError(null);
-
-        try {
-          const headers = {
-            'X-Company-ID': companyId,
-            'X-Device-ID': deviceId,
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-          };
-
-          const deptRes = await axiosInstance.get(
-            `/companies/${companyId}/hr/departments/root`,
-            { headers }
-          );
-          const departments = deptRes.data?.data || deptRes.data || [];
-          setAllDepartments(departments);
-
-          // Reset form to defaults (already set by useForm)
-          reset({
-            role_name: '',
-            role_level: 1,
-            description: '',
-            add_departments: [],
-            remove_departments: [],
-            add_permissions: [],
-            remove_permissions: [],
-          });
-
-          // Clear edit‑mode data
-          setCurrentDepartments([]);
-          setCurrentPermissions([]);
-          setIsSystemRole(false);
-          setRoleNotFound(false);
-        } catch (err: any) {
-          console.error(err);
-          setError(
-            err?.response?.data?.message ||
-              err?.message ||
-              'Failed to load departments.'
-          );
-        } finally {
-          setLoading(false);
-          setLoadingDepartments(false);
-        }
-      };
-
-      fetchDepartmentsOnly();
-      return;
-    }
-
-    // --- EDIT MODE (original logic) ---
-    const fetchData = async () => {
-      setLoading(true);
-      setError(null);
-      setLoadingDepartments(true);
+      if (modulesToLoad.length === 0) return;
 
       try {
-        const headers = {
-          'X-Company-ID': companyId,
-          'X-Device-ID': deviceId,
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        };
-
-        // 1. Get role details
-        const roleRes = await axiosInstance.get(
-          `/companies/${companyId}/hr/roles/${roleId}`,
-          { headers }
+        const results = await Promise.all(
+          modulesToLoad.map(async (moduleCode) => {
+            const response = await axiosInstance.get(
+              `/companies/${companyId}/hr/permissions/module/${moduleCode}`,
+              { headers: getHeaders() }
+            );
+            const permissions = response.data?.data || response.data || [];
+            return { moduleCode, permissions };
+          })
         );
-        const role = roleRes.data?.data || roleRes.data;
 
-        if (!role) {
-          setRoleNotFound(true);
-          return;
-        }
+        setPermissionCache((prev) => {
+          const next = { ...prev };
+          results.forEach(({ moduleCode, permissions }) => {
+            next[moduleCode] = permissions;
+            permissionsLoadedRef.current[moduleCode] = true;
+          });
+          return next;
+        });
+      } catch (error) {
+        console.error('Failed to load module permissions:', error);
+        setError('Could not load all permissions. Some may be missing.');
+      }
+    },
+    [accessToken, companyId, deviceId, getHeaders]
+  );
 
-        setIsSystemRole(Boolean(role.is_system_role));
+  // ---------- Initial data fetch ----------
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!accessToken || !companyId || !deviceId) {
+        setError('Missing authentication information.');
+        setLoading(false);
+        return;
+      }
 
-        // 2. Get root departments
+      setLoading(true);
+      setLoadingDepartments(true);
+      setError(null);
+
+      try {
+        // 1) Load departments
         const deptRes = await axiosInstance.get(
-          `/companies/${companyId}/hr/departments/root`,
-          { headers }
+          `/companies/${companyId}/departments/root`,  // 🔁 adjust if needed
+          { headers: getHeaders() }
         );
         const departments = deptRes.data?.data || deptRes.data || [];
         setAllDepartments(departments);
 
-        // 3. Get role permissions (detailed)
-        const permRes = await axiosInstance.get(
-          `/companies/${companyId}/hr/roles/${roleId}/permissions/detailed`,
-          { headers }
-        );
-        const permissions = permRes.data?.data || permRes.data || [];
-        setCurrentPermissions(permissions);
+        // 2) Load all module permissions (cached)
+        await loadAllModulePermissions(departments);
 
-        // 4. Get role departments
-        const roleDeptRes = await axiosInstance.get(
-          `/companies/${companyId}/hr/roles/${roleId}/departments`,
-          { headers }
-        );
-        const roleDepts = roleDeptRes.data?.data || roleDeptRes.data || [];
-        setCurrentDepartments(roleDepts);
+        // 3) Create mode
+        if (isCreateMode) {
+          reset({
+            role_name: '',
+            role_level: '',
+            description: '',
+          });
+          setSelectedDepartmentIds([]);
+          setSelectedPermissions({});
+          setOriginalDepartmentIds([]);
+          setOriginalPermissionNames([]);
+          setIsSystemRole(false);
+          setLoading(false);
+          setLoadingDepartments(false);
+          fetchedRef.current = true;
+          return;
+        }
 
-        // Reset form
-        reset({
-          role_name: role.role_name || '',
-          role_level: role.role_level || 1,
-          description: role.description || '',
-          add_departments: [],
-          remove_departments: [],
-          add_permissions: [],
-          remove_permissions: [],
+        // 4) Edit mode
+        const [roleRes, permRes, roleDeptRes] = await Promise.all([
+          axiosInstance.get(
+            `/companies/${companyId}/rbac/roles/${roleId}`,
+            { headers: getHeaders() }
+          ),
+          axiosInstance.get(
+            `/companies/${companyId}/rbac/roles/${roleId}/permissions`,
+            { headers: getHeaders() }
+          ),
+          axiosInstance.get(
+            `/companies/${companyId}/rbac/roles/${roleId}/departments`,
+            { headers: getHeaders() }
+          ),
+        ]);
+
+        const role = roleRes.data?.data || roleRes.data;
+        if (!role) {
+          setRoleNotFound(true);
+          setLoading(false);
+          setLoadingDepartments(false);
+          return;
+        }
+
+        setIsSystemRole(role.is_system_role);
+
+        const deptIds = (roleDeptRes.data?.data || roleDeptRes.data || []).map((d: any) => d.department_id);
+        setOriginalDepartmentIds(deptIds);
+        setSelectedDepartmentIds(deptIds);
+
+        const perms = permRes.data?.data || permRes.data || [];
+        const permNames = perms.map((p: PermissionItem) => p.permission_name);
+        setOriginalPermissionNames(permNames);
+
+        const grouped: Record<string, string[]> = {};
+        perms.forEach((p: PermissionItem) => {
+          const mod = p.module || 'other';
+          if (!grouped[mod]) grouped[mod] = [];
+          grouped[mod].push(p.permission_name);
         });
+        setSelectedPermissions(grouped);
+
+        reset({
+          role_name: role.role_name,
+          role_level: String(role.role_level ?? ''),
+          description: role.description || '',
+        });
+
+        fetchedRef.current = true;
       } catch (err: any) {
-        console.error(err);
-        setError(
-          err?.response?.data?.message ||
-            err?.message ||
-            'Failed to load role information.'
-        );
+        console.error('Failed to load data:', err);
+        setError(err?.response?.data?.message || err?.message || 'Failed to load role information.');
       } finally {
         setLoading(false);
         setLoadingDepartments(false);
       }
     };
 
-    fetchData();
-  }, [roleId, accessToken, companyId, deviceId, reset, isCreateMode]);
-
-  // =======================================================
-  // FETCH PERMISSIONS FOR MODULE
-  // =======================================================
-
-  const fetchPermissions = async (
-    moduleCode: string,
-    mode: 'add' | 'remove'
-  ) => {
-    if (!accessToken || !companyId || !deviceId) return;
-
-    if (mode === 'add') {
-      setLoadingAddPermissions(true);
-    } else {
-      setLoadingRemovePermissions(true);
+    if (!fetchedRef.current) {
+      fetchData();
     }
+  }, [roleId, accessToken, companyId, deviceId, reset, isCreateMode, loadAllModulePermissions, getHeaders]);
 
-    try {
-      const headers = {
-        Authorization: `Bearer ${accessToken}`,
-        'X-Device-ID': deviceId,
-        'X-Company-ID': companyId,
-      };
+  // ---------- Derived data ----------
+  const selectedDepartments = useMemo(
+    () => allDepartments.filter((dept) => selectedDepartmentIds.includes(dept.department_id)),
+    [allDepartments, selectedDepartmentIds]
+  );
 
-      const response = await axiosInstance.get(
-        `/companies/${companyId}/hr/permissions/module/${moduleCode}`,
-        { headers }
-      );
+  const totalPermissionCount = useMemo(
+    () =>
+      Object.values(selectedPermissions).reduce(
+        (total, perms) => total + perms.length,
+        0
+      ),
+    [selectedPermissions]
+  );
 
-      const data = response.data?.data || response.data || [];
+  const filteredDepartments = useMemo(() => {
+    const query = departmentSearch.trim().toLowerCase();
+    if (!query) return allDepartments;
+    return allDepartments.filter((dept) =>
+      dept.department_name.toLowerCase().includes(query)
+    );
+  }, [allDepartments, departmentSearch]);
 
-      if (mode === 'add') {
-        setAddPermissionsList(data);
-      } else {
-        setRemovePermissionsList(data);
-      }
-    } catch (err) {
-      console.error(err);
-      setError(
-        'Could not load permissions for this module.'
-      );
-    } finally {
-      if (mode === 'add') {
-        setLoadingAddPermissions(false);
-      } else {
-        setLoadingRemovePermissions(false);
-      }
+  // ---------- Department modal handlers ----------
+  const openDeptModal = () => {
+    setTempDeptIds([...selectedDepartmentIds]);
+    setDepartmentSearch('');
+    setDeptModalOpen(true);
+  };
+
+  const toggleTempDept = (id: string) => {
+    setTempDeptIds((prev) =>
+      prev.includes(id) ? prev.filter((d) => d !== id) : [...prev, id]
+    );
+  };
+
+  const toggleAllTempDepts = () => {
+    if (tempDeptIds.length === allDepartments.length) {
+      setTempDeptIds([]);
+    } else {
+      setTempDeptIds(allDepartments.map((d) => d.department_id));
     }
   };
 
-  // =======================================================
-  // MODULE SELECTION
-  // =======================================================
-
-  const selectModule = async (
-    moduleCode: string
-  ) => {
-    const mode = moduleSelectorOpen;
-
-    if (!mode) return;
-
-    setModuleSelectorOpen(null);
-    setModuleSearch('');
-
-    if (mode === 'add') {
-      setAddModule(moduleCode);
-      await fetchPermissions(
-        moduleCode,
-        'add'
-      );
-    } else {
-      setRemoveModule(moduleCode);
-      await fetchPermissions(
-        moduleCode,
-        'remove'
-      );
-    }
+  const confirmDepartments = () => {
+    setSelectedDepartmentIds(tempDeptIds);
+    setDeptModalOpen(false);
   };
 
-  // =======================================================
-  // ADD PERMISSIONS
-  // =======================================================
-
-  const openAddPermissionPicker = () => {
-    if (!addModule) {
-      setModuleSelectorOpen('add');
+  // ---------- Permission modal handlers ----------
+  const openPermissionModal = () => {
+    if (selectedDepartmentIds.length === 0) {
+      alert('Please select at least one department before assigning permissions.');
       return;
     }
-
-    setTempAddPermissions([
-      ...addPermissions,
-    ]);
-
-    setAddSearchQuery('');
-
-    setAddPermissionModalOpen(true);
+    setPermissionSearch('');
+    setCurrentModule(null);
+    setPermModalOpen(true);
   };
 
-  const toggleTempAddPermission = (
-    permission: string
-  ) => {
-    setTempAddPermissions(prev =>
-      prev.includes(permission)
-        ? prev.filter(
-            p => p !== permission
-          )
-        : [...prev, permission]
-    );
+  const closePermissionModal = () => {
+    setPermModalOpen(false);
+    setCurrentModule(null);
+    setPermissionSearch('');
   };
 
-  const confirmAddPermissions = () => {
-    setValue(
-      'add_permissions',
-      tempAddPermissions,
-      {
-        shouldDirty: true,
-      }
-    );
-
-    setAddPermissionModalOpen(false);
-  };
-
-  const removeAddPermission = (
-    permission: string
-  ) => {
-    setValue(
-      'add_permissions',
-      addPermissions.filter(
-        p => p !== permission
-      ),
-      {
-        shouldDirty: true,
-      }
-    );
-  };
-
-  // =======================================================
-  // REMOVE PERMISSIONS
-  // =======================================================
-
-  const openRemovePermissionPicker = () => {
-    if (!removeModule) {
-      setModuleSelectorOpen('remove');
+  const handleDepartmentSelect = (dept: DepartmentItem) => {
+    if (!dept.module_code) {
+      alert('This department does not have a module assigned.');
       return;
     }
-
-    setTempRemovePermissions([
-      ...removePermissions,
-    ]);
-
-    setRemoveSearchQuery('');
-
-    setRemovePermissionModalOpen(true);
+    const moduleCode = dept.module_code;
+    setCurrentModule(moduleCode);
+    setPermissionSearch('');
+    setTempPermsForModule(selectedPermissions[moduleCode] || []);
   };
 
-  const toggleTempRemovePermission = (
-    permission: string
-  ) => {
-    setTempRemovePermissions(prev =>
-      prev.includes(permission)
-        ? prev.filter(
-            p => p !== permission
-          )
-        : [...prev, permission]
+  const toggleTempPermission = (permissionName: string) => {
+    setTempPermsForModule((prev) =>
+      prev.includes(permissionName)
+        ? prev.filter((p) => p !== permissionName)
+        : [...prev, permissionName]
     );
   };
 
-  const confirmRemovePermissions = () => {
-    setValue(
-      'remove_permissions',
-      tempRemovePermissions,
-      {
-        shouldDirty: true,
-      }
-    );
-
-    setRemovePermissionModalOpen(false);
+  const toggleAllTempPermissions = () => {
+    if (!currentModule) return;
+    const permissions = permissionCache[currentModule] || [];
+    const names = permissions.map((p) => p.permission_name);
+    const allSelected = names.length > 0 && names.every((name) => tempPermsForModule.includes(name));
+    setTempPermsForModule(allSelected ? [] : names);
   };
 
-  const removeRemovePermission = (
-    permission: string
-  ) => {
-    setValue(
-      'remove_permissions',
-      removePermissions.filter(
-        p => p !== permission
-      ),
-      {
-        shouldDirty: true,
-      }
-    );
+  const saveModulePermissions = () => {
+    if (!currentModule) return;
+    const module = currentModule;
+    const permissions = [...tempPermsForModule];
+    setSelectedPermissions((prev) => ({
+      ...prev,
+      [module]: permissions,
+    }));
+    setCurrentModule(null);
+    setTempPermsForModule([]);
+    setPermissionSearch('');
   };
 
-  // =======================================================
-  // DEPARTMENTS
-  // =======================================================
-
-  const toggleDepartment = (
-    id: string,
-    type: 'add' | 'remove'
-  ) => {
-    const current =
-      type === 'add'
-        ? addDeptIds
-        : removeDeptIds;
-
-    const field =
-      type === 'add'
-        ? 'add_departments'
-        : 'remove_departments';
-
-    setValue(
-      field,
-      current.includes(id)
-        ? current.filter(
-            departmentId =>
-              departmentId !== id
-          )
-        : [...current, id],
-      {
-        shouldDirty: true,
-      }
-    );
+  const cancelDepartmentPermissions = () => {
+    setCurrentModule(null);
+    setTempPermsForModule([]);
+    setPermissionSearch('');
   };
 
-  const toggleRemoveCurrentDepartment = (
-    departmentId: string
-  ) => {
-    setValue(
-      'remove_departments',
-      removeDeptIds.includes(
-        departmentId
-      )
-        ? removeDeptIds.filter(
-            id => id !== departmentId
-          )
-        : [
-            ...removeDeptIds,
-            departmentId,
-          ],
-      {
-        shouldDirty: true,
-      }
-    );
+  const confirmAllPermissions = () => {
+    setPermModalOpen(false);
+    setCurrentModule(null);
+    setPermissionSearch('');
   };
 
-  // =======================================================
-  // CURRENT PERMISSIONS
-  // =======================================================
-
-  const toggleRemoveCurrentPermission = (
-    permissionName: string
-  ) => {
-    setValue(
-      'remove_permissions',
-      removePermissions.includes(
-        permissionName
-      )
-        ? removePermissions.filter(
-            permission =>
-              permission !==
-              permissionName
-          )
-        : [
-            ...removePermissions,
-            permissionName,
-          ],
-      {
-        shouldDirty: true,
-      }
+  // Filtered permissions for current module
+  const currentPermissions = currentModule ? permissionCache[currentModule] || [] : [];
+  const filteredPermissions = useMemo(() => {
+    const query = permissionSearch.trim().toLowerCase();
+    if (!query) return currentPermissions;
+    return currentPermissions.filter(
+      (permission) =>
+        permission.permission_name.toLowerCase().includes(query) ||
+        permission.description?.toLowerCase().includes(query)
     );
-  };
+  }, [currentPermissions, permissionSearch]);
 
-  // =======================================================
-  // SUBMIT
-  // =======================================================
-
-  const onSubmit = async (
-    data: FormData
-  ) => {
-    if (
-      !accessToken ||
-      !companyId ||
-      !deviceId
-    ) {
-      setError('Missing authentication.');
+  // ---------- Submit ----------
+  const onSubmit = async (data: FormData) => {
+    if (!accessToken || !companyId || !deviceId) {
+      setError('Authentication missing.');
       return;
     }
 
     setSaving(true);
     setError(null);
 
-    const payload = {
-      role_name: data.role_name,
-      description: data.description,
-      role_level: data.role_level,
-      add_departments: data.add_departments || [],
-      remove_departments: data.remove_departments || [],
-      add_permissions: data.add_permissions || [],
-      remove_permissions: data.remove_permissions || [],
-    };
+    // Compute selected permissions for selected departments only
+    const selectedModuleCodes = new Set(
+      allDepartments
+        .filter((dept) => selectedDepartmentIds.includes(dept.department_id))
+        .map((dept) => dept.module_code)
+        .filter((code): code is string => !!code)
+    );
 
-    const headers = {
-      'X-Company-ID': companyId,
-      'X-Device-ID': deviceId,
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-    };
+    const allSelectedPerms = Object.entries(selectedPermissions)
+      .filter(([moduleCode]) => selectedModuleCodes.has(moduleCode))
+      .flatMap(([, permissions]) => permissions);
 
     try {
       if (isCreateMode) {
-        // POST → create new role
+        const payload = {
+          role_name: data.role_name,
+          role_level: Number(data.role_level),
+          description: data.description || '',
+          department_ids: selectedDepartmentIds,
+          permission_names: allSelectedPerms,
+        };
         await axiosInstance.post(
-          `/companies/${companyId}/hr/roles`,
+          `/companies/${companyId}/rbac/roles`,
           payload,
-          { headers }
+          { headers: getHeaders() }
         );
       } else {
-        // PUT → update existing role
+        const addDeptIds = selectedDepartmentIds.filter((id) => !originalDepartmentIds.includes(id));
+        const removeDeptIds = originalDepartmentIds.filter((id) => !selectedDepartmentIds.includes(id));
+
+        const addPerms = allSelectedPerms.filter(
+          (permission) => !originalPermissionNames.includes(permission)
+        );
+        const removePerms = originalPermissionNames.filter(
+          (permission) => !allSelectedPerms.includes(permission)
+        );
+
+        const payload = {
+          role_name: data.role_name,
+          role_level: Number(data.role_level),
+          description: data.description || '',
+          add_departments: addDeptIds,
+          remove_departments: removeDeptIds,
+          add_permissions: addPerms,
+          remove_permissions: removePerms,
+        };
         await axiosInstance.put(
-          `/companies/${companyId}/hr/roles/${roleId}`,
+          `/companies/${companyId}/rbac/roles/${roleId}`,
           payload,
-          { headers }
+          { headers: getHeaders() }
         );
       }
       router.back();
     } catch (err: any) {
-      console.error(err);
-      setError(
-        err?.response?.data?.message ||
-          err?.message ||
-          'Failed to save role.'
-      );
+      console.error('Save failed:', err);
+      setError(err?.response?.data?.message || err?.message || 'Failed to save role.');
     } finally {
       setSaving(false);
     }
   };
 
-  // =======================================================
-  // LOADING
-  // =======================================================
-
+  // ---------- Loading state ----------
   if (loading) {
     return (
       <>
         <div className="rolePage loadingPage">
           <div className="loadingCard">
             <div className="spinner" />
-
-            <h2>
-              {isCreateMode ? 'Preparing new role' : 'Loading role'}
-            </h2>
-
-            <p>
-              {isCreateMode
-                ? 'Loading departments...'
-                : 'Preparing role information and permissions...'}
-            </p>
+            <h2>{isCreateMode ? 'Preparing new role' : 'Loading role'}</h2>
+            <p>{isCreateMode ? 'Loading departments...' : 'Preparing role information...'}</p>
           </div>
         </div>
-
         <style jsx>{styles}</style>
       </>
     );
   }
-
-  // =======================================================
-  // NOT FOUND
-  // =======================================================
 
   if (roleNotFound) {
     return (
@@ -867,148 +569,82 @@ export default function EditRoleScreen() {
             <div className="stateIcon">
               <FiShield />
             </div>
-
-            <h2>
-              Role not found
-            </h2>
-
-            <p>
-              This role may have been deleted
-              or you may no longer have access
-              to it.
-            </p>
-
-            <button
-              type="button"
-              className="primaryButton"
-              onClick={() =>
-                router.back()
-              }
-            >
-              <FiArrowLeft />
-              Go Back
+            <h2>Role not found</h2>
+            <p>This role may have been deleted or you may no longer have access to it.</p>
+            <button type="button" className="primaryButton" onClick={() => router.back()}>
+              <FiArrowLeft /> Go Back
             </button>
           </div>
         </div>
-
         <style jsx>{styles}</style>
       </>
     );
   }
 
-  // =======================================================
-  // MAIN RENDER
-  // =======================================================
-
+  // ---------- Main render ----------
   return (
     <>
       <div className="rolePage">
-
         {/* =================================================
             HEADER
         ================================================= */}
-
         <header className="pageHeader">
           <div className="headerInner">
-
-            <button
-              type="button"
-              className="backButton"
-              onClick={() =>
-                router.back()
-              }
-              aria-label="Go back"
-            >
+            <button type="button" className="backButton" onClick={() => router.back()} aria-label="Go back">
               <FiArrowLeft />
             </button>
-
             <div className="headerIcon">
               <FiShield />
             </div>
-
             <div className="headerText">
               <div className="breadcrumb">
-                Administration
-                <FiChevronRight />
-                Roles
-                <FiChevronRight />
-                {isCreateMode ? 'Create' : 'Edit'}
+                Administration <FiChevronRight /> Roles <FiChevronRight /> {isCreateMode ? 'Create' : 'Edit'}
               </div>
-
-              <h1>
-                {isCreateMode ? 'Create Role' : 'Edit Role'}
-              </h1>
-
+              <h1>{isCreateMode ? 'Create Role' : 'Edit Role'}</h1>
               <p>
                 {isCreateMode
                   ? 'Define a new role and its permissions'
                   : 'Configure role details, departments and permissions'}
               </p>
             </div>
-
-            {isSystemRole && (
+            {!isCreateMode && isSystemRole && (
               <div className="systemBadge">
-                <FiShield />
-                System Role
+                <FiShield /> System Role
               </div>
             )}
           </div>
-
           <div className="headerAccent" />
         </header>
 
         {/* =================================================
             CONTENT
         ================================================= */}
-
         <main className="content">
-
-          {/* Error */}
           {error && (
             <div className="errorBanner">
               <div className="errorBannerIcon">
                 <FiAlertTriangle />
               </div>
-
               <div>
-                <strong>
-                  Something went wrong
-                </strong>
-
+                <strong>Something went wrong</strong>
                 <p>{error}</p>
               </div>
-
-              <button
-                type="button"
-                onClick={() =>
-                  setError(null)
-                }
-              >
+              <button type="button" onClick={() => setError(null)}>
                 <FiX />
               </button>
             </div>
           )}
 
-          {/* =================================================
-              SYSTEM ROLE NOTICE
-          ================================================= */}
-
-          {isSystemRole && (
+          {!isCreateMode && isSystemRole && (
             <div className="systemNotice">
               <div className="noticeIcon">
                 <FiInfo />
               </div>
-
               <div>
-                <strong>
-                  System role
-                </strong>
-
+                <strong>System role</strong>
                 <p>
-                  This is a built-in system
-                  role. You can update its
-                  name, level and description,
-                  but it cannot be deleted.
+                  This is a built-in system role. You can update its name, level and description,
+                  and modify its permissions, but it cannot be deleted.
                 </p>
               </div>
             </div>
@@ -1017,1071 +653,432 @@ export default function EditRoleScreen() {
           {/* =================================================
               ROLE INFORMATION
           ================================================= */}
-
           <section className="sectionCard">
-
             <div className="sectionHeader">
               <div className="sectionHeaderIcon blue">
                 <FiEdit3 />
               </div>
-
               <div>
-                <h2>
-                  Role Information
-                </h2>
-
-                <p>
-                  Basic information about this
-                  role
-                </p>
+                <h2>Role Information</h2>
+                <p>Basic information about this role</p>
               </div>
             </div>
 
             <div className="formGrid">
-
-              {/* Role name */}
               <Controller
                 control={control}
                 name="role_name"
                 render={({ field }) => (
                   <div className="field">
                     <label>
-                      Role Name
-                      <span>*</span>
+                      Role Name <span>*</span>
                     </label>
-
-                    <input
-                      {...field}
-                      className={
-                        errors.role_name
-                          ? 'input error'
-                          : 'input'
-                      }
-                      placeholder="e.g. HR Manager"
-                    />
-
-                    {errors.role_name && (
-                      <small className="fieldError">
-                        {
-                          errors
-                            .role_name
-                            .message
-                        }
-                      </small>
-                    )}
+                    <input {...field} className={errors.role_name ? 'input error' : 'input'} placeholder="e.g. HR Manager" />
+                    {errors.role_name && <small className="fieldError">{errors.role_name.message}</small>}
                   </div>
                 )}
               />
 
-              {/* Role level */}
               <Controller
                 control={control}
                 name="role_level"
-                render={({
-                  field: {
-                    onChange,
-                    onBlur,
-                    value,
-                  },
-                }) => (
+                render={({ field: { onChange, onBlur, value } }) => (
                   <div className="field">
                     <label>
-                      Role Level
-                      <span>*</span>
+                      Role Level <span>*</span>
                     </label>
-
                     <div className="levelInput">
                       <input
                         type="number"
                         min={1}
                         max={1000}
-                        value={
-                          value ?? ''
-                        }
-                        onChange={e => {
-                          if (
-                            e.target.value ===
-                            ''
-                          ) {
-                            onChange(
-                              undefined
-                            );
-                            return;
-                          }
-
-                          const number =
-                            Number(
-                              e.target
-                                .value
-                            );
-
-                          if (
-                            !Number.isNaN(
-                              number
-                            )
-                          ) {
-                            onChange(
-                              Math.min(
-                                Math.max(
-                                  1,
-                                  number
-                                ),
-                                1000
-                              )
-                            );
-                          }
+                        value={value ?? ''}
+                        onChange={(e) => {
+                          onChange(e.target.value);
                         }}
                         onBlur={onBlur}
+                        placeholder="Enter a number between 1 and 1000"
                       />
-
-                      <span>
-                        1–1000
-                      </span>
+                      <span>1–1000</span>
                     </div>
-
-                    {errors.role_level && (
-                      <small className="fieldError">
-                        {
-                          errors
-                            .role_level
-                            .message
-                        }
-                      </small>
-                    )}
+                    {errors.role_level && <small className="fieldError">{errors.role_level.message}</small>}
                   </div>
                 )}
               />
 
-              {/* Description */}
               <Controller
                 control={control}
                 name="description"
                 render={({ field }) => (
                   <div className="field full">
                     <label>
-                      Description
-                      <em>
-                        Optional
-                      </em>
+                      Description <em>Optional</em>
                     </label>
-
-                    <textarea
-                      {...field}
-                      value={
-                        field.value ?? ''
-                      }
-                      rows={4}
-                      placeholder="Describe what this role is responsible for..."
-                    />
+                    <textarea {...field} value={field.value ?? ''} rows={4} placeholder="Describe what this role is responsible for..." />
                   </div>
                 )}
               />
-
             </div>
           </section>
 
           {/* =================================================
               DEPARTMENTS
           ================================================= */}
-
           <section className="sectionCard">
-
             <div className="sectionHeader">
               <div className="sectionHeaderIcon purple">
                 <FiUsers />
               </div>
-
               <div>
-                <h2>
-                  Department Access
-                </h2>
-
-                <p>
-                  Control which departments
-                  this role can access
-                </p>
+                <h2>Department Access</h2>
+                <p>Control which departments this role can access</p>
               </div>
-
               <div className="countBadge">
-                {currentDepartments.length}
-                <span>
-                  assigned
-                </span>
+                {selectedDepartmentIds.length}
+                <span>assigned</span>
               </div>
             </div>
 
-            {/* Current */}
             <div className="subSection">
-
               <div className="subSectionTitle">
-                <span>
-                  Current Departments
-                </span>
-
-                <span className="smallCount">
-                  {currentDepartments.length}
-                </span>
+                <span>Current Departments</span>
+                <span className="smallCount">{selectedDepartmentIds.length}</span>
               </div>
 
-              {currentDepartments.length ===
-              0 ? (
+              {selectedDepartments.length === 0 ? (
                 <div className="emptyInline">
                   <FiUsers />
-                  <span>
-                    No departments assigned
-                  </span>
+                  <span>No departments assigned</span>
                 </div>
               ) : (
                 <div className="tagGrid">
-                  {currentDepartments.map(
-                    department => {
-                      const removing =
-                        removeDeptIds.includes(
-                          department.department_id
-                        );
-
-                      const color =
-                        getModuleColor(
-                          department.module_code
-                        );
-
-                      return (
-                        <div
-                          key={
-                            department.department_id
-                          }
-                          className={
-                            removing
-                              ? 'accessTag removing'
-                              : 'accessTag'
-                          }
-                        >
-                          <div
-                            className="tagIcon"
-                            style={{
-                              background:
-                                `${color}12`,
-                              color,
-                            }}
-                          >
-                            {getModuleIcon(
-                              department.module_code
-                            )}
-                          </div>
-
-                          <div className="tagText">
-                            <strong>
-                              {
-                                department.department_name
-                              }
-                            </strong>
-
-                            {department.module_code && (
-                              <span>
-                                {formatModuleName(
-                                  department.module_code
-                                )}
-                              </span>
-                            )}
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              toggleRemoveCurrentDepartment(
-                                department.department_id
-                              )
-                            }
-                            className="tagAction"
-                            title={
-                              removing
-                                ? 'Undo removal'
-                                : 'Remove department'
-                            }
-                          >
-                            {removing ? (
-                              <FiCheck />
-                            ) : (
-                              <FiX />
-                            )}
-                          </button>
-                        </div>
-                      );
-                    }
-                  )}
+                  {selectedDepartments.map((dept) => (
+                    <div key={dept.department_id} className="accessTag">
+                      <div
+                        className="tagIcon"
+                        style={{
+                          background: `${getModuleColor(dept.module_code)}12`,
+                          color: getModuleColor(dept.module_code),
+                        }}
+                      >
+                        {getModuleIcon(dept.module_code)}
+                      </div>
+                      <div className="tagText">
+                        <strong>{dept.department_name}</strong>
+                        {dept.module_code && <span>{formatModuleName(dept.module_code)}</span>}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
-
             </div>
 
-            {/* Department actions */}
             <div className="actionGrid">
-
-              <button
-                type="button"
-                className="managementButton add"
-                onClick={() =>
-                  setAddDeptModalOpen(true)
-                }
-              >
+              <button type="button" className="managementButton add" onClick={openDeptModal}>
                 <div className="managementIcon">
                   <FiPlus />
                 </div>
-
                 <div>
-                  <strong>
-                    Add Departments
-                  </strong>
-
-                  <span>
-                    Grant additional access
-                  </span>
+                  <strong>Add Departments</strong>
+                  <span>Grant additional access</span>
                 </div>
-
-                {addDeptIds.length > 0 && (
-                  <b>
-                    {addDeptIds.length}
-                  </b>
-                )}
               </button>
-
-              <button
-                type="button"
-                className="managementButton remove"
-                onClick={() =>
-                  setRemoveDeptModalOpen(
-                    true
-                  )
-                }
-              >
+              <button type="button" className="managementButton remove" onClick={openDeptModal}>
                 <div className="managementIcon">
                   <FiMinus />
                 </div>
-
                 <div>
-                  <strong>
-                    Remove Departments
-                  </strong>
-
-                  <span>
-                    Revoke additional access
-                  </span>
+                  <strong>Remove Departments</strong>
+                  <span>Revoke access</span>
                 </div>
-
-                {removeDeptIds.length > 0 && (
-                  <b>
-                    {removeDeptIds.length}
-                  </b>
-                )}
               </button>
-
             </div>
           </section>
 
           {/* =================================================
               PERMISSIONS
           ================================================= */}
-
           <section className="sectionCard">
-
             <div className="sectionHeader">
               <div className="sectionHeaderIcon orange">
                 <FiKey />
               </div>
-
               <div>
-                <h2>
-                  Permission Access
-                </h2>
-
-                <p>
-                  Manage what this role can
-                  perform across the system
-                </p>
+                <h2>Permission Access</h2>
+                <p>Manage what this role can perform</p>
               </div>
-
               <div className="countBadge">
-                {currentPermissions.length}
-                <span>
-                  assigned
-                </span>
+                {totalPermissionCount}
+                <span>assigned</span>
               </div>
             </div>
 
-            {/* Current permissions */}
             <div className="subSection">
-
               <div className="subSectionTitle">
-                <span>
-                  Current Permissions
-                </span>
-
-                <span className="smallCount">
-                  {currentPermissions.length}
-                </span>
+                <span>Current Permissions</span>
+                <span className="smallCount">{totalPermissionCount}</span>
               </div>
 
-              {currentPermissions.length ===
-              0 ? (
+              {totalPermissionCount === 0 ? (
                 <div className="emptyInline">
                   <FiKey />
-                  <span>
-                    No permissions assigned
-                  </span>
+                  <span>No permissions assigned</span>
                 </div>
               ) : (
                 <div className="permissionList">
-                  {currentPermissions.map(
-                    permission => {
-                      const removing =
-                        removePermissions.includes(
-                          permission.permission_name
-                        );
-
-                      const color =
-                        getModuleColor(
-                          permission.module
-                        );
-
-                      return (
+                  {Object.entries(selectedPermissions)
+                    .filter(([, perms]) => perms.length > 0)
+                    .map(([module, perms]) => (
+                      <div key={module} className="permissionRow">
                         <div
-                          key={
-                            permission.permission_name
-                          }
-                          className={
-                            removing
-                              ? 'permissionRow removing'
-                              : 'permissionRow'
-                          }
+                          className="permissionModuleIcon"
+                          style={{
+                            color: getModuleColor(module),
+                            background: `${getModuleColor(module)}12`,
+                          }}
                         >
-                          <div
-                            className="permissionModuleIcon"
-                            style={{
-                              color,
-                              background:
-                                `${color}12`,
-                            }}
-                          >
-                            {getModuleIcon(
-                              permission.module
-                            )}
-                          </div>
-
-                          <div className="permissionInfo">
-                            <strong>
-                              {
-                                permission.permission_name
-                              }
-                            </strong>
-
-                            <span>
-                              {
-                                permission.description ||
-                                'No description available'
-                              }
-                            </span>
-                          </div>
-
-                          <span
-                            className="modulePill"
-                            style={{
-                              color,
-                              background:
-                                `${color}12`,
-                            }}
-                          >
-                            {formatModuleName(
-                              permission.module
-                            )}
-                          </span>
-
-                          <button
-                            type="button"
-                            className="permissionRemove"
-                            onClick={() =>
-                              toggleRemoveCurrentPermission(
-                                permission.permission_name
-                              )
-                            }
-                          >
-                            {removing ? (
-                              <FiCheck />
-                            ) : (
-                              <FiX />
-                            )}
-                          </button>
+                          {getModuleIcon(module)}
                         </div>
-                      );
-                    }
-                  )}
+                        <div className="permissionInfo">
+                          <strong>{formatModuleName(module)}</strong>
+                          <span>{perms.length} permission{perms.length > 1 ? 's' : ''}</span>
+                        </div>
+                        <span
+                          className="modulePill"
+                          style={{
+                            color: getModuleColor(module),
+                            background: `${getModuleColor(module)}12`,
+                          }}
+                        >
+                          {perms.length}
+                        </span>
+                      </div>
+                    ))}
                 </div>
               )}
-
             </div>
 
-            {/* Permission actions */}
             <div className="permissionActions">
-
-              {/* Add */}
               <div className="permissionActionCard add">
-
                 <div className="permissionActionHeader">
                   <div className="permissionActionIcon">
                     <FiPlus />
                   </div>
-
                   <div>
-                    <h3>
-                      Add Permissions
-                    </h3>
-
-                    <p>
-                      Grant new capabilities
-                    </p>
+                    <h3>Add Permissions</h3>
+                    <p>Grant new capabilities</p>
                   </div>
                 </div>
-
                 <button
                   type="button"
-                  className="moduleSelect"
-                  onClick={() =>
-                    setModuleSelectorOpen(
-                      'add'
-                    )
-                  }
+                  className="choosePermissionButton add"
+                  onClick={openPermissionModal}
+                  disabled={selectedDepartmentIds.length === 0}
                 >
-                  <span>
-                    {addModule
-                      ? `${getModuleIcon(
-                          addModule
-                        )}  ${formatModuleName(
-                          addModule
-                        )}`
-                      : 'Select a module'}
-                  </span>
-
-                  <FiChevronDown />
+                  <FiKey />
+                  Manage Permissions
                 </button>
-
-                {addModule && (
-                  <button
-                    type="button"
-                    className="choosePermissionButton add"
-                    onClick={
-                      openAddPermissionPicker
-                    }
-                  >
-                    <FiKey />
-                    Choose Permissions
-
-                    {addPermissions.length >
-                      0 && (
-                      <span>
-                        {
-                          addPermissions.length
-                        }
-                      </span>
-                    )}
-                  </button>
-                )}
-
-                {addPermissions.length >
-                  0 && (
-                  <div className="selectedPermissionTags">
-                    {addPermissions.map(
-                      permission => (
-                        <span
-                          key={permission}
-                          className="selectedTag add"
-                        >
-                          {permission}
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              removeAddPermission(
-                                permission
-                              )
-                            }
-                          >
-                            <FiX />
-                          </button>
-                        </span>
-                      )
-                    )}
+                {selectedDepartmentIds.length === 0 && (
+                  <div style={{ marginTop: 6, fontSize: '9px', color: '#94A3B8' }}>
+                    Select departments first
                   </div>
                 )}
-
               </div>
 
-              {/* Remove */}
               <div className="permissionActionCard remove">
-
                 <div className="permissionActionHeader">
                   <div className="permissionActionIcon">
                     <FiMinus />
                   </div>
-
                   <div>
-                    <h3>
-                      Remove Permissions
-                    </h3>
-
-                    <p>
-                      Revoke selected capabilities
-                    </p>
+                    <h3>Remove Permissions</h3>
+                    <p>Revoke selected capabilities</p>
                   </div>
                 </div>
-
                 <button
                   type="button"
-                  className="moduleSelect"
-                  onClick={() =>
-                    setModuleSelectorOpen(
-                      'remove'
-                    )
-                  }
+                  className="choosePermissionButton remove"
+                  onClick={openPermissionModal}
+                  disabled={selectedDepartmentIds.length === 0}
                 >
-                  <span>
-                    {removeModule
-                      ? `${getModuleIcon(
-                          removeModule
-                        )}  ${formatModuleName(
-                          removeModule
-                        )}`
-                      : 'Select a module'}
-                  </span>
-
-                  <FiChevronDown />
+                  <FiKey />
+                  Manage Permissions
                 </button>
-
-                {removeModule && (
-                  <button
-                    type="button"
-                    className="choosePermissionButton remove"
-                    onClick={
-                      openRemovePermissionPicker
-                    }
-                  >
-                    <FiKey />
-                    Choose Permissions
-
-                    {removePermissions.length >
-                      0 && (
-                      <span>
-                        {
-                          removePermissions.length
-                        }
-                      </span>
-                    )}
-                  </button>
-                )}
-
-                {removePermissions.length >
-                  0 && (
-                  <div className="selectedPermissionTags">
-                    {removePermissions.map(
-                      permission => (
-                        <span
-                          key={permission}
-                          className="selectedTag remove"
-                        >
-                          {permission}
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              removeRemovePermission(
-                                permission
-                              )
-                            }
-                          >
-                            <FiX />
-                          </button>
-                        </span>
-                      )
-                    )}
+                {selectedDepartmentIds.length === 0 && (
+                  <div style={{ marginTop: 6, fontSize: '9px', color: '#94A3B8' }}>
+                    Select departments first
                   </div>
                 )}
-
               </div>
-
             </div>
           </section>
-
         </main>
 
         {/* =================================================
             STICKY SAVE BAR
         ================================================= */}
-
         <div className="saveBar">
           <div className="saveBarInner">
-
             <div className="saveStatus">
               <div className="saveDot" />
-
-              <span>
-                {isDirty
-                  ? 'You have unsaved changes'
-                  : 'No unsaved changes'}
-              </span>
+              <span>{isDirty ? 'You have unsaved changes' : 'No unsaved changes'}</span>
             </div>
-
             <div className="saveActions">
-
-              <button
-                type="button"
-                className="cancelButton"
-                onClick={() =>
-                  router.back()
-                }
-                disabled={saving}
-              >
+              <button type="button" className="cancelButton" onClick={() => router.back()} disabled={saving}>
                 Cancel
               </button>
-
-              <button
-                type="button"
-                className="saveButton"
-                onClick={handleSubmit(
-                  onSubmit
-                )}
-                disabled={saving}
-              >
+              <button type="button" className="saveButton" onClick={handleSubmit(onSubmit)} disabled={saving}>
                 {saving ? (
                   <>
-                    <span className="buttonSpinner" />
-                    Saving...
+                    <span className="buttonSpinner" /> Saving...
                   </>
                 ) : (
                   <>
-                    <FiSave />
-                    {isCreateMode ? 'Create Role' : 'Save Changes'}
+                    <FiSave /> {isCreateMode ? 'Create Role' : 'Save Changes'}
                   </>
                 )}
               </button>
-
             </div>
           </div>
         </div>
 
         {/* =================================================
-            MODULE SELECTOR MODAL
-        ================================================= */}
-
-        {moduleSelectorOpen && (
-          <div
-            className="modalOverlay"
-            onClick={() =>
-              setModuleSelectorOpen(null)
-            }
-          >
-            <div
-              className="modal smallModal"
-              onClick={e =>
-                e.stopPropagation()
-              }
-            >
-              <div className="modalHeader">
-                <div>
-                  <h3>
-                    Select Module
-                  </h3>
-
-                  <p>
-                    Choose where to manage
-                    permissions
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    setModuleSelectorOpen(
-                      null
-                    )
-                  }
-                >
-                  <FiX />
-                </button>
-              </div>
-
-              <div className="modalSearch">
-                <FiSearch />
-
-                <input
-                  autoFocus
-                  value={moduleSearch}
-                  onChange={e =>
-                    setModuleSearch(
-                      e.target.value
-                    )
-                  }
-                  placeholder="Search modules..."
-                />
-              </div>
-
-              <div className="moduleList">
-                {filteredModules.map(
-                  module => {
-                    const color =
-                      getModuleColor(
-                        module
-                      );
-
-                    return (
-                      <button
-                        type="button"
-                        key={module}
-                        className="moduleOption"
-                        onClick={() =>
-                          selectModule(
-                            module
-                          )
-                        }
-                      >
-                        <div
-                          className="moduleOptionIcon"
-                          style={{
-                            color,
-                            background:
-                              `${color}12`,
-                          }}
-                        >
-                          {getModuleIcon(
-                            module
-                          )}
-                        </div>
-
-                        <div>
-                          <strong>
-                            {formatModuleName(
-                              module
-                            )}
-                          </strong>
-
-                          <span>
-                            Manage module
-                            permissions
-                          </span>
-                        </div>
-
-                        <FiChevronRight />
-                      </button>
-                    );
-                  }
-                )}
-
-                {filteredModules.length ===
-                  0 && (
-                  <div className="modalEmpty">
-                    <FiSearch />
-
-                    <span>
-                      No modules found
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* =================================================
             DEPARTMENT MODAL
         ================================================= */}
-
-        {(addDeptModalOpen ||
-          removeDeptModalOpen) && (
-          <div
-            className="modalOverlay"
-            onClick={() => {
-              setAddDeptModalOpen(false);
-              setRemoveDeptModalOpen(false);
-            }}
-          >
-            <div
-              className="modal"
-              onClick={e =>
-                e.stopPropagation()
-              }
-            >
+        {deptModalOpen && (
+          <div className="modalOverlay" onClick={() => setDeptModalOpen(false)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
               <div className="modalHeader">
                 <div>
-                  <h3>
-                    {addDeptModalOpen
-                      ? 'Add Departments'
-                      : 'Remove Departments'}
-                  </h3>
-
-                  <p>
-                    {addDeptModalOpen
-                      ? 'Select departments to grant access'
-                      : 'Select departments to revoke access'}
-                  </p>
+                  <h3>Select Departments</h3>
+                  <p>{tempDeptIds.length} selected</p>
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAddDeptModalOpen(
-                      false
-                    );
-                    setRemoveDeptModalOpen(
-                      false
-                    );
-                  }}
-                >
+                <button type="button" onClick={() => setDeptModalOpen(false)}>
                   <FiX />
                 </button>
               </div>
 
               <div className="modalSearch">
                 <FiSearch />
-
                 <input
+                  autoFocus
+                  value={departmentSearch}
+                  onChange={(e) => setDepartmentSearch(e.target.value)}
                   placeholder="Search departments..."
-                  onChange={e => {
-                    const input =
-                      e.target.value.toLowerCase();
-
-                    const rows =
-                      document.querySelectorAll(
-                        '[data-department-row]'
-                      );
-
-                    rows.forEach(row => {
-                      const name =
-                        row.textContent?.toLowerCase() ||
-                        '';
-
-                      (
-                        row as HTMLElement
-                      ).style.display =
-                        name.includes(input)
-                          ? 'flex'
-                          : 'none';
-                    });
-                  }}
                 />
               </div>
 
-              <div className="departmentList">
+              <div style={{ padding: '4px 15px 8px' }}>
+                <div
+                  className="selectAllCard"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: 8,
+                    borderRadius: 10,
+                    border: '1px solid #E2E8F0',
+                    background: '#F8FAFC',
+                    cursor: 'pointer',
+                  }}
+                  onClick={toggleAllTempDepts}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+                    <div style={{ width: 34, height: 34, borderRadius: 9, background: '#E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <FiCheck />
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 11 }}>Select All</div>
+                      <div style={{ fontSize: 8, color: '#94A3B8' }}>{allDepartments.length} departments</div>
+                    </div>
+                  </div>
+                  <div style={{ width: 20, height: 20, borderRadius: 4, border: '1px solid #94A3B8', display: 'flex', alignItems: 'center', justifyContent: 'center', background: tempDeptIds.length === allDepartments.length ? '#2563EB' : 'white' }}>
+                    {tempDeptIds.length === allDepartments.length && <FiCheck size={12} color="white" />}
+                  </div>
+                </div>
+              </div>
+
+              <div className="departmentList" style={{ flex: 1, overflowY: 'auto', padding: '0 15px 12px' }}>
                 {loadingDepartments ? (
                   <div className="modalLoading">
-                    <span className="spinner small" />
-
-                    Loading departments...
+                    <span className="spinner small" /> Loading departments...
                   </div>
                 ) : (
-                  allDepartments.map(
-                    department => {
-                      const isAdd =
-                        addDeptModalOpen;
-
-                      const selected =
-                        isAdd
-                          ? addDeptIds.includes(
-                              department.department_id
-                            )
-                          : removeDeptIds.includes(
-                              department.department_id
-                            );
-
-                      const color =
-                        getModuleColor(
-                          department.module_code
-                        );
-
-                      return (
-                        <label
-                          key={
-                            department.department_id
-                          }
-                          data-department-row
-                          className={
-                            selected
-                              ? 'departmentOption selected'
-                              : 'departmentOption'
-                          }
+                  filteredDepartments.map((dept) => {
+                    const checked = tempDeptIds.includes(dept.department_id);
+                    return (
+                      <label
+                        key={dept.department_id}
+                        className={`departmentOption ${checked ? 'selected' : ''}`}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 9,
+                          padding: 9,
+                          borderRadius: 10,
+                          cursor: 'pointer',
+                          border: '1px solid transparent',
+                          background: checked ? '#F8FBFF' : 'transparent',
+                          borderColor: checked ? '#DBEAFE' : 'transparent',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleTempDept(dept.department_id)}
+                          style={{ display: 'none' }}
+                        />
+                        <div
+                          className="departmentIcon"
+                          style={{
+                            width: 37,
+                            height: 37,
+                            borderRadius: 9,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            background: `${getModuleColor(dept.module_code)}12`,
+                            color: getModuleColor(dept.module_code),
+                          }}
                         >
-                          <input
-                            type="checkbox"
-                            checked={selected}
-                            onChange={() =>
-                              toggleDepartment(
-                                department.department_id,
-                                isAdd
-                                  ? 'add'
-                                  : 'remove'
-                              )
-                            }
-                          />
-
-                          <div
-                            className="departmentIcon"
-                            style={{
-                              background:
-                                `${color}12`,
-                              color,
-                            }}
-                          >
-                            {getModuleIcon(
-                              department.module_code
-                            )}
-                          </div>
-
-                          <div className="departmentInfo">
-                            <strong>
-                              {
-                                department.department_name
-                              }
-                            </strong>
-
-                            {department.module_code && (
-                              <span>
-                                {formatModuleName(
-                                  department.module_code
-                                )}
-                              </span>
-                            )}
-                          </div>
-
-                          <div className="customCheck">
-                            {selected && (
-                              <FiCheck />
-                            )}
-                          </div>
-                        </label>
-                      );
-                    }
-                  )
+                          {getModuleIcon(dept.module_code)}
+                        </div>
+                        <div className="departmentInfo" style={{ flex: 1 }}>
+                          <strong style={{ fontSize: 11 }}>{dept.department_name}</strong>
+                          {dept.module_code && <span style={{ fontSize: 9, color: '#94A3B8' }}>{formatModuleName(dept.module_code)}</span>}
+                        </div>
+                        <div
+                          className="customCheck"
+                          style={{
+                            width: 20,
+                            height: 20,
+                            borderRadius: 4,
+                            border: '1px solid #D5DCE5',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            background: checked ? '#2563EB' : 'white',
+                            color: 'white',
+                          }}
+                        >
+                          {checked && <FiCheck size={12} />}
+                        </div>
+                      </label>
+                    );
+                  })
+                )}
+                {filteredDepartments.length === 0 && !loadingDepartments && (
+                  <div className="modalEmpty">
+                    <FiSearch />
+                    <strong>No departments found</strong>
+                    <span>Try a different search.</span>
+                  </div>
                 )}
               </div>
 
               <div className="modalFooter">
-                <span>
-                  {(
-                    addDeptModalOpen
-                      ? addDeptIds
-                      : removeDeptIds
-                  ).length}{' '}
-                  selected
-                </span>
-
-                <button
-                  type="button"
-                  className="modalDoneButton"
-                  onClick={() => {
-                    setAddDeptModalOpen(
-                      false
-                    );
-                    setRemoveDeptModalOpen(
-                      false
-                    );
-                  }}
-                >
+                <span>{tempDeptIds.length} selected</span>
+                <button type="button" className="modalDoneButton" onClick={confirmDepartments}>
                   Done
                 </button>
               </div>
@@ -2092,294 +1089,234 @@ export default function EditRoleScreen() {
         {/* =================================================
             PERMISSION MODAL
         ================================================= */}
-
-        {(addPermissionModalOpen ||
-          removePermissionModalOpen) && (
-          <div
-            className="modalOverlay"
-            onClick={() => {
-              setAddPermissionModalOpen(
-                false
-              );
-              setRemovePermissionModalOpen(
-                false
-              );
-            }}
-          >
-            <div
-              className="modal permissionModal"
-              onClick={e =>
-                e.stopPropagation()
-              }
-            >
+        {permModalOpen && (
+          <div className="modalOverlay" onClick={closePermissionModal}>
+            <div className="modal permissionModal" onClick={(e) => e.stopPropagation()}>
               <div className="modalHeader">
-                <div>
-                  <h3>
-                    {addPermissionModalOpen
-                      ? 'Add Permissions'
-                      : 'Remove Permissions'}
-                  </h3>
-
-                  <p>
-                    {getModuleIcon(
-                      addPermissionModalOpen
-                        ? addModule
-                        : removeModule
-                    )}{' '}
-                    {formatModuleName(
-                      addPermissionModalOpen
-                        ? addModule
-                        : removeModule
-                    )}
-                  </p>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {currentModule && (
+                    <button type="button" onClick={cancelDepartmentPermissions} style={{ all: 'unset', cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+                      <FiChevronLeft size={20} color="#2563EB" />
+                    </button>
+                  )}
+                  <div>
+                    <h3>
+                      {currentModule
+                        ? allDepartments.find((d) => d.module_code === currentModule)?.department_name || currentModule
+                        : 'Permissions'}
+                    </h3>
+                    <p>
+                      {currentModule
+                        ? `${tempPermsForModule.length} selected`
+                        : 'Choose a department'}
+                    </p>
+                  </div>
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAddPermissionModalOpen(
-                      false
-                    );
-                    setRemovePermissionModalOpen(
-                      false
-                    );
-                  }}
-                >
+                <button type="button" onClick={closePermissionModal}>
                   <FiX />
                 </button>
               </div>
 
-              <div className="modalSearch">
-                <FiSearch />
+              {!currentModule ? (
+                <>
+                  <div style={{ padding: '0 16px', marginTop: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, borderRadius: 12, background: '#F5F9FF', border: '1px solid #DBEAFE' }}>
+                      <div style={{ width: 37, height: 37, borderRadius: 10, background: '#DBEAFE', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <FiKey size={18} color="#2563EB" />
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: 11 }}>Choose a department</div>
+                        <div style={{ fontSize: 9, color: '#64748B' }}>Select a department to manage its permissions.</div>
+                      </div>
+                    </div>
+                  </div>
 
-                <input
-                  autoFocus
-                  placeholder="Search permissions..."
-                  value={
-                    addPermissionModalOpen
-                      ? addSearchQuery
-                      : removeSearchQuery
-                  }
-                  onChange={e => {
-                    if (
-                      addPermissionModalOpen
-                    ) {
-                      setAddSearchQuery(
-                        e.target.value
+                  <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 12px' }}>
+                    {allDepartments
+                      .filter((d) => selectedDepartmentIds.includes(d.department_id))
+                      .map((dept) => {
+                        const moduleCode = dept.module_code;
+                        const count = moduleCode ? (selectedPermissions[moduleCode] || []).length : 0;
+                        const disabled = !moduleCode;
+                        return (
+                          <button
+                            key={dept.department_id}
+                            type="button"
+                            className="moduleOption"
+                            onClick={() => handleDepartmentSelect(dept)}
+                            disabled={disabled}
+                            style={{
+                              all: 'unset',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 10,
+                              padding: 9,
+                              borderRadius: 10,
+                              cursor: disabled ? 'not-allowed' : 'pointer',
+                              opacity: disabled ? 0.5 : 1,
+                              width: '100%',
+                              borderBottom: '1px solid #EEF1F5',
+                            }}
+                          >
+                            <div
+                              className="moduleOptionIcon"
+                              style={{
+                                width: 38,
+                                height: 38,
+                                borderRadius: 10,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                background: `${getModuleColor(moduleCode)}12`,
+                                color: getModuleColor(moduleCode),
+                              }}
+                            >
+                              {disabled ? '🚫' : getModuleIcon(moduleCode)}
+                            </div>
+                            <div style={{ flex: 1, textAlign: 'left' }}>
+                              <div style={{ fontWeight: 600, fontSize: 11 }}>{dept.department_name}</div>
+                              <div style={{ fontSize: 9, color: '#94A3B8' }}>
+                                {moduleCode ? `${count} permissions selected` : 'No module assigned'}
+                              </div>
+                            </div>
+                            {!disabled && (
+                              <div style={{ minWidth: 27, height: 27, borderRadius: 8, background: '#DBEAFE', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <span style={{ fontSize: 9, fontWeight: 700, color: '#2563EB' }}>{count}</span>
+                              </div>
+                            )}
+                            <FiChevronRight size={18} color="#94A3B8" />
+                          </button>
+                        );
+                      })}
+                    {allDepartments.filter((d) => selectedDepartmentIds.includes(d.department_id)).length === 0 && (
+                      <div className="modalEmpty">
+                        <FiUsers />
+                        <strong>No departments selected</strong>
+                        <span>Please select departments first.</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="modalFooter">
+                    <span>{totalPermissionCount} total permissions</span>
+                    <button type="button" className="modalDoneButton" onClick={confirmAllPermissions}>
+                      Done
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="modalSearch">
+                    <FiSearch />
+                    <input
+                      autoFocus
+                      value={permissionSearch}
+                      onChange={(e) => setPermissionSearch(e.target.value)}
+                      placeholder="Search permissions..."
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0 16px', marginBottom: 8 }}>
+                    <span style={{ fontSize: 9, color: '#94A3B8' }}>{filteredPermissions.length} permissions</span>
+                    <button
+                      type="button"
+                      onClick={toggleAllTempPermissions}
+                      style={{ all: 'unset', cursor: 'pointer', fontSize: 10, fontWeight: 700, color: '#2563EB' }}
+                    >
+                      {tempPermsForModule.length === currentPermissions.length && currentPermissions.length > 0
+                        ? 'Deselect All'
+                        : 'Select All'}
+                    </button>
+                  </div>
+
+                  <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 12px' }}>
+                    {filteredPermissions.map((permission) => {
+                      const checked = tempPermsForModule.includes(permission.permission_name);
+                      return (
+                        <label
+                          key={permission.permission_name}
+                          className={`permissionOption ${checked ? 'selected' : ''}`}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 9,
+                            padding: 9,
+                            borderRadius: 10,
+                            cursor: 'pointer',
+                            border: '1px solid transparent',
+                            background: checked ? '#F8FBFF' : 'transparent',
+                            borderColor: checked ? '#DBEAFE' : 'transparent',
+                            marginBottom: 4,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleTempPermission(permission.permission_name)}
+                            style={{ display: 'none' }}
+                          />
+                          <div
+                            className="permissionOptionIcon"
+                            style={{
+                              width: 37,
+                              height: 37,
+                              borderRadius: 9,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              background: `${getModuleColor(currentModule)}12`,
+                              color: getModuleColor(currentModule),
+                            }}
+                          >
+                            <FiKey size={16} />
+                          </div>
+                          <div className="permissionOptionInfo" style={{ flex: 1 }}>
+                            <strong style={{ fontSize: 11 }}>{permission.permission_name}</strong>
+                            {permission.description && <span style={{ fontSize: 9, color: '#94A3B8' }}>{permission.description}</span>}
+                          </div>
+                          <div
+                            className="customCheck"
+                            style={{
+                              width: 20,
+                              height: 20,
+                              borderRadius: 4,
+                              border: '1px solid #D5DCE5',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              background: checked ? '#2563EB' : 'white',
+                              color: 'white',
+                            }}
+                          >
+                            {checked && <FiCheck size={12} />}
+                          </div>
+                        </label>
                       );
-                    } else {
-                      setRemoveSearchQuery(
-                        e.target.value
-                      );
-                    }
-                  }}
-                />
-              </div>
+                    })}
+                    {filteredPermissions.length === 0 && (
+                      <div className="modalEmpty">
+                        <FiKey />
+                        <strong>No permissions found</strong>
+                        <span>Try a different search.</span>
+                      </div>
+                    )}
+                  </div>
 
-              <PermissionModalList
-                items={
-                  addPermissionModalOpen
-                    ? addPermissionsList
-                    : removePermissionsList
-                }
-                loading={
-                  addPermissionModalOpen
-                    ? loadingAddPermissions
-                    : loadingRemovePermissions
-                }
-                query={
-                  addPermissionModalOpen
-                    ? addSearchQuery
-                    : removeSearchQuery
-                }
-                selected={
-                  addPermissionModalOpen
-                    ? tempAddPermissions
-                    : tempRemovePermissions
-                }
-                onToggle={
-                  addPermissionModalOpen
-                    ? toggleTempAddPermission
-                    : toggleTempRemovePermission
-                }
-              />
-
-              <div className="modalFooter">
-                <span>
-                  {(
-                    addPermissionModalOpen
-                      ? tempAddPermissions
-                      : tempRemovePermissions
-                  ).length}{' '}
-                  selected
-                </span>
-
-                <div className="modalFooterActions">
-                  <button
-                    type="button"
-                    className="cancelModalButton"
-                    onClick={() => {
-                      setAddPermissionModalOpen(
-                        false
-                      );
-                      setRemovePermissionModalOpen(
-                        false
-                      );
-                    }}
-                  >
-                    Cancel
-                  </button>
-
-                  <button
-                    type="button"
-                    className={
-                      addPermissionModalOpen
-                        ? 'modalDoneButton'
-                        : 'modalDoneButton danger'
-                    }
-                    onClick={
-                      addPermissionModalOpen
-                        ? confirmAddPermissions
-                        : confirmRemovePermissions
-                    }
-                  >
-                    <FiCheck />
-                    Apply
-                  </button>
-                </div>
-              </div>
+                  <div className="modalFooter">
+                    <span>{tempPermsForModule.length} selected</span>
+                    <button type="button" className="modalDoneButton" onClick={saveModulePermissions}>
+                      Save Permissions
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}
-
       </div>
 
       <style jsx>{styles}</style>
     </>
-  );
-}
-
-// =========================================================
-// PERMISSION MODAL LIST
-// =========================================================
-
-function PermissionModalList({
-  items,
-  loading,
-  query,
-  selected,
-  onToggle,
-}: {
-  items: PermissionItem[];
-  loading: boolean;
-  query: string;
-  selected: string[];
-  onToggle: (permission: string) => void;
-}) {
-  if (loading) {
-    return (
-      <div className="modalLoading">
-        <span className="spinner small" />
-        Loading permissions...
-      </div>
-    );
-  }
-
-  const filtered = items.filter(
-    permission => {
-      const search =
-        query.toLowerCase();
-
-      return (
-        permission.permission_name
-          .toLowerCase()
-          .includes(search) ||
-        permission.description
-          ?.toLowerCase()
-          .includes(search)
-      );
-    }
-  );
-
-  if (filtered.length === 0) {
-    return (
-      <div className="modalEmpty">
-        <FiKey />
-
-        <strong>
-          No permissions found
-        </strong>
-
-        <span>
-          Try a different search term.
-        </span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="permissionModalList">
-      {filtered.map(permission => {
-        const checked =
-          selected.includes(
-            permission.permission_name
-          );
-
-        const color =
-          getModuleColor(
-            permission.module
-          );
-
-        return (
-          <label
-            key={
-              permission.permission_name
-            }
-            className={
-              checked
-                ? 'permissionOption selected'
-                : 'permissionOption'
-            }
-          >
-            <input
-              type="checkbox"
-              checked={checked}
-              onChange={() =>
-                onToggle(
-                  permission.permission_name
-                )
-              }
-            />
-
-            <div
-              className="permissionOptionIcon"
-              style={{
-                background:
-                  `${color}12`,
-                color,
-              }}
-            >
-              <FiKey />
-            </div>
-
-            <div className="permissionOptionInfo">
-              <strong>
-                {permission.permission_name}
-              </strong>
-
-              <span>
-                {permission.description ||
-                  'No description available'}
-              </span>
-            </div>
-
-            <div className="customCheck">
-              {checked && <FiCheck />}
-            </div>
-          </label>
-        );
-      })}
-    </div>
   );
 }
 
@@ -3062,11 +1999,6 @@ const styles = `
     border-color: #cbd5e1;
   }
 
-  .accessTag.removing {
-    border-color: #fecaca;
-    background: #fff7f7;
-  }
-
   .tagIcon {
     width: 36px;
     height: 36px;
@@ -3136,11 +2068,6 @@ const styles = `
   .tagAction:hover {
     color: #ef4444;
     background: #fee2e2;
-  }
-
-  .accessTag.removing .tagAction {
-    color: #16a34a;
-    background: #dcfce7;
   }
 
   .tagAction svg {
@@ -3293,11 +2220,6 @@ const styles = `
     background: #fafbfd;
   }
 
-  .permissionRow.removing {
-    border-color: #fecaca;
-    background: #fff7f7;
-  }
-
   .permissionModuleIcon {
     width: 35px;
     height: 35px;
@@ -3363,37 +2285,9 @@ const styles = `
     white-space: nowrap;
   }
 
-  .permissionRemove {
-    all: unset;
-
-    width: 27px;
-    height: 27px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 7px;
-
-    color: #94a3b8;
-
-    cursor: pointer;
-  }
-
-  .permissionRemove:hover {
-    background: #fee2e2;
-    color: #ef4444;
-  }
-
-  .permissionRow.removing .permissionRemove {
-    background: #dcfce7;
-    color: #16a34a;
-  }
-
-  .permissionRemove svg {
-    width: 13px;
-    height: 13px;
-  }
+  /* =====================================================
+     PERMISSION ACTIONS
+  ===================================================== */
 
   .permissionActions {
     display: grid;
@@ -3477,48 +2371,12 @@ const styles = `
     font-size: 9px;
   }
 
-  .moduleSelect {
-    all: unset;
-
-    width: 100%;
-
-    height: 40px;
-
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-
-    padding: 0 11px;
-
-    border: 1px solid #dfe5ed;
-    border-radius: 8px;
-
-    background: #fff;
-
-    color: #64748b;
-
-    cursor: pointer;
-
-    font-size: 10px;
-  }
-
-  .moduleSelect:hover {
-    border-color: #cbd5e1;
-  }
-
-  .moduleSelect svg {
-    width: 14px;
-    height: 14px;
-  }
-
   .choosePermissionButton {
     all: unset;
 
     width: 100%;
 
     height: 38px;
-
-    margin-top: 8px;
 
     display: flex;
     align-items: center;
@@ -3543,77 +2401,18 @@ const styles = `
     color: white;
   }
 
-  .choosePermissionButton:hover {
+  .choosePermissionButton:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .choosePermissionButton:hover:not(:disabled) {
     filter: brightness(.96);
   }
 
   .choosePermissionButton svg {
     width: 14px;
     height: 14px;
-  }
-
-  .choosePermissionButton span {
-    min-width: 18px;
-    height: 18px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    margin-left: 2px;
-
-    border-radius: 5px;
-
-    background: rgba(255,255,255,.18);
-
-    font-size: 8px;
-  }
-
-  .selectedPermissionTags {
-    display: flex;
-    flex-wrap: wrap;
-
-    gap: 5px;
-
-    margin-top: 9px;
-  }
-
-  .selectedTag {
-    max-width: 100%;
-
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-
-    padding: 5px 7px;
-
-    border-radius: 6px;
-
-    font-size: 8px;
-    font-weight: 600;
-  }
-
-  .selectedTag.add {
-    background: #dcfce7;
-    color: #166534;
-  }
-
-  .selectedTag.remove {
-    background: #fee2e2;
-    color: #991b1b;
-  }
-
-  .selectedTag button {
-    all: unset;
-
-    display: flex;
-
-    cursor: pointer;
-  }
-
-  .selectedTag button svg {
-    width: 10px;
-    height: 10px;
   }
 
   /* =====================================================
@@ -3793,10 +2592,6 @@ const styles = `
       0 25px 70px rgba(15,23,42,.2);
   }
 
-  .smallModal {
-    width: min(430px, 100%);
-  }
-
   .permissionModal {
     width: min(650px, 100%);
   }
@@ -3902,217 +2697,25 @@ const styles = `
     color: #a3adba;
   }
 
-  .moduleList,
-  .departmentList,
-  .permissionModalList {
-    overflow-y: auto;
-
-    padding: 7px 15px 12px;
-
-    flex: 1;
-  }
-
-  .moduleOption {
-    all: unset;
-
-    width: 100%;
-
-    display: flex;
-    align-items: center;
-
-    gap: 10px;
-
-    padding: 9px;
-
-    border-radius: 10px;
-
-    cursor: pointer;
-
-    transition:
-      background .15s ease;
-  }
-
-  .moduleOption:hover {
-    background: #f8fafc;
-  }
-
-  .moduleOptionIcon {
-    width: 38px;
-    height: 38px;
+  .modalLoading {
+    min-height: 180px;
 
     display: flex;
     align-items: center;
     justify-content: center;
-
-    flex-shrink: 0;
-
-    border-radius: 10px;
-
-    font-size: 18px;
-  }
-
-  .moduleOption > div:nth-child(2) {
-    min-width: 0;
-    flex: 1;
-
-    display: flex;
-    flex-direction: column;
-  }
-
-  .moduleOption strong {
-    color: #334155;
-
-    font-size: 11px;
-  }
-
-  .moduleOption span {
-    margin-top: 3px;
-
-    color: #94a3b8;
-
-    font-size: 9px;
-  }
-
-  .moduleOption > svg {
-    width: 15px;
-    height: 15px;
-
-    color: #cbd5e1;
-  }
-
-  /* =====================================================
-     DEPARTMENT OPTIONS
-  ===================================================== */
-
-  .departmentOption,
-  .permissionOption {
-    position: relative;
-
-    display: flex;
-    align-items: center;
 
     gap: 9px;
 
-    padding: 9px;
-
-    margin-bottom: 4px;
-
-    border: 1px solid transparent;
-    border-radius: 10px;
-
-    cursor: pointer;
-
-    transition:
-      background .15s ease,
-      border-color .15s ease;
-  }
-
-  .departmentOption:hover,
-  .permissionOption:hover {
-    background: #f8fafc;
-  }
-
-  .departmentOption.selected,
-  .permissionOption.selected {
-    border-color: #dbeafe;
-    background: #f8fbff;
-  }
-
-  .departmentOption input,
-  .permissionOption input {
-    position: absolute;
-
-    opacity: 0;
-
-    pointer-events: none;
-  }
-
-  .departmentIcon,
-  .permissionOptionIcon {
-    width: 37px;
-    height: 37px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    flex-shrink: 0;
-
-    border-radius: 9px;
-  }
-
-  .departmentInfo,
-  .permissionOptionInfo {
-    min-width: 0;
-    flex: 1;
-
-    display: flex;
-    flex-direction: column;
-  }
-
-  .departmentInfo strong,
-  .permissionOptionInfo strong {
-    overflow: hidden;
-
-    color: #334155;
-
-    font-size: 11px;
-
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .departmentInfo span,
-  .permissionOptionInfo span {
-    overflow: hidden;
-
-    margin-top: 3px;
-
     color: #94a3b8;
 
-    font-size: 9px;
-
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-size: 10px;
   }
 
-  .customCheck {
-    width: 20px;
-    height: 20px;
+  .spinner.small {
+    width: 18px;
+    height: 18px;
 
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border: 1px solid #d5dce5;
-    border-radius: 6px;
-
-    color: white;
-
-    flex-shrink: 0;
-  }
-
-  .selected .customCheck {
-    border-color: #2563eb;
-    background: #2563eb;
-  }
-
-  .customCheck svg {
-    width: 12px;
-    height: 12px;
-  }
-
-  /* =====================================================
-     PERMISSION OPTIONS
-  ===================================================== */
-
-  .permissionOptionIcon svg {
-    width: 16px;
-    height: 16px;
-  }
-
-  .permissionOptionInfo {
-    padding-right: 5px;
+    border-width: 2px;
   }
 
   .modalEmpty {
@@ -4149,27 +2752,6 @@ const styles = `
     font-size: 9px;
   }
 
-  .modalLoading {
-    min-height: 180px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    gap: 9px;
-
-    color: #94a3b8;
-
-    font-size: 10px;
-  }
-
-  .spinner.small {
-    width: 18px;
-    height: 18px;
-
-    border-width: 2px;
-  }
-
   .modalFooter {
     min-height: 62px;
 
@@ -4191,13 +2773,6 @@ const styles = `
     font-weight: 600;
   }
 
-  .modalFooterActions {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-  }
-
-  .cancelModalButton,
   .modalDoneButton {
     height: 35px;
 
@@ -4216,31 +2791,33 @@ const styles = `
 
     font-size: 9px;
     font-weight: 650;
-  }
-
-  .cancelModalButton {
-    border: 1px solid #dfe5ed;
-
-    background: white;
-
-    color: #64748b;
-  }
-
-  .modalDoneButton {
     border: none;
-
     background: #2563eb;
-
     color: white;
   }
 
-  .modalDoneButton.danger {
-    background: #dc2626;
+  .modalDoneButton:hover {
+    filter: brightness(0.95);
   }
 
-  .modalDoneButton svg {
-    width: 13px;
-    height: 13px;
+  .departmentOption,
+  .permissionOption {
+    transition: all 0.15s ease;
+  }
+
+  .departmentOption:hover,
+  .permissionOption:hover {
+    background: #f8fafc;
+  }
+
+  .departmentOption.selected,
+  .permissionOption.selected {
+    border-color: #dbeafe;
+    background: #f8fbff;
+  }
+
+  .customCheck {
+    transition: all 0.15s ease;
   }
 
   /* =====================================================
@@ -4447,14 +3024,6 @@ const styles = `
 
     .countBadge {
       display: none;
-    }
-
-    .permissionRow {
-      align-items: flex-start;
-    }
-
-    .permissionInfo span {
-      white-space: normal;
     }
 
     .saveBarInner {

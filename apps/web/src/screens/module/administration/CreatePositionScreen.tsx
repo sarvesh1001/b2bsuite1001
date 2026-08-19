@@ -19,12 +19,8 @@ import {
   FiZap,
 } from 'react-icons/fi';
 
-import {
-  createPosition,
-  getRootDepartments,
-  listWorkCenters,
-} from '@b2b/api-client';
-
+// ✅ Use axiosInstance directly
+import { axiosInstance } from '@b2b/api-client';
 import { useUserAuthStore } from '../../../store/userAuthStore';
 import { Switch } from '../../../components/Switch';
 import { SelectModal } from '../../../components/SelectModal';
@@ -105,6 +101,22 @@ export default function CreatePositionScreen() {
   const selectedWorkCenter = watch('work_center_code');
 
   // =======================================================
+  // HELPER: REQUEST HEADERS
+  // =======================================================
+
+  const getHeaders = () => {
+    if (!accessToken || !companyId || !deviceId) {
+      throw new Error('Missing authentication information');
+    }
+    return {
+      'X-Company-ID': companyId,
+      'X-Device-ID': deviceId,
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    };
+  };
+
+  // =======================================================
   // LOAD OPTIONS
   // =======================================================
 
@@ -118,32 +130,34 @@ export default function CreatePositionScreen() {
       setLoadingOptions(true);
 
       try {
-        const [deptRes, wcRes] = await Promise.all([
-          getRootDepartments(
-            companyId,
-            deviceId,
-            accessToken
-          ),
+        const headers = getHeaders();
 
-          listWorkCenters(
-            companyId,
-            deviceId,
-            {
+        // Fetch departments
+        const deptRes = await axiosInstance.get(
+          `/companies/${companyId}/departments/root`,
+          { headers }
+        );
+        const departmentsData = deptRes.data?.data || deptRes.data || [];
+        setDepartments(departmentsData);
+
+        // Fetch work centers
+        const wcRes = await axiosInstance.get(
+          `/companies/${companyId}/attendance/work-centers`,
+          {
+            headers,
+            params: {
               page: 1,
               page_size: 100,
             },
-            accessToken
-          ),
-        ]);
-
-        setDepartments(deptRes.data || []);
-        setWorkCenters(wcRes.data || []);
+          }
+        );
+        const workCentersData = wcRes.data?.data || wcRes.data || [];
+        setWorkCenters(workCentersData);
       } catch (error) {
         console.error(
           'Failed to load position options',
           error
         );
-
         alert(
           'Failed to load departments or work centers.'
         );
@@ -168,6 +182,8 @@ export default function CreatePositionScreen() {
     setLoading(true);
 
     try {
+      const headers = getHeaders();
+
       const payload = {
         ...data,
         company_id: companyId,
@@ -175,15 +191,14 @@ export default function CreatePositionScreen() {
           data.work_center_code ?? undefined,
       };
 
-      await createPosition(
-        companyId,
-        deviceId,
+      // ✅ Use axiosInstance.post directly
+      await axiosInstance.post(
+        `/companies/${companyId}/positions`,
         payload,
-        accessToken
+        { headers }
       );
 
       alert('Position created successfully.');
-
       router.back();
     } catch (error: any) {
       console.error(

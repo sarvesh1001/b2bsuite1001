@@ -22,13 +22,8 @@ import {
   FiZap,
 } from 'react-icons/fi';
 
-import {
-  addEmployee,
-  addManager,
-  listRoles,
-  listPositions,
-  getEmployeeSuggestions,
-} from '@b2b/api-client';
+// ✅ Use axiosInstance directly
+import { axiosInstance } from '@b2b/api-client';
 
 import { useUserAuthStore } from '../../../store/userAuthStore';
 import {
@@ -362,6 +357,14 @@ const ReportsToModal: React.FC<
   const [loading, setLoading] =
     useState(false);
 
+  // Helper headers
+  const getHeaders = () => ({
+    'X-Company-ID': companyId,
+    'X-Device-ID': deviceId,
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${accessToken}`,
+  });
+
   useEffect(() => {
     if (!visible) {
       setSearch('');
@@ -382,16 +385,19 @@ const ReportsToModal: React.FC<
     setLoading(true);
 
     try {
-      const res =
-        await getEmployeeSuggestions(
-          companyId,
-          deviceId,
-          text.trim(),
-          20,
-          accessToken
-        );
+      const response = await axiosInstance.get(
+        `/companies/${companyId}/employees/suggestions`,
+        {
+          headers: getHeaders(),
+          params: {
+            query: text.trim(),
+            limit: 20,
+          },
+        }
+      );
 
-      setSuggestions(res.data || []);
+      const data = response.data?.data || response.data || [];
+      setSuggestions(data);
     } catch (error) {
       console.error(
         'Failed to search employees',
@@ -595,6 +601,14 @@ export default function AddEmployeeScreen() {
     setSelectedReportsToName,
   ] = useState('');
 
+  // Helper headers
+  const getHeaders = () => ({
+    'X-Company-ID': companyId!,
+    'X-Device-ID': deviceId!,
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${accessToken!}`,
+  });
+
   // =======================================================
   // FORM
   // =======================================================
@@ -650,39 +664,39 @@ export default function AddEmployeeScreen() {
       try {
         setLoadingOptions(true);
 
-        const [
-          rolesRes,
-          positionsRes,
-        ] = await Promise.all([
-          listRoles(
-            companyId,
-            deviceId,
-            {
+        // Fetch roles
+        const rolesResponse = await axiosInstance.get(
+          `/companies/${companyId}/rbac/roles`,
+          {
+            headers: getHeaders(),
+            params: {
               page: 1,
               limit: 100,
             },
-            accessToken
-          ),
+          }
+        );
+        const rolesData = rolesResponse.data?.data?.roles ||
+          rolesResponse.data?.roles ||
+          rolesResponse.data ||
+          [];
+        setRoles(rolesData);
 
-          listPositions(
-            companyId,
-            deviceId,
-            {
+        // Fetch positions
+        const positionsResponse = await axiosInstance.get(
+          `/companies/${companyId}/positions`,
+          {
+            headers: getHeaders(),
+            params: {
               limit: 100,
               offset: 0,
             },
-            accessToken
-          ),
-        ]);
-
-        setRoles(
-          rolesRes.data?.roles || []
+          }
         );
-
-        setPositions(
-          positionsRes.data?.positions ||
-            []
-        );
+        const positionsData = positionsResponse.data?.data?.positions ||
+          positionsResponse.data?.positions ||
+          positionsResponse.data ||
+          [];
+        setPositions(positionsData);
       } catch (error) {
         console.error(
           'Failed to load options',
@@ -746,21 +760,16 @@ export default function AddEmployeeScreen() {
           data.position_id || undefined,
       };
 
-      if (data.is_manager) {
-        await addManager(
-          companyId,
-          deviceId,
-          payload,
-          accessToken
-        );
-      } else {
-        await addEmployee(
-          companyId,
-          deviceId,
-          payload,
-          accessToken
-        );
-      }
+      // Determine endpoint based on is_manager
+      const endpoint = data.is_manager
+        ? `/companies/${companyId}/rbac/managers`
+        : `/companies/${companyId}/rbac/employees`;
+
+      await axiosInstance.post(
+        endpoint,
+        payload,
+        { headers: getHeaders() }
+      );
 
       alert(
         `${data.is_manager ? 'Manager' : 'Employee'} added successfully`
@@ -1488,7 +1497,7 @@ export default function AddEmployeeScreen() {
 }
 
 // =========================================================
-// STYLES
+// STYLES (unchanged from original)
 // =========================================================
 
 const styles = `

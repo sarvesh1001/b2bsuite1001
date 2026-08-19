@@ -1,10 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import {
-  listWorkCenters,
-  searchWorkCenters,
-  deleteWorkCenter,
-} from '@b2b/api-client';
+
+// ✅ Use axiosInstance directly – no idempotent wrappers
+import { axiosInstance } from '@b2b/api-client';
 import { useUserAuthStore } from '../../../store/userAuthStore';
 
 import {
@@ -50,6 +48,14 @@ export default function WorkCentersListScreen() {
 
   const [deletingCode, setDeletingCode] = useState<string | null>(null);
 
+  // Helper to get headers
+  const getHeaders = () => ({
+    'X-Company-ID': companyId!,
+    'X-Device-ID': deviceId!,
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${accessToken!}`,
+  });
+
   // =========================================================
   // FETCH WORK CENTERS
   // =========================================================
@@ -70,17 +76,18 @@ export default function WorkCentersListScreen() {
     }
 
     try {
-      const res = await listWorkCenters(
-        companyId,
-        deviceId,
+      const response = await axiosInstance.get(
+        `/companies/${companyId}/attendance/work-centers`,
         {
-          page: 1,
-          page_size: 100,
-        },
-        accessToken
+          headers: getHeaders(),
+          params: {
+            page: 1,
+            page_size: 100,
+          },
+        }
       );
 
-      const data = res.data || [];
+      const data: WorkCenter[] = response.data?.data || response.data || [];
 
       setWorkCenters(data);
       setFilteredCenters(data);
@@ -88,7 +95,8 @@ export default function WorkCentersListScreen() {
       console.error('Failed to load work centers:', error);
 
       alert(
-        error?.message ||
+        error?.response?.data?.message ||
+          error?.message ||
           'Failed to load work centers'
       );
     } finally {
@@ -99,6 +107,7 @@ export default function WorkCentersListScreen() {
 
   useEffect(() => {
     fetchWorkCenters();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken, companyId, deviceId]);
 
   // =========================================================
@@ -120,19 +129,19 @@ export default function WorkCentersListScreen() {
     setSearching(true);
 
     try {
-      const res = await searchWorkCenters(
-        companyId,
-        deviceId,
+      const response = await axiosInstance.get(
+        `/companies/${companyId}/attendance/work-centers/search`,
         {
-          name: query,
-          page: 1,
-          page_size: 100,
-        },
-        accessToken
+          headers: getHeaders(),
+          params: {
+            name: query,
+            page: 1,
+            page_size: 100,
+          },
+        }
       );
 
-      const data = res.data || [];
-
+      const data = response.data?.data || response.data || [];
       setFilteredCenters(data);
     } catch (error) {
       // Local fallback
@@ -165,7 +174,7 @@ export default function WorkCentersListScreen() {
   };
 
   // =========================================================
-  // DELETE
+  // DELETE – OPTIMISTIC UPDATE (mobile‑style)
   // =========================================================
 
   const handleDelete = async (code: string) => {
@@ -191,14 +200,21 @@ export default function WorkCentersListScreen() {
     setDeletingCode(code);
 
     try {
-      await deleteWorkCenter(
-        companyId,
-        deviceId,
-        code,
-        accessToken
+      await axiosInstance.delete(
+        `/companies/${companyId}/attendance/work-centers/${code}`,
+        { headers: getHeaders() }
       );
 
-      await fetchWorkCenters();
+      // ✅ Optimistic update – remove from both lists immediately
+      setWorkCenters((prev) =>
+        prev.filter((wc) => wc.work_center_code !== code)
+      );
+      setFilteredCenters((prev) =>
+        prev.filter((wc) => wc.work_center_code !== code)
+      );
+
+      // Optional: show a success toast here if you have a toast system
+      // toast.success('Work center deleted');
     } catch (error: any) {
       console.error(
         'Failed to delete work center:',
@@ -206,9 +222,12 @@ export default function WorkCentersListScreen() {
       );
 
       alert(
-        error?.message ||
+        error?.response?.data?.message ||
+          error?.message ||
           'Failed to delete work center'
       );
+      // ❌ On error, we do NOT revert because the item was never removed from state
+      // (the filter only ran after the successful delete)
     } finally {
       setDeletingCode(null);
     }
@@ -678,7 +697,7 @@ export default function WorkCentersListScreen() {
 }
 
 // =========================================================
-// STYLES
+// STYLES (unchanged – same as original)
 // =========================================================
 
 const styles = `
