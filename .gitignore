@@ -1,6 +1,11 @@
 # --- Dependencies ---
 node_modules/
 .pnpm-store/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
 
 # --- Build outputs ---
 dist/
@@ -12,10 +17,34 @@ out/
 .vercel/
 
 # --- Native platforms ---
-apps/*/android/app/build/
-apps/*/ios/Pods/
-apps/*/ios/build/
-apps/*/ios/DerivedData/
+# Android
+**/android/.gradle/
+**/android/.kotlin/
+**/android/build/
+**/android/app/build/
+**/android/.cxx/
+# iOS
+**/ios/Pods/
+**/ios/build/
+**/ios/DerivedData/
+**/ios/Frameworks/
+**/ios/*.xcworkspace/xcuserdata/
+**/ios/*.xcodeproj/xcuserdata/
+**/ios/.xcode.env.local
+**/ios/Podfile.lock.bak
+**/ios/Podfile.save
+*.hprof
+
+# --- Native SDK / model blobs (DO NOT COMMIT) ---
+**/tmp/
+**/tmp/onnx/
+**/assets/models/
+**/*.onnx
+**/*.aar
+**/*.so
+**/*.a
+**/*.jar
+**/*.tflite
 
 # --- Environment files ---
 .env
@@ -28,13 +57,14 @@ apps/*/ios/DerivedData/
 # --- Logs ---
 logs/
 *.log
-npm-debug.log*  
+npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
 # --- OS metadata ---
 .DS_Store
+**/.DS_Store
 Thumbs.db
 
 # --- IDE / Editor ---
@@ -62,6 +92,12 @@ coverage/
 # --- TypeScript ---
 *.tsbuildinfo
 
+# --- Generated docs / scratch ---
+combined_code.md
+gfdd.txt
+clean*.py
+combine_code.py
+
 # --- Package manager lock files (optional) ---
 # If you want to keep lock files committed, comment out the next line:
 # pnpm-lock.yaml
@@ -71,5 +107,5 @@ coverage/
 # --- Misc ---
 *.iml
 *.bak
-*.orig.git.old/
+*.orig
 .git.old/
