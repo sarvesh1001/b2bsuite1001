@@ -155,6 +155,15 @@ const MODULE_CONFIG: Record<
 
 // =========================================================
 // FEATURE CONFIGURATION
+//
+// Ownership model (SAP-like split):
+//   - Administration = security & facilities (Roles, Locations)
+//   - HR = people + org structure + leave + contact (Phone Numbers)
+//   - AvatarManagement = top-level, reached from ModuleGridScreen header
+//
+// Legacy admin employee screens (EmployeesList, AddEmployee, EditEmployee,
+// EmployeeDetail) are still registered in the navigator for deep links
+// but are intentionally NOT surfaced here. HR owns employee CRUD.
 // =========================================================
 
 const FEATURES_CONFIG: Record<
@@ -168,67 +177,169 @@ const FEATURES_CONFIG: Record<
 > = {
   administration: [
     {
-      key: 'workCenters',
-      label: 'Work Centers',
-      icon: 'factory',
-      screen: 'WorkCentersList',
-    },
-
-    {
-      key: 'departments',
-      label: 'Departments',
-      icon: 'office-building',
-      screen: 'DepartmentsList',
-    },
-
-    {
       key: 'roles',
       label: 'Roles',
       icon: 'account-key',
       screen: 'RolesList',
     },
-
     {
-      key: 'positions',
-      label: 'Positions',
-      icon: 'badge-account',
-      screen: 'PositionsList',
+      key: 'locations',
+      label: 'Locations',
+      icon: 'map-marker-multiple-outline',
+      screen: 'LocationList',
     },
+  ],
 
+  // ============================================================
+  // HR MODULE FEATURES
+  // ============================================================
+  hr: [
     {
-      key: 'employees',
+      key: 'employeeList',
       label: 'Employees',
       icon: 'account-multiple',
-      screen: 'EmployeesList',
+      screen: 'HREmployeeList',
     },
-
+    {
+      key: 'employeeStats',
+      label: 'Statistics',
+      icon: 'chart-bar',
+      screen: 'HREmployeeStats',
+    },
     {
       key: 'employeeSearch',
       label: 'Employee Search',
       icon: 'account-search',
       screen: 'EmployeeSearch',
     },
-
-    {
-      key: 'avatars',
-      label: 'My Avatars',
-      icon: 'account-circle',
-      screen: 'AvatarManagement',
-    },
-
     {
       key: 'userPhone',
-      label: 'User Phone',
+      label: 'Phone Numbers',
       icon: 'phone',
       screen: 'UserPhone',
     },
+    {
+      key: 'positions',
+      label: 'Positions',
+      icon: 'badge-account',
+      screen: 'PositionsList',
+    },
+    {
+      key: 'departments',
+      label: 'Departments',
+      icon: 'office-building',
+      screen: 'DepartmentsList',
+    },
+    {
+      key: 'workCenters',
+      label: 'Work Centers',
+      icon: 'factory',
+      screen: 'WorkCentersList',
+    },
+    {
+      key: 'orgUnits',
+      label: 'Org Units',
+      icon: 'sitemap',
+      screen: 'OrgUnitList',
+    },
+    {
+      key: 'leaveRequests',
+      label: 'Leave Requests',
+      icon: 'calendar-edit',
+      screen: 'LeaveRequestList',
+    },
+    {
+      key: 'leaveBalance',
+      label: 'Leave Balance',
+      icon: 'calendar-check',
+      screen: 'LeaveBalanceScreen',
+    },
+    {
+      key: 'leaveAdmin',
+      label: 'Leave Admin',
+      // was 'calendar-settings' — invalid MaterialCommunityIcons name
+      icon: 'calendar-cog',
+      screen: 'PolicyConfigList',
+    },
   ],
 
-  // Add other modules here
-  //
-  // hr: [
-  //   ...
-  // ],
+  // ============================================================
+  // PAYROLL MODULE FEATURES
+  // ============================================================
+  payroll: [
+    {
+      key: 'payrollDashboard',
+      label: 'Dashboard',
+      icon: 'view-dashboard',
+      screen: 'PayrollDashboard',
+    },
+    {
+      key: 'adjustments',
+      label: 'Adjustments',
+      icon: 'file-document-edit',
+      screen: 'AdjustmentList',
+    },
+    {
+      key: 'attendanceRules',
+      label: 'Attendance Rules',
+      icon: 'calendar-clock',
+      screen: 'AttendanceRuleList',
+    },
+    {
+      key: 'components',
+      label: 'Components',
+      icon: 'format-list-bulleted',
+      screen: 'ComponentList',
+    },
+    {
+      key: 'fines',
+      label: 'Fines',
+      icon: 'cash-remove',
+      screen: 'FineList',
+    },
+    {
+      key: 'locks',
+      label: 'Payroll Locks',
+      icon: 'lock',
+      screen: 'LockList',
+    },
+    {
+      key: 'reports',
+      label: 'Reports',
+      icon: 'chart-line',
+      screen: 'PayrollRegister',
+    },
+    {
+      key: 'runs',
+      label: 'Payroll Runs',
+      icon: 'play-circle',
+      screen: 'PayrollRunList',
+    },
+    {
+      key: 'statutory',
+      label: 'Statutory Profiles',
+      icon: 'account-tie',
+      screen: 'ProfileList',
+    },
+    {
+      key: 'structures',
+      label: 'Salary Structures',
+      icon: 'layers',
+      screen: 'StructureList',
+    },
+    {
+      key: 'taxDeclarations',
+      label: 'Tax Declarations',
+      icon: 'file-document',
+      screen: 'DeclarationList',
+    },
+    {
+      key: 'trends',
+      label: 'Payroll Trends',
+      icon: 'chart-bar',
+      screen: 'CompanyPayrollTrend',
+    },
+  ],
 };
 
 // =========================================================
@@ -685,474 +796,250 @@ export default function ModuleDetailScreen() {
 // =========================================================
 
 const styles = StyleSheet.create({
-
-  // =======================================================
-  // PAGE
-  // =======================================================
-
   container: {
     flex: 1,
-
-    backgroundColor:
-      BACKGROUND_COLOR,
+    backgroundColor: BACKGROUND_COLOR,
   },
-
   listContent: {
     paddingBottom: 35,
   },
-
   columnWrapper: {
     paddingHorizontal: 20,
-
-    justifyContent:
-      'space-between',
-
+    justifyContent: 'space-between',
     marginBottom: 12,
   },
-
-  // =======================================================
-  // HEADER
-  // =======================================================
-
   header: {
     paddingHorizontal: 20,
-
     paddingTop: 10,
     paddingBottom: 24,
-
     borderBottomLeftRadius: 25,
     borderBottomRightRadius: 25,
-
     shadowColor: '#000',
-
-    shadowOffset: {
-      width: 0,
-      height: 5,
-    },
-
+    shadowOffset: { width: 0, height: 5 },
     shadowOpacity: 0.12,
-
     shadowRadius: 12,
-
     elevation: 5,
   },
-
   headerTop: {
     flexDirection: 'row',
-
     alignItems: 'center',
   },
-
   backIconButton: {
     width: 39,
     height: 39,
-
     alignItems: 'center',
-    justifyContent:
-      'center',
-
+    justifyContent: 'center',
     borderRadius: 11,
-
-    backgroundColor:
-      'rgba(255,255,255,0.13)',
-
+    backgroundColor: 'rgba(255,255,255,0.13)',
     borderWidth: 1,
-
-    borderColor:
-      'rgba(255,255,255,0.18)',
+    borderColor: 'rgba(255,255,255,0.18)',
   },
-
   headerBreadcrumb: {
     flex: 1,
-
     marginLeft: 11,
   },
-
   headerSmallText: {
-    color:
-      'rgba(255,255,255,0.60)',
-
+    color: 'rgba(255,255,255,0.60)',
     fontSize: 8,
-
     fontWeight: '700',
-
     letterSpacing: 1,
   },
-
   headerBreadcrumbTitle: {
     marginTop: 2,
-
     color: '#FFFFFF',
-
     fontSize: 12,
-
     fontWeight: '600',
   },
-
   headerGridButton: {
     width: 39,
     height: 39,
-
     alignItems: 'center',
-    justifyContent:
-      'center',
-
+    justifyContent: 'center',
     borderRadius: 11,
-
-    backgroundColor:
-      'rgba(255,255,255,0.13)',
-
+    backgroundColor: 'rgba(255,255,255,0.13)',
     borderWidth: 1,
-
-    borderColor:
-      'rgba(255,255,255,0.18)',
+    borderColor: 'rgba(255,255,255,0.18)',
   },
-
-  // =======================================================
-  // MODULE HERO
-  // =======================================================
-
   moduleHero: {
     marginTop: 23,
-
     flexDirection: 'row',
-
     alignItems: 'center',
   },
-
   moduleHeroIcon: {
     width: 66,
     height: 66,
-
     alignItems: 'center',
-    justifyContent:
-      'center',
-
+    justifyContent: 'center',
     borderRadius: 18,
-
     borderWidth: 1,
-
-    borderColor:
-      'rgba(255,255,255,0.20)',
+    borderColor: 'rgba(255,255,255,0.20)',
   },
-
   moduleEmoji: {
     position: 'absolute',
-
     fontSize: 0,
   },
-
   moduleHeroText: {
     flex: 1,
-
     marginLeft: 15,
   },
-
   moduleHeroTitle: {
     color: '#FFFFFF',
-
     fontSize: 25,
-
     lineHeight: 30,
-
     fontWeight: '700',
-
     letterSpacing: -0.3,
   },
-
   moduleHeroSubtitle: {
     marginTop: 5,
-
-    color:
-      'rgba(255,255,255,0.70)',
-
+    color: 'rgba(255,255,255,0.70)',
     fontSize: 10,
-
     lineHeight: 15,
-
     fontWeight: '500',
   },
-
-  // =======================================================
-  // SUMMARY
-  // =======================================================
-
   summaryRow: {
     marginHorizontal: 20,
-
     marginTop: 22,
-
     marginBottom: 14,
-
     flexDirection: 'row',
-
     alignItems: 'center',
-
-    justifyContent:
-      'space-between',
+    justifyContent: 'space-between',
   },
-
   summaryText: {
     flex: 1,
   },
-
   summaryTitle: {
     color: TEXT_PRIMARY,
-
     fontSize: 18,
-
     fontWeight: '700',
   },
-
   summarySubtitle: {
     marginTop: 3,
-
     color: TEXT_SECONDARY,
-
     fontSize: 10,
-
     fontWeight: '500',
   },
-
   countBadge: {
     flexDirection: 'row',
-
     alignItems: 'center',
-
     paddingHorizontal: 10,
-
     paddingVertical: 7,
-
     borderRadius: 9,
-
     borderWidth: 1,
   },
-
   countNumber: {
     fontSize: 14,
-
     fontWeight: '700',
   },
-
   countLabel: {
     marginLeft: 4,
-
     fontSize: 9,
-
     fontWeight: '600',
   },
-
-  // =======================================================
-  // FEATURE CARD
-  // =======================================================
-
   featureCard: {
     minHeight: 157,
-
     padding: 17,
-
     position: 'relative',
-
     overflow: 'hidden',
-
     borderRadius: 16,
-
-    backgroundColor:
-      CARD_BACKGROUND,
-
+    backgroundColor: CARD_BACKGROUND,
     borderWidth: 1,
-
-    borderColor:
-      BORDER_COLOR,
-
+    borderColor: BORDER_COLOR,
     shadowColor: '#000',
-
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.045,
-
     shadowRadius: 8,
-
     elevation: 2,
   },
-
   cardAccent: {
     position: 'absolute',
-
     top: 0,
-
     left: 0,
-
     right: 0,
-
     height: 3,
   },
-
-  // =======================================================
-  // NUMBER
-  // =======================================================
-
   cardNumber: {
     position: 'absolute',
-
     top: 15,
-
     right: 15,
-
     color: '#CBD5E1',
-
     fontSize: 9,
-
     fontWeight: '800',
-
     letterSpacing: 0.5,
   },
-
-  // =======================================================
-  // ICON
-  // =======================================================
-
   featureIcon: {
     width: 48,
     height: 48,
-
     alignItems: 'center',
-    justifyContent:
-      'center',
-
+    justifyContent: 'center',
     borderRadius: 13,
   },
-
-  // =======================================================
-  // CONTENT
-  // =======================================================
-
   featureContent: {
     marginTop: 15,
-
     paddingRight: 28,
   },
-
   featureLabel: {
     color: TEXT_PRIMARY,
-
     fontSize: 14,
-
     lineHeight: 18,
-
     fontWeight: '700',
   },
-
   featureDescription: {
     marginTop: 4,
-
     color: TEXT_SECONDARY,
-
     fontSize: 9,
-
     lineHeight: 13,
-
     fontWeight: '500',
   },
-
-  // =======================================================
-  // ARROW
-  // =======================================================
-
   featureArrow: {
     position: 'absolute',
-
     right: 14,
-
     bottom: 14,
-
     width: 28,
     height: 28,
-
     alignItems: 'center',
-    justifyContent:
-      'center',
-
+    justifyContent: 'center',
     borderRadius: 8,
   },
-
-  // =======================================================
-  // EMPTY STATE
-  // =======================================================
-
   emptyScreen: {
     flex: 1,
-
     alignItems: 'center',
-
-    justifyContent:
-      'center',
-
+    justifyContent: 'center',
     paddingHorizontal: 30,
   },
-
   emptyIcon: {
     width: 72,
     height: 72,
-
     alignItems: 'center',
-    justifyContent:
-      'center',
-
+    justifyContent: 'center',
     borderRadius: 20,
   },
-
   emptyTitle: {
     marginTop: 20,
-
     color: TEXT_PRIMARY,
-
     fontSize: 21,
-
     fontWeight: '700',
   },
-
   emptyDescription: {
     maxWidth: 330,
-
     marginTop: 8,
-
     color: TEXT_SECONDARY,
-
     fontSize: 12,
-
     lineHeight: 19,
-
     textAlign: 'center',
   },
-
   backButton: {
     marginTop: 23,
-
     minHeight: 42,
-
     paddingHorizontal: 17,
-
     flexDirection: 'row',
-
     alignItems: 'center',
-
-    justifyContent:
-      'center',
-
+    justifyContent: 'center',
     borderRadius: 10,
-
     gap: 7,
   },
-
   backButtonText: {
     color: '#FFFFFF',
-
     fontSize: 12,
-
     fontWeight: '700',
   },
 });

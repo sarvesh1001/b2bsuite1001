@@ -1,6 +1,6 @@
 // apps/prayantra-b2b/src/screens/module/administration/AddEmployeeScreen.tsx
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 import {
   View,
@@ -22,7 +22,6 @@ import {
 
 import {
   Text,
-  TextInput,
   Switch,
 } from 'react-native-paper';
 
@@ -53,12 +52,13 @@ import {
 
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
+// 👇 Unified member API + locations + username lookup (matches UserPhoneScreen)
 import {
-  addEmployee,
-  addManager,
+  addMember,
   listRoles,
   listPositions,
-  getEmployeeSuggestions,
+  listLocations,
+  findEmployeeByUsername,
 } from '@b2b/api-client';
 
 import {
@@ -69,6 +69,9 @@ import {
   Role,
   Position,
   CompanyEmployee,
+  AccessibleLocation,
+  LocationAccessScope,
+  LocationAccessLevel,
 } from '@b2b/shared-types';
 
 import {
@@ -106,9 +109,17 @@ const schema = z.object({
       'Phone must be at least 10 digits'
     ),
 
-  username: z.string().optional(),
+  // Backend requires these on the unified endpoint
+  username: z
+    .string()
+    .min(3, 'Username must be at least 3 characters')
+    .max(100, 'Username is too long')
+    .regex(/^[a-zA-Z0-9]+$/, 'Letters and digits only'),
 
-  full_name: z.string().optional(),
+  full_name: z
+    .string()
+    .min(1, 'Full name is required')
+    .max(255, 'Full name is too long'),
 
   employee_id: z.string().optional(),
 
@@ -139,6 +150,17 @@ type NavigationProp =
   >;
 
 // =========================================================
+// SELECTED LOCATION LOCAL TYPE
+// =========================================================
+
+type SelectedLocationEntry = {
+  location_id: string;
+  access_level: LocationAccessLevel;
+};
+
+const DEFAULT_ACCESS_LEVEL: LocationAccessLevel = 'VIEW';
+
+// =========================================================
 // SCREEN
 // =========================================================
 
@@ -165,6 +187,9 @@ export default function AddEmployeeScreen() {
   const [positions, setPositions] =
     useState<Position[]>([]);
 
+  const [locations, setLocations] =
+    useState<AccessibleLocation[]>([]);
+
   const [loadingOptions, setLoadingOptions] =
     useState(true);
 
@@ -181,21 +206,43 @@ export default function AddEmployeeScreen() {
   const [reportsToModalVisible, setReportsToModalVisible] =
     useState(false);
 
+  const [primaryLocationModalVisible, setPrimaryLocationModalVisible] =
+    useState(false);
+
+  const [selectedLocationsModalVisible, setSelectedLocationsModalVisible] =
+    useState(false);
+
   // -------------------------------------------------------
-  // Reports To
+  // Reports To — username lookup (same pattern as UserPhoneScreen)
   // -------------------------------------------------------
 
   const [reportsToSearch, setReportsToSearch] =
     useState('');
 
-  const [reportsToSuggestions, setReportsToSuggestions] =
-    useState<CompanyEmployee[]>([]);
+  const [reportsToResult, setReportsToResult] =
+    useState<CompanyEmployee | null>(null);
+
+  const [reportsToSearched, setReportsToSearched] =
+    useState(false);
 
   const [loadingReportsTo, setLoadingReportsTo] =
     useState(false);
 
   const [selectedReportsToName, setSelectedReportsToName] =
     useState('');
+
+  // -------------------------------------------------------
+  // Location state (kept outside react-hook-form — non-trivial shape)
+  // -------------------------------------------------------
+
+  const [primaryLocationId, setPrimaryLocationId] =
+    useState<string>('');
+
+  const [locationScope, setLocationScope] =
+    useState<LocationAccessScope | ''>('');
+
+  const [selectedLocations, setSelectedLocations] =
+    useState<SelectedLocationEntry[]>([]);
 
   // =======================================================
   // FORM
@@ -237,7 +284,7 @@ export default function AddEmployeeScreen() {
     watch('reports_to');
 
   // =======================================================
-  // FETCH ROLES + POSITIONS
+  // FETCH ROLES + POSITIONS + LOCATIONS
   // =======================================================
 
   useEffect(() => {
@@ -258,6 +305,7 @@ export default function AddEmployeeScreen() {
           const [
             rolesRes,
             positionsRes,
+            locationsRes,
           ] = await Promise.all([
             listRoles(
               companyId,
@@ -278,6 +326,10 @@ export default function AddEmployeeScreen() {
               },
               accessToken
             ),
+
+            listLocations(companyId, 1, 100).catch(
+              () => ({ data: { locations: [] } } as any)
+            ),
           ]);
 
           setRoles(
@@ -287,6 +339,18 @@ export default function AddEmployeeScreen() {
           setPositions(
             positionsRes.data?.positions || []
           );
+
+          // API shape may be { locations: [...] } or an array directly
+          const rawLocations =
+            (locationsRes as any)?.locations ||
+            (locationsRes as any)?.data?.locations ||
+            (Array.isArray(locationsRes) ? locationsRes : []);
+
+          setLocations(
+            (rawLocations || []).filter(
+              (l: AccessibleLocation) => l?.is_active !== false
+            )
+          );
         } catch (error) {
           console.error(
             'Failed to load employee options:',
@@ -295,7 +359,7 @@ export default function AddEmployeeScreen() {
 
           Alert.alert(
             'Unable to Load',
-            'Failed to load roles and positions. Please try again.'
+            'Failed to load roles, positions, and locations. Please try again.'
           );
         } finally {
           setLoadingOptions(false);
@@ -316,26 +380,24 @@ export default function AddEmployeeScreen() {
   useEffect(() => {
     if (!reportsToModalVisible) {
       setReportsToSearch('');
-      setReportsToSuggestions([]);
+      setReportsToResult(null);
+      setReportsToSearched(false);
     }
   }, [
     reportsToModalVisible,
   ]);
 
   // =======================================================
-  // SEARCH REPORTS TO
+  // LOOKUP REPORTS TO (exact username — same as UserPhoneScreen)
   // =======================================================
 
-  const handleReportsToSearch =
-    async (text: string) => {
-      setReportsToSearch(text);
-
-      if (text.length < 2) {
-        setReportsToSuggestions([]);
-        return;
-      }
+  const handleReportsToLookup =
+    async () => {
+      const username =
+        reportsToSearch.trim();
 
       if (
+        !username ||
         !accessToken ||
         !companyId ||
         !deviceId
@@ -344,29 +406,52 @@ export default function AddEmployeeScreen() {
       }
 
       setLoadingReportsTo(true);
+      setReportsToResult(null);
+      setReportsToSearched(true);
 
       try {
         const response =
-          await getEmployeeSuggestions(
+          await findEmployeeByUsername(
             companyId,
             deviceId,
-            text,
-            20,
+            username,
             accessToken
           );
 
-        setReportsToSuggestions(
-          response.data || []
-        );
-      } catch (error) {
+        const employee =
+          (response.data as any)
+            ?.employee || null;
+
+        setReportsToResult(employee);
+      } catch (error: any) {
         console.error(
-          'Failed to search employees:',
+          'Employee lookup failed:',
           error
         );
+
+        // 404 → show empty state instead of a hard alert
+        if (error?.response?.status === 404) {
+          setReportsToResult(null);
+        } else {
+          Alert.alert(
+            'Search Failed',
+            'Could not search for the employee. Please try again.'
+          );
+        }
       } finally {
         setLoadingReportsTo(false);
       }
     };
+
+  // =======================================================
+  // CLEAR REPORTS TO LOOKUP
+  // =======================================================
+
+  const clearReportsToLookup = () => {
+    setReportsToSearch('');
+    setReportsToResult(null);
+    setReportsToSearched(false);
+  };
 
   // =======================================================
   // SELECT REPORTS TO
@@ -392,6 +477,102 @@ export default function AddEmployeeScreen() {
     };
 
   // =======================================================
+  // LOCATION HELPERS
+  // =======================================================
+
+  const primaryLocation =
+    useMemo(
+      () =>
+        locations.find(
+          l => l.location_id === primaryLocationId
+        ),
+      [locations, primaryLocationId]
+    );
+
+  const selectedLocationObjects =
+    useMemo(() => {
+      return selectedLocations
+        .map(entry => {
+          const loc = locations.find(
+            l => l.location_id === entry.location_id
+          );
+          return loc
+            ? { ...entry, location: loc }
+            : null;
+        })
+        .filter(
+          (
+            x
+          ): x is SelectedLocationEntry & {
+            location: AccessibleLocation;
+          } => Boolean(x)
+        );
+    }, [locations, selectedLocations]);
+
+  const isLocationSelected = (locationId: string) =>
+    selectedLocations.some(
+      sl => sl.location_id === locationId
+    );
+
+  const getLocationAccessLevel = (
+    locationId: string
+  ): LocationAccessLevel | undefined =>
+    selectedLocations.find(
+      sl => sl.location_id === locationId
+    )?.access_level;
+
+  const toggleSelectedLocation = (locationId: string) => {
+    setSelectedLocations(prev => {
+      const exists = prev.some(
+        sl => sl.location_id === locationId
+      );
+      if (exists) {
+        return prev.filter(
+          sl => sl.location_id !== locationId
+        );
+      }
+      return [
+        ...prev,
+        {
+          location_id: locationId,
+          access_level: DEFAULT_ACCESS_LEVEL,
+        },
+      ];
+    });
+  };
+
+  const setLocationAccessLevel = (
+    locationId: string,
+    accessLevel: LocationAccessLevel
+  ) => {
+    setSelectedLocations(prev =>
+      prev.map(sl =>
+        sl.location_id === locationId
+          ? { ...sl, access_level: accessLevel }
+          : sl
+      )
+    );
+  };
+
+  // When user picks SELECTED but has no primary, default primary to the
+  // first selected location (backend requires primary when scope is SELECTED).
+  useEffect(() => {
+    if (
+      locationScope === 'SELECTED' &&
+      !primaryLocationId &&
+      selectedLocations.length > 0
+    ) {
+      setPrimaryLocationId(
+        selectedLocations[0].location_id
+      );
+    }
+  }, [
+    locationScope,
+    primaryLocationId,
+    selectedLocations,
+  ]);
+
+  // =======================================================
   // SUBMIT
   // =======================================================
 
@@ -410,17 +591,85 @@ export default function AddEmployeeScreen() {
         return;
       }
 
+      // ---- Location validation (client-side, before hitting the API) ----
+      if (
+        locationScope === 'PRIMARY' &&
+        !primaryLocationId
+      ) {
+        Alert.alert(
+          'Location Required',
+          'Please pick a primary location or change the access scope.'
+        );
+        return;
+      }
+
+      if (
+        locationScope === 'SELECTED' &&
+        selectedLocations.length === 0
+      ) {
+        Alert.alert(
+          'Locations Required',
+          'Please select at least one location for SELECTED scope.'
+        );
+        return;
+      }
+
       const cleanPhone =
         data.phone
           .trim()
           .replace(/\s/g, '');
 
+      // ---- Location block (only included when the user touched it) ----
+      const locationBlock: Record<string, unknown> = {};
+      const hasLocationInput =
+        !!primaryLocationId ||
+        !!locationScope ||
+        selectedLocations.length > 0;
+
+      if (hasLocationInput) {
+        if (primaryLocationId) {
+          locationBlock.primary_location_id =
+            primaryLocationId;
+        }
+
+        let effectiveScope: LocationAccessScope =
+          (locationScope as LocationAccessScope) ||
+          (selectedLocations.length > 0
+            ? 'SELECTED'
+            : primaryLocationId
+            ? 'PRIMARY'
+            : 'ALL');
+
+        if (
+          effectiveScope === 'PRIMARY' &&
+          !primaryLocationId
+        ) {
+          effectiveScope = 'ALL';
+        }
+
+        locationBlock.location_access_scope =
+          effectiveScope;
+
+        if (
+          effectiveScope === 'SELECTED' &&
+          selectedLocations.length > 0
+        ) {
+          locationBlock.selected_locations =
+            selectedLocations.map(sl => ({
+              location_id: sl.location_id,
+              access_level: sl.access_level,
+            }));
+        }
+      }
+
+      // 👇 Single unified payload for POST /rbac/members
       const payload = {
+        member_type: (data.is_manager
+          ? 'manager'
+          : 'employee') as 'manager' | 'employee',
         phone: cleanPhone,
-        username:
-          data.username?.trim() || undefined,
-        full_name:
-          data.full_name?.trim() || undefined,
+        username: data.username.trim(),
+        full_name: data.full_name.trim(),
         employee_id:
           data.employee_id?.trim() || undefined,
         role_id: data.role_id,
@@ -428,26 +677,18 @@ export default function AddEmployeeScreen() {
           data.reports_to || undefined,
         position_id:
           data.position_id || undefined,
+        ...locationBlock,
       };
 
       setLoading(true);
 
       try {
-        if (data.is_manager) {
-          await addManager(
-            companyId,
-            deviceId,
-            payload,
-            accessToken
-          );
-        } else {
-          await addEmployee(
-            companyId,
-            deviceId,
-            payload,
-            accessToken
-          );
-        }
+        await addMember(
+          companyId,
+          deviceId,
+          payload as any,
+          accessToken
+        );
 
         Alert.alert(
           'Success',
@@ -462,7 +703,7 @@ export default function AddEmployeeScreen() {
         );
       } catch (error: any) {
         console.error(
-          'Add employee error:',
+          'Add member error:',
           error
         );
 
@@ -470,7 +711,7 @@ export default function AddEmployeeScreen() {
           'Unable to Add',
           error?.response?.data?.message ||
             error?.message ||
-            'Something went wrong while adding the employee.'
+            'Something went wrong while adding the member.'
         );
       } finally {
         setLoading(false);
@@ -531,7 +772,7 @@ export default function AddEmployeeScreen() {
           </Text>
 
           <Text style={styles.loadingSubtitle}>
-            Loading roles and positions...
+            Loading roles, positions, and locations...
           </Text>
 
         </View>
@@ -597,7 +838,7 @@ export default function AddEmployeeScreen() {
 
             <View style={styles.headerText}>
               <Text style={styles.headerTitle}>
-                Add Employee
+                Add Member
               </Text>
 
               <Text style={styles.headerSubtitle}>
@@ -733,6 +974,10 @@ export default function AddEmployeeScreen() {
                   value={value || ''}
                   onChangeText={onChange}
                   onBlur={onBlur}
+                  error={
+                    errors.full_name?.message
+                  }
+                  required
                 />
               )}
             />
@@ -756,6 +1001,10 @@ export default function AddEmployeeScreen() {
                   value={value || ''}
                   onChangeText={onChange}
                   onBlur={onBlur}
+                  error={
+                    errors.username?.message
+                  }
+                  required
                 />
               )}
             />
@@ -895,7 +1144,7 @@ export default function AddEmployeeScreen() {
                       styles.placeholderText
                     }
                   >
-                    Search for manager or supervisor
+                    Search for manager by username
                   </Text>
                 )}
 
@@ -941,6 +1190,221 @@ export default function AddEmployeeScreen() {
           </View>
 
           {/* =================================================
+              LOCATION ACCESS (OPTIONAL)
+          ================================================= */}
+
+          <SectionHeader
+            icon="map-marker-outline"
+            title="Location Access"
+            subtitle="Optional — assign primary & allowed locations"
+          />
+
+          <View style={styles.formCard}>
+
+            {/* PRIMARY LOCATION */}
+
+            <TouchableOpacity
+              style={[
+                styles.reportsField,
+                styles.inputDivider,
+              ]}
+              onPress={() =>
+                setPrimaryLocationModalVisible(true)
+              }
+              activeOpacity={0.75}
+            >
+
+              <View style={styles.fieldIcon}>
+                <Icon
+                  name="map-marker-outline"
+                  size={21}
+                  color={PRIMARY_COLOR}
+                />
+              </View>
+
+              <View style={styles.reportsContent}>
+
+                <Text style={styles.fieldLabel}>
+                  Primary Location
+                </Text>
+
+                {primaryLocation ? (
+                  <>
+                    <Text
+                      numberOfLines={1}
+                      style={styles.selectedValue}
+                    >
+                      {primaryLocation.location_name}
+                      {primaryLocation.location_code
+                        ? ` (${primaryLocation.location_code})`
+                        : ''}
+                    </Text>
+
+                    <Text style={styles.selectedHint}>
+                      Tap to change
+                    </Text>
+                  </>
+                ) : (
+                  <Text style={styles.placeholderText}>
+                    Select a primary location
+                  </Text>
+                )}
+
+              </View>
+
+              <Icon
+                name="chevron-right"
+                size={22}
+                color={TEXT_SECONDARY}
+              />
+
+            </TouchableOpacity>
+
+            {primaryLocationId && (
+              <TouchableOpacity
+                style={styles.removeManager}
+                onPress={() =>
+                  setPrimaryLocationId('')
+                }
+              >
+                <Icon
+                  name="close-circle-outline"
+                  size={15}
+                  color={ERROR_COLOR}
+                />
+
+                <Text style={styles.removeManagerText}>
+                  Clear primary location
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            {/* ACCESS SCOPE */}
+
+            <View style={styles.scopeBlock}>
+
+              <Text style={styles.scopeLabel}>
+                Location Access Scope
+              </Text>
+
+              <View style={styles.scopeRow}>
+
+                {(
+                  [
+                    { key: 'PRIMARY', label: 'Primary Only' },
+                    { key: 'SELECTED', label: 'Selected' },
+                    { key: 'ALL', label: 'All Locations' },
+                  ] as const
+                ).map(opt => {
+                  const active = locationScope === opt.key;
+                  return (
+                    <TouchableOpacity
+                      key={opt.key}
+                      onPress={() => {
+                        setLocationScope(opt.key);
+                        if (opt.key !== 'SELECTED') {
+                          setSelectedLocations([]);
+                        }
+                      }}
+                      style={[
+                        styles.scopeChip,
+                        active && styles.scopeChipActive,
+                      ]}
+                      activeOpacity={0.75}
+                    >
+                      <Text
+                        style={[
+                          styles.scopeChipText,
+                          active && styles.scopeChipTextActive,
+                        ]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+
+              </View>
+
+              <Text style={styles.scopeHint}>
+                {locationScope === ''
+                  ? 'Leave empty to auto-resolve: PRIMARY if a primary is set, otherwise ALL.'
+                  : locationScope === 'PRIMARY'
+                  ? 'Member will only be able to access their primary location.'
+                  : locationScope === 'SELECTED'
+                  ? 'Pick the specific locations this member can access.'
+                  : 'Member will have access to every active company location.'}
+              </Text>
+
+            </View>
+
+            {/* SELECTED LOCATIONS LIST */}
+
+            {locationScope === 'SELECTED' && (
+              <TouchableOpacity
+                style={styles.selectedLocationsField}
+                onPress={() =>
+                  setSelectedLocationsModalVisible(true)
+                }
+                activeOpacity={0.75}
+              >
+                <View style={styles.fieldIcon}>
+                  <Icon
+                    name="format-list-bulleted"
+                    size={21}
+                    color={PRIMARY_COLOR}
+                  />
+                </View>
+
+                <View style={styles.reportsContent}>
+                  <Text style={styles.fieldLabel}>
+                    Selected Locations
+                  </Text>
+
+                  {selectedLocations.length > 0 ? (
+                    <>
+                      <Text
+                        numberOfLines={2}
+                        style={styles.selectedValue}
+                      >
+                        {selectedLocationObjects
+                          .map(
+                            sl =>
+                              `${sl.location.location_name} · ${
+                                sl.access_level === 'MANAGE'
+                                  ? 'Manage'
+                                  : 'View'
+                              }`
+                          )
+                          .join(', ')}
+                      </Text>
+
+                      <Text style={styles.selectedHint}>
+                        {selectedLocations.length} location
+                        {selectedLocations.length === 1
+                          ? ''
+                          : 's'}{' '}
+                        · tap to edit
+                      </Text>
+                    </>
+                  ) : (
+                    <Text style={styles.placeholderText}>
+                      Choose one or more locations
+                    </Text>
+                  )}
+                </View>
+
+                <Icon
+                  name="chevron-right"
+                  size={22}
+                  color={TEXT_SECONDARY}
+                />
+              </TouchableOpacity>
+            )}
+
+          </View>
+
+          {/* =================================================
               SUMMARY
           ================================================= */}
 
@@ -973,6 +1437,16 @@ export default function AddEmployeeScreen() {
                   : ''}
                 {selectedPosition
                   ? ` • ${selectedPosition.title}`
+                  : ''}
+                {primaryLocation
+                  ? ` • 📍 ${primaryLocation.location_name}`
+                  : ''}
+                {selectedLocations.length > 0
+                  ? ` • ${selectedLocations.length} location${
+                      selectedLocations.length === 1
+                        ? ''
+                        : 's'
+                    }`
                   : ''}
               </Text>
 
@@ -1121,7 +1595,233 @@ export default function AddEmployeeScreen() {
       />
 
       {/* ===================================================
-          REPORTS TO MODAL
+          PRIMARY LOCATION MODAL
+      =================================================== */}
+
+      <SelectionModal
+        visible={primaryLocationModalVisible}
+        title="Select Primary Location"
+        icon="map-marker-outline"
+        data={locations}
+        selectedId={primaryLocationId}
+        getId={item => item.location_id}
+        renderLabel={item =>
+          item.location_code
+            ? `${item.location_name} (${item.location_code})`
+            : item.location_name
+        }
+        onClose={() =>
+          setPrimaryLocationModalVisible(false)
+        }
+        onSelect={item => {
+          setPrimaryLocationId(item.location_id);
+          setPrimaryLocationModalVisible(false);
+        }}
+      />
+
+      {/* ===================================================
+          SELECTED LOCATIONS MODAL (multi-select + access level)
+      =================================================== */}
+
+      <Modal
+        visible={selectedLocationsModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() =>
+          setSelectedLocationsModalVisible(false)
+        }
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+
+            <View style={styles.modalHeader}>
+              <View style={styles.modalTitleContainer}>
+                <View style={styles.modalTitleIcon}>
+                  <Icon
+                    name="format-list-bulleted"
+                    size={20}
+                    color={PRIMARY_COLOR}
+                  />
+                </View>
+                <View>
+                  <Text style={styles.modalTitle}>
+                    Select Locations
+                  </Text>
+                  <Text style={styles.modalSubtitle}>
+                    {selectedLocations.length} selected
+                  </Text>
+                </View>
+              </View>
+
+              <TouchableOpacity
+                onPress={() =>
+                  setSelectedLocationsModalVisible(false)
+                }
+                style={styles.modalClose}
+              >
+                <Icon
+                  name="check"
+                  size={20}
+                  color={PRIMARY_COLOR}
+                />
+              </TouchableOpacity>
+            </View>
+
+            <FlatList
+              data={locations}
+              keyExtractor={item => item.location_id}
+              contentContainerStyle={styles.modalList}
+              renderItem={({ item }) => {
+                const active = isLocationSelected(
+                  item.location_id
+                );
+                const level = getLocationAccessLevel(
+                  item.location_id
+                );
+
+                return (
+                  <View
+                    style={[
+                      styles.selectionItem,
+                      styles.locationSelectionItem,
+                      active &&
+                        styles.selectionItemSelected,
+                    ]}
+                  >
+                    <TouchableOpacity
+                      style={styles.locationSelectionHead}
+                      onPress={() =>
+                        toggleSelectedLocation(
+                          item.location_id
+                        )
+                      }
+                      activeOpacity={0.75}
+                    >
+                      <View
+                        style={[
+                          styles.selectionIcon,
+                          active && {
+                            backgroundColor: `${PRIMARY_COLOR}15`,
+                          },
+                        ]}
+                      >
+                        <Icon
+                          name="map-marker-outline"
+                          size={18}
+                          color={
+                            active
+                              ? PRIMARY_COLOR
+                              : '#7D8794'
+                          }
+                        />
+                      </View>
+
+                      <Text
+                        numberOfLines={2}
+                        style={[
+                          styles.selectionText,
+                          active &&
+                            styles.selectionTextSelected,
+                        ]}
+                      >
+                        {item.location_name}
+                        {item.location_code
+                          ? ` (${item.location_code})`
+                          : ''}
+                      </Text>
+
+                      {active && (
+                        <View style={styles.checkCircle}>
+                          <Icon
+                            name="check"
+                            size={15}
+                            color="#FFFFFF"
+                          />
+                        </View>
+                      )}
+                    </TouchableOpacity>
+
+                    {active && (
+                      <View style={styles.levelChipsRow}>
+                        {(
+                          [
+                            { key: 'VIEW', label: 'View only' },
+                            { key: 'MANAGE', label: 'Manage' },
+                          ] as const
+                        ).map(opt => {
+                          const chipActive =
+                            level === opt.key;
+                          return (
+                            <TouchableOpacity
+                              key={opt.key}
+                              onPress={() =>
+                                setLocationAccessLevel(
+                                  item.location_id,
+                                  opt.key
+                                )
+                              }
+                              style={[
+                                styles.levelChip,
+                                chipActive &&
+                                  styles.levelChipActive,
+                              ]}
+                              activeOpacity={0.75}
+                            >
+                              <Icon
+                                name={
+                                  opt.key === 'MANAGE'
+                                    ? 'shield-edit-outline'
+                                    : 'eye-outline'
+                                }
+                                size={13}
+                                color={
+                                  chipActive
+                                    ? PRIMARY_COLOR
+                                    : TEXT_SECONDARY
+                                }
+                              />
+                              <Text
+                                style={[
+                                  styles.levelChipText,
+                                  chipActive &&
+                                    styles.levelChipTextActive,
+                                ]}
+                              >
+                                {opt.label}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </View>
+                );
+              }}
+              ListEmptyComponent={
+                <View style={styles.modalEmpty}>
+                  <View style={styles.modalEmptyIcon}>
+                    <Icon
+                      name="map-marker-off-outline"
+                      size={26}
+                      color={PRIMARY_COLOR}
+                    />
+                  </View>
+                  <Text style={styles.modalEmptyTitle}>
+                    No locations available
+                  </Text>
+                  <Text style={styles.modalEmptyText}>
+                    Create a location first from Company Settings.
+                  </Text>
+                </View>
+              }
+            />
+
+          </View>
+        </View>
+      </Modal>
+
+      {/* ===================================================
+          REPORTS TO MODAL — username lookup (mirrors UserPhoneScreen)
       =================================================== */}
 
       <Modal
@@ -1188,7 +1888,7 @@ export default function AddEmployeeScreen() {
                       styles.modalSubtitle
                     }
                   >
-                    Search employees
+                    Search by exact username
                   </Text>
                 </View>
 
@@ -1215,7 +1915,7 @@ export default function AddEmployeeScreen() {
 
             </View>
 
-            {/* SEARCH */}
+            {/* SEARCH INPUT */}
 
             <View
               style={
@@ -1224,7 +1924,7 @@ export default function AddEmployeeScreen() {
             >
 
               <Icon
-                name="magnify"
+                name="account-outline"
                 size={21}
                 color={
                   TEXT_SECONDARY
@@ -1235,7 +1935,7 @@ export default function AddEmployeeScreen() {
                 style={
                   styles.searchInput
                 }
-                placeholder="Search name or username"
+                placeholder="Enter username"
                 placeholderTextColor={
                   '#9AA4B2'
                 }
@@ -1243,18 +1943,23 @@ export default function AddEmployeeScreen() {
                   reportsToSearch
                 }
                 onChangeText={
-                  handleReportsToSearch
+                  setReportsToSearch
                 }
+                onSubmitEditing={
+                  handleReportsToLookup
+                }
+                returnKeyType="search"
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!loadingReportsTo}
                 autoFocus
               />
 
               {reportsToSearch.length >
                 0 && (
                 <TouchableOpacity
-                  onPress={() =>
-                    handleReportsToSearch(
-                      ''
-                    )
+                  onPress={
+                    clearReportsToLookup
                   }
                 >
                   <Icon
@@ -1269,197 +1974,248 @@ export default function AddEmployeeScreen() {
 
             </View>
 
-            {/* RESULTS */}
+            {/* SEARCH BUTTON */}
 
-            {loadingReportsTo ? (
-              <View
-                style={
-                  styles.searchLoading
-                }
-              >
+            <TouchableOpacity
+              style={[
+                styles.searchLookupButton,
+                (!reportsToSearch.trim() ||
+                  loadingReportsTo) &&
+                  styles.searchLookupButtonDisabled,
+              ]}
+              onPress={
+                handleReportsToLookup
+              }
+              disabled={
+                !reportsToSearch.trim() ||
+                loadingReportsTo
+              }
+              activeOpacity={0.85}
+            >
+              {loadingReportsTo ? (
                 <ActivityIndicator
                   size="small"
-                  color={
-                    PRIMARY_COLOR
+                  color="#FFFFFF"
+                />
+              ) : (
+                <>
+                  <Icon
+                    name="magnify"
+                    size={18}
+                    color="#FFFFFF"
+                  />
+                  <Text
+                    style={
+                      styles.searchLookupButtonText
+                    }
+                  >
+                    Search Employee
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            {/* HINT */}
+
+            <View
+              style={
+                styles.searchHintRow
+              }
+            >
+              <Icon
+                name="information-outline"
+                size={14}
+                color="#94A3B8"
+              />
+              <Text
+                style={
+                  styles.searchHintText
+                }
+              >
+                Enter the exact employee
+                username.
+              </Text>
+            </View>
+
+            {/* RESULTS */}
+
+            {loadingReportsTo ? null : reportsToResult ? (
+              <TouchableOpacity
+                style={styles.employeeResult}
+                onPress={() =>
+                  selectReportsTo(
+                    reportsToResult
+                  )
+                }
+                activeOpacity={0.75}
+              >
+
+                <UserAvatar
+                  userId={
+                    reportsToResult.user_id
+                  }
+                  username={
+                    reportsToResult.username
+                  }
+                  fullName={
+                    reportsToResult.full_name
+                  }
+                  size={46}
+                  style={
+                    styles.avatar
                   }
                 />
 
-                <Text
+                <View
                   style={
-                    styles.searchLoadingText
+                    styles.employeeResultInfo
                   }
                 >
-                  Searching employees...
+
+                  <Text
+                    numberOfLines={1}
+                    style={
+                      styles.employeeName
+                    }
+                  >
+                    {reportsToResult.full_name ||
+                      reportsToResult.username ||
+                      reportsToResult.user_id}
+                  </Text>
+
+                  {reportsToResult.username &&
+                    reportsToResult.full_name && (
+                      <Text
+                        style={
+                          styles.employeeMeta
+                        }
+                      >
+                        @
+                        {
+                          reportsToResult.username
+                        }
+                      </Text>
+                    )}
+
+                  <View
+                    style={
+                      styles.employeeMetaRow
+                    }
+                  >
+
+                    {reportsToResult.employee_id && (
+                      <Text
+                        style={
+                          styles.employeeMeta
+                        }
+                      >
+                        ID:{' '}
+                        {
+                          reportsToResult.employee_id
+                        }
+                      </Text>
+                    )}
+
+                    {reportsToResult.role_name && (
+                      <Text
+                        style={
+                          styles.employeeRole
+                        }
+                      >
+                        {
+                          reportsToResult.role_name
+                        }
+                      </Text>
+                    )}
+
+                  </View>
+
+                </View>
+
+                <Icon
+                  name="chevron-right"
+                  size={20}
+                  color={
+                    '#B4BCC8'
+                  }
+                />
+
+              </TouchableOpacity>
+            ) : reportsToSearched ? (
+              <View
+                style={
+                  styles.modalEmpty
+                }
+              >
+                <View
+                  style={
+                    styles.modalEmptyIcon
+                  }
+                >
+                  <Icon
+                    name="account-search-outline"
+                    size={27}
+                    color={
+                      PRIMARY_COLOR
+                    }
+                  />
+                </View>
+
+                <Text
+                  style={
+                    styles.modalEmptyTitle
+                  }
+                >
+                  No employee found
+                </Text>
+
+                <Text
+                  style={
+                    styles.modalEmptyText
+                  }
+                >
+                  No employee matches that
+                  username. Try a different
+                  one.
                 </Text>
               </View>
             ) : (
-              <FlatList
-                data={
-                  reportsToSuggestions
+              <View
+                style={
+                  styles.modalEmpty
                 }
-                keyExtractor={item =>
-                  item.user_id
-                }
-                keyboardShouldPersistTaps="handled"
-                contentContainerStyle={
-                  styles.modalList
-                }
-                renderItem={({
-                  item,
-                }) => (
-                  <TouchableOpacity
-                    style={
-                      styles.employeeResult
+              >
+                <View
+                  style={
+                    styles.modalEmptyIcon
+                  }
+                >
+                  <Icon
+                    name="text-search"
+                    size={27}
+                    color={
+                      PRIMARY_COLOR
                     }
-                    onPress={() =>
-                      selectReportsTo(
-                        item
-                      )
-                    }
-                    activeOpacity={
-                      0.75
-                    }
-                  >
+                  />
+                </View>
 
-                    <UserAvatar
-                      userId={
-                        item.user_id
-                      }
-                      username={
-                        item.username
-                      }
-                      fullName={
-                        item.full_name
-                      }
-                      size={46}
-                      style={
-                        styles.avatar
-                      }
-                    />
+                <Text
+                  style={
+                    styles.modalEmptyTitle
+                  }
+                >
+                  Search for a manager
+                </Text>
 
-                    <View
-                      style={
-                        styles.employeeResultInfo
-                      }
-                    >
-
-                      <Text
-                        numberOfLines={
-                          1
-                        }
-                        style={
-                          styles.employeeName
-                        }
-                      >
-                        {item.full_name ||
-                          item.username ||
-                          item.user_id}
-                      </Text>
-
-                      {item.username &&
-                        item.full_name && (
-                          <Text
-                            style={
-                              styles.employeeMeta
-                            }
-                          >
-                            @{item.username}
-                          </Text>
-                        )}
-
-                      <View
-                        style={
-                          styles.employeeMetaRow
-                        }
-                      >
-
-                        {item.employee_id && (
-                          <Text
-                            style={
-                              styles.employeeMeta
-                            }
-                          >
-                            ID: {
-                              item.employee_id
-                            }
-                          </Text>
-                        )}
-
-                        {item.role_name && (
-                          <Text
-                            style={
-                              styles.employeeRole
-                            }
-                          >
-                            {item.role_name}
-                          </Text>
-                        )}
-
-                      </View>
-
-                    </View>
-
-                    <Icon
-                      name="chevron-right"
-                      size={20}
-                      color={
-                        '#B4BCC8'
-                      }
-                    />
-
-                  </TouchableOpacity>
-                )}
-                ListEmptyComponent={
-                  <View
-                    style={
-                      styles.modalEmpty
-                    }
-                  >
-
-                    <View
-                      style={
-                        styles.modalEmptyIcon
-                      }
-                    >
-                      <Icon
-                        name={
-                          reportsToSearch.length >=
-                          2
-                            ? 'account-search-outline'
-                            : 'text-search'
-                        }
-                        size={27}
-                        color={
-                          PRIMARY_COLOR
-                        }
-                      />
-                    </View>
-
-                    <Text
-                      style={
-                        styles.modalEmptyTitle
-                      }
-                    >
-                      {reportsToSearch.length >=
-                      2
-                        ? 'No employees found'
-                        : 'Search for a manager'}
-                    </Text>
-
-                    <Text
-                      style={
-                        styles.modalEmptyText
-                      }
-                    >
-                      {reportsToSearch.length >=
-                      2
-                        ? 'Try a different name or username.'
-                        : 'Enter at least 2 characters to begin searching.'}
-                    </Text>
-
-                  </View>
-                }
-              />
+                <Text
+                  style={
+                    styles.modalEmptyText
+                  }
+                >
+                  Type the username and tap
+                  Search Employee.
+                </Text>
+              </View>
             )}
 
           </View>
@@ -1910,6 +2666,8 @@ function SelectionModal<
                         icon ===
                         'briefcase-outline'
                           ? 'briefcase-outline'
+                          : icon === 'map-marker-outline'
+                          ? 'map-marker-outline'
                           : 'shield-account-outline'
                       }
                       size={18}
@@ -2405,10 +3163,20 @@ const styles = StyleSheet.create({
   },
 
   // =======================================================
-  // REPORTS TO
+  // REPORTS TO / LOCATION ROWS
   // =======================================================
 
   reportsField: {
+    minHeight: 75,
+
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    paddingVertical: 13,
+  },
+
+  selectedLocationsField: {
     minHeight: 75,
 
     flexDirection: 'row',
@@ -2464,6 +3232,60 @@ const styles = StyleSheet.create({
     fontSize: 9,
 
     fontWeight: '600',
+  },
+
+  // =======================================================
+  // LOCATION SCOPE CHIPS
+  // =======================================================
+
+  scopeBlock: {
+    paddingTop: 12,
+    paddingBottom: 14,
+  },
+
+  scopeLabel: {
+    color: TEXT_PRIMARY,
+    fontSize: 10,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+
+  scopeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+
+  scopeChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#E1E6ED',
+    backgroundColor: '#F8FAFC',
+  },
+
+  scopeChipActive: {
+    backgroundColor: `${PRIMARY_COLOR}12`,
+    borderColor: PRIMARY_COLOR,
+  },
+
+  scopeChipText: {
+    color: TEXT_SECONDARY,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+
+  scopeChipTextActive: {
+    color: PRIMARY_COLOR,
+    fontWeight: '700',
+  },
+
+  scopeHint: {
+    marginTop: 8,
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    lineHeight: 13,
   },
 
   // =======================================================
@@ -2823,6 +3645,54 @@ const styles = StyleSheet.create({
     marginLeft: 7,
   },
 
+  // location row layout + access level chips
+  locationSelectionItem: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    paddingVertical: 8,
+  },
+
+  locationSelectionHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+
+  levelChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 8,
+    marginLeft: 48,
+  },
+
+  levelChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#E1E6ED',
+    backgroundColor: '#F8FAFC',
+  },
+
+  levelChipActive: {
+    backgroundColor: `${PRIMARY_COLOR}12`,
+    borderColor: PRIMARY_COLOR,
+  },
+
+  levelChipText: {
+    color: TEXT_SECONDARY,
+    fontSize: 10,
+    fontWeight: '600',
+  },
+
+  levelChipTextActive: {
+    color: PRIMARY_COLOR,
+    fontWeight: '700',
+  },
+
   // =======================================================
   // SEARCH
   // =======================================================
@@ -2838,7 +3708,7 @@ const styles = StyleSheet.create({
 
     marginTop: 13,
 
-    marginBottom: 7,
+    marginBottom: 10,
 
     paddingHorizontal: 12,
 
@@ -2864,7 +3734,55 @@ const styles = StyleSheet.create({
 
     color: TEXT_PRIMARY,
 
+    fontSize: 13,
+  },
+
+  // NEW: matches UserPhoneScreen's search button
+  searchLookupButton: {
+    minHeight: 46,
+
+    marginHorizontal: 16,
+
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+
+    gap: 7,
+
+    borderRadius: 11,
+
+    backgroundColor:
+      PRIMARY_COLOR,
+  },
+
+  searchLookupButtonDisabled: {
+    opacity: 0.45,
+  },
+
+  searchLookupButtonText: {
+    color: '#FFFFFF',
+
     fontSize: 12,
+
+    fontWeight: '700',
+  },
+
+  searchHintRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+
+    marginHorizontal: 18,
+    marginTop: 10,
+    marginBottom: 4,
+  },
+
+  searchHintText: {
+    color: '#94A3B8',
+
+    fontSize: 9,
+
+    fontWeight: '500',
   },
 
   searchLoading: {
@@ -2892,13 +3810,18 @@ const styles = StyleSheet.create({
 
     alignItems: 'center',
 
-    paddingHorizontal: 8,
+    marginHorizontal: 14,
+    marginTop: 8,
 
+    paddingHorizontal: 10,
     paddingVertical: 10,
 
-    marginBottom: 2,
-
     borderRadius: 12,
+
+    borderWidth: 1,
+    borderColor: `${PRIMARY_COLOR}22`,
+
+    backgroundColor: `${PRIMARY_COLOR}06`,
   },
 
   employeeResultInfo: {
@@ -2996,6 +3919,7 @@ const styles = StyleSheet.create({
 
     lineHeight: 15,
   },
+
   fieldIcon: {
     width: 37,
     height: 37,

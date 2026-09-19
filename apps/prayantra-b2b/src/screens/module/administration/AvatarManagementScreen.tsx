@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Alert,
   ActivityIndicator,
+  Image,                       // ← added for rendering the actual avatar image
 } from 'react-native';
 
 import {
@@ -69,6 +70,97 @@ type ViewMode = 'active' | 'deleted';
 
 
 // =========================================================
+// HELPERS
+// =========================================================
+
+const TAG = '[AvatarUpload]';
+
+function log(...args: any[]) {
+  // eslint-disable-next-line no-console
+  console.log(TAG, ...args);
+}
+
+function logError(...args: any[]) {
+  // eslint-disable-next-line no-console
+  console.error(TAG, ...args);
+}
+
+/**
+ * Normalize the upload URL returned by the backend.
+ *
+ * The backend may return either:
+ *   - an absolute URL:  "http://host:port/avatars/upload"  (dev)
+ *   - a relative path:  "/avatars/upload"                  (prod, same-origin)
+ *
+ * If it's absolute we must NOT prepend the API baseURL, otherwise axios
+ * concatenates them and produces garbage like:
+ *   "https://api.example.com/api/v1http://localhost:8080/avatars/upload"
+ *
+ * This helper detects the case and returns the URL as-is for absolute
+ * URLs, or wrapped through `uploadAvatarFile` for relative ones.
+ */
+function isAbsoluteUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+/**
+ * Extract a readable description from an axios / fetch error so logs and
+ * alerts are actually useful. `Network Error` from axios is especially
+ * useless without context.
+ */
+function describeError(error: any): {
+  message: string;
+  code?: string;
+  status?: number;
+  url?: string;
+  method?: string;
+  responseData?: any;
+  isNetworkError: boolean;
+} {
+  const isNetworkError =
+    !error?.response &&
+    (error?.code === 'ERR_NETWORK' ||
+      error?.message === 'Network Error' ||
+      error?.message === 'Network request failed');
+
+  return {
+    message: error?.message || 'Unknown error',
+    code: error?.code,
+    status: error?.response?.status,
+    url: error?.config?.url,
+    method: error?.config?.method,
+    responseData: error?.response?.data,
+    isNetworkError,
+  };
+}
+
+/**
+ * Pick a location id that is safe to send as `X-Location-ID` on a write.
+ *
+ * Rules:
+ *   - If the app has a specific `locationId`, use it.
+ *   - If the app is in "ALL locations" mode, fall back to the JWT's
+ *     `primary_location_id` (specific location) — the backend rejects
+ *     writes with `X-Location-ID: ALL`.
+ *   - Otherwise return undefined and let the backend default.
+ */
+const ALL_LOCATIONS_SENTINEL = 'ALL';
+
+function resolveLocationForWrite(
+  storeLocationId?: string | null,
+  primaryLocationId?: string | null,
+): string | undefined {
+  if (storeLocationId && storeLocationId !== ALL_LOCATIONS_SENTINEL) {
+    return storeLocationId;
+  }
+  if (primaryLocationId) {
+    return primaryLocationId;
+  }
+  return undefined;
+}
+
+
+// =========================================================
 // SCREEN
 // =========================================================
 
@@ -78,7 +170,15 @@ export default function AvatarManagementScreen() {
     accessToken,
     deviceId,
     companyId,
-  } = useUserAuthStore();
+    locationId,
+    primaryLocationId,
+  } = useUserAuthStore() as {
+    accessToken: string | null;
+    deviceId: string | null;
+    companyId: string | null;
+    locationId?: string | null;
+    primaryLocationId?: string | null;
+  };
 
   const queryClient = useQueryClient();
 
@@ -155,12 +255,16 @@ export default function AvatarManagementScreen() {
 
     queryFn: async () => {
 
+      log('fetching active avatars', { deviceId, companyId });
+
       const result =
         await listMyAvatars(
           deviceId,
           accessToken,
           companyId
         );
+
+      log('active avatars fetched:', Array.isArray(result) ? result.length : result);
 
       return result;
     },
@@ -189,12 +293,16 @@ export default function AvatarManagementScreen() {
 
     queryFn: async () => {
 
+      log('fetching inactive avatars', { deviceId, companyId });
+
       const result =
         await listInactiveAvatars(
           deviceId,
           accessToken,
           companyId
         );
+
+      log('inactive avatars fetched:', Array.isArray(result) ? result.length : result);
 
       return result;
     },
@@ -239,16 +347,22 @@ export default function AvatarManagementScreen() {
       }: {
         avatarId: string;
         idempotencyKey: string;
-      }) =>
-        setAvatarPrimary(
+      }) => {
+
+        log('setAvatarPrimary called', { avatarId, idempotencyKey });
+
+        return setAvatarPrimary(
           avatarId,
           deviceId,
           accessToken,
           idempotencyKey,
           companyId
-        ),
+        );
+      },
 
       onSuccess: () => {
+
+        log('setAvatarPrimary success');
 
         queryClient.invalidateQueries({
           queryKey: ['myAvatars'],
@@ -262,10 +376,12 @@ export default function AvatarManagementScreen() {
 
       onError: (error: any) => {
 
+        const info = describeError(error);
+        logError('setAvatarPrimary error', info);
+
         Alert.alert(
           'Unable to Update',
-          error?.message ||
-            'Failed to set primary avatar.'
+          info.message
         );
       },
     });
@@ -284,16 +400,22 @@ export default function AvatarManagementScreen() {
       }: {
         avatarId: string;
         idempotencyKey: string;
-      }) =>
-        deleteAvatar(
+      }) => {
+
+        log('deleteAvatar called', { avatarId, idempotencyKey });
+
+        return deleteAvatar(
           avatarId,
           deviceId,
           accessToken,
           idempotencyKey,
           companyId
-        ),
+        );
+      },
 
       onSuccess: () => {
+
+        log('deleteAvatar success');
 
         queryClient.invalidateQueries({
           queryKey: ['myAvatars'],
@@ -311,10 +433,12 @@ export default function AvatarManagementScreen() {
 
       onError: (error: any) => {
 
+        const info = describeError(error);
+        logError('deleteAvatar error', info);
+
         Alert.alert(
           'Unable to Delete',
-          error?.message ||
-            'Failed to delete avatar.'
+          info.message
         );
       },
     });
@@ -335,17 +459,23 @@ export default function AvatarManagementScreen() {
         avatarId: string;
         idempotencyKey: string;
         setPrimary: boolean;
-      }) =>
-        reactivateAvatar(
+      }) => {
+
+        log('reactivateAvatar called', { avatarId, idempotencyKey, setPrimary });
+
+        return reactivateAvatar(
           avatarId,
           deviceId,
           accessToken,
           idempotencyKey,
           companyId,
           setPrimary
-        ),
+        );
+      },
 
       onSuccess: (_, variables) => {
+
+        log('reactivateAvatar success', variables);
 
         queryClient.invalidateQueries({
           queryKey: ['myAvatars'],
@@ -361,10 +491,12 @@ export default function AvatarManagementScreen() {
 
       onError: (error: any) => {
 
+        const info = describeError(error);
+        logError('reactivateAvatar error', info);
+
         Alert.alert(
           'Unable to Restore',
-          error?.message ||
-            'Failed to restore avatar.'
+          info.message
         );
       },
     });
@@ -377,16 +509,29 @@ export default function AvatarManagementScreen() {
   const handleUpload = async () => {
 
     if (uploading) {
+      log('upload already in progress — ignoring tap');
       return;
     }
 
+    log('===== UPLOAD FLOW START =====');
+
     try {
+
+      // -------------------------------------------------
+      // 0. Permissions
+      // -------------------------------------------------
+
+      log('step 0: requesting media library permission');
 
       const permission =
         await ImagePicker
           .requestMediaLibraryPermissionsAsync();
 
+      log('permission result:', permission);
+
       if (permission.status !== 'granted') {
+
+        log('permission denied — aborting');
 
         Alert.alert(
           'Photo Access Required',
@@ -396,6 +541,11 @@ export default function AvatarManagementScreen() {
         return;
       }
 
+      // -------------------------------------------------
+      // 1. Pick image
+      // -------------------------------------------------
+
+      log('step 1: launching image picker');
 
       const result =
         await ImagePicker.launchImageLibraryAsync({
@@ -412,12 +562,17 @@ export default function AvatarManagementScreen() {
           quality: 0.85,
         });
 
+      log('picker result:', {
+        canceled: result.canceled,
+        assetCount: result.assets?.length,
+      });
 
       if (
         result.canceled ||
         !result.assets ||
         result.assets.length === 0
       ) {
+        log('user canceled — aborting');
         return;
       }
 
@@ -425,71 +580,162 @@ export default function AvatarManagementScreen() {
       const asset =
         result.assets[0];
 
+      log('asset:', {
+        uri: asset.uri,
+        fileName: asset.fileName,
+        mimeType: asset.mimeType,
+        width: asset.width,
+        height: asset.height,
+        fileSize: asset.fileSize,
+      });
+
       setUploading(true);
 
 
-      // ---------------------------------------------------
-      // STEP 1
-      // ---------------------------------------------------
+      // -------------------------------------------------
+      // 2. Ask backend for presigned upload URL
+      // -------------------------------------------------
 
       const mimeType =
         asset.mimeType ||
         'image/jpeg';
 
-      const {
-        uploadUrl,
-        fileKey,
-      } =
-        await generateAvatarUploadUrl(
+      log('step 2: POST /avatars/upload-url', { mimeType });
+
+      let uploadUrl: string;
+      let fileKey: string;
+
+      try {
+        const resp =
+          await generateAvatarUploadUrl(
+            mimeType,
+            deviceId,
+            accessToken,
+            companyId
+          );
+
+        log('step 2 response:', resp);
+
+        uploadUrl = resp.uploadUrl;
+        fileKey = resp.fileKey;
+
+        log('upload-url values:', {
+          uploadUrl,
+          fileKey,
+          isAbsolute: isAbsoluteUrl(uploadUrl),
+        });
+      } catch (err: any) {
+        const info = describeError(err);
+        logError('step 2 FAILED', info);
+        throw new Error(
+          `Failed to get upload URL: ${info.message}${
+            info.status ? ` (${info.status})` : ''
+          }`
+        );
+      }
+
+
+      // -------------------------------------------------
+      // 3. Upload the file
+      // -------------------------------------------------
+
+      const fileName =
+        asset.fileName ||
+        'avatar.jpg';
+
+      // Pick a concrete location id for the write. The backend rejects
+      // writes when X-Location-ID is "ALL", so we resolve it down to a
+      // specific location (current selection → JWT's primary_location_id).
+      const writeLocationId =
+        resolveLocationForWrite(locationId, primaryLocationId);
+
+      log('step 3: uploading file to storage', {
+        url: uploadUrl,
+        urlIsAbsolute: isAbsoluteUrl(uploadUrl),
+        fileName,
+        mimeType,
+        localUri: asset.uri,
+        writeLocationId,
+      });
+
+      try {
+        await uploadAvatarFile(
+          uploadUrl,
+          fileKey,
+          asset.uri,
+          fileName,
           mimeType,
-          deviceId,
           accessToken,
-          companyId
+          deviceId,          // ← required by SessionValidationMiddleware
+          companyId,
+          writeLocationId,   // ← required by LocationValidationMiddleware on writes
         );
 
+        log('step 3 SUCCESS — file uploaded');
+      } catch (err: any) {
+        const info = describeError(err);
+        logError('step 3 FAILED', info);
+        logError('  -> raw uploadUrl was:', uploadUrl);
+        logError('  -> writeLocationId was:', writeLocationId);
 
-      // ---------------------------------------------------
-      // STEP 2
-      // ---------------------------------------------------
+        const hint =
+          info.status === 400 && typeof info.responseData?.message === 'string'
+            ? info.responseData.message
+            : info.isNetworkError
+              ? ` — could not reach ${uploadUrl}`
+              : '';
 
-      await uploadAvatarFile(
-        uploadUrl,
-        fileKey,
-        asset.uri,
-        asset.fileName ||
-          'avatar.jpg',
-        mimeType,
-        accessToken,
-        companyId
-      );
+        throw new Error(
+          `Upload failed: ${info.message}` +
+            (info.status ? ` (${info.status})` : '') +
+            hint
+        );
+      }
 
 
-      // ---------------------------------------------------
-      // STEP 3
-      // ---------------------------------------------------
+      // -------------------------------------------------
+      // 4. Confirm upload with backend
+      // -------------------------------------------------
 
       const idempotencyKey =
         `confirm-${Date.now()}`;
 
-      await confirmAvatarUpload(
-        fileKey,
-        mimeType,
-        true,
-        deviceId,
-        accessToken,
-        idempotencyKey,
-        companyId
-      );
+      log('step 4: POST /avatars/confirm', { fileKey, mimeType, idempotencyKey });
+
+      try {
+        await confirmAvatarUpload(
+          fileKey,
+          mimeType,
+          true,
+          deviceId,
+          accessToken,
+          idempotencyKey,
+          companyId
+        );
+
+        log('step 4 SUCCESS — upload confirmed');
+      } catch (err: any) {
+        const info = describeError(err);
+        logError('step 4 FAILED', info);
+        throw new Error(
+          `Failed to confirm upload: ${info.message}${
+            info.status ? ` (${info.status})` : ''
+          }`
+        );
+      }
 
 
-      // ---------------------------------------------------
-      // STEP 4
-      // ---------------------------------------------------
+      // -------------------------------------------------
+      // 5. Refresh
+      // -------------------------------------------------
+
+      log('step 5: invalidating avatar queries');
 
       await queryClient.invalidateQueries({
         queryKey: ['myAvatars'],
       });
 
+      log('===== UPLOAD FLOW END (SUCCESS) =====');
 
       Alert.alert(
         'Avatar Added',
@@ -498,11 +744,17 @@ export default function AvatarManagementScreen() {
 
     } catch (error: any) {
 
-      Alert.alert(
-        'Upload Failed',
+      const info = describeError(error);
+      logError('===== UPLOAD FLOW END (FAILED) =====');
+      logError('final error:', info);
+
+      // Fall back to any custom message we threw, or the raw one
+      const displayMessage =
         error?.message ||
-          'Something went wrong while uploading your avatar.'
-      );
+        info.message ||
+        'Something went wrong while uploading your avatar.';
+
+      Alert.alert('Upload Failed', displayMessage);
 
     } finally {
 
@@ -669,19 +921,24 @@ export default function AvatarManagementScreen() {
 
                 <View style={styles.avatarClip}>
 
-                  <View
-                    style={[
-                      styles.avatarPlaceholder,
-                    ]}
-                  >
-
-                    <Icon
-                      name="account"
-                      size={30}
-                      color="#94A3B8"
-                    />
-
-                  </View>
+                  <Image
+                    source={{ uri: fullUrl }}
+                    style={styles.avatarImage}
+                    resizeMode="cover"
+                    onError={(e) =>
+                      console.warn(
+                        '[AvatarUpload] image failed to load:',
+                        fullUrl,
+                        (e as any)?.nativeEvent?.error,
+                      )
+                    }
+                    onLoad={() => {
+                      console.log(
+                        '[AvatarUpload] image loaded:',
+                        fullUrl,
+                      );
+                    }}
+                  />
 
                 </View>
 
@@ -2018,6 +2275,12 @@ const styles = StyleSheet.create({
 
     backgroundColor:
       '#F1F5F9',
+  },
+
+  avatarImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 30,
   },
 
   avatarPlaceholder: {

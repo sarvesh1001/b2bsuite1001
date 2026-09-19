@@ -1,5 +1,3 @@
-// apps/prayantra-b2b/src/screens/module/administration/EditEmployeeScreen.tsx
-
 import React, {
   useCallback,
   useEffect,
@@ -43,6 +41,10 @@ import {
 } from '@react-navigation/stack';
 
 import {
+  useFocusEffect,
+} from '@react-navigation/native';
+
+import {
   LinearGradient,
 } from 'expo-linear-gradient';
 
@@ -55,6 +57,8 @@ import {
   listRoles,
   listPositions,
   findEmployeeByUsername,
+  getEmployeeLocations,
+  listLocations,
 } from '@b2b/api-client';
 
 import {
@@ -89,6 +93,12 @@ import {
   CompanyEmployee,
 } from '@b2b/shared-types';
 
+import type {
+  AccessibleLocation,
+  LocationAccessScope,
+  LocationAccessLevel,
+} from '@b2b/shared-types';
+
 // =========================================================
 // TYPES
 // =========================================================
@@ -103,6 +113,125 @@ type NavigationProp =
     RootStackParamList,
     'EditEmployee'
   >;
+
+type EmployeeLocationAccessShape = {
+  primary_location_id?: string | null;
+  location_access_scope?: LocationAccessScope | null;
+  selected_locations?: Array<{
+    location_id: string;
+    access_level: LocationAccessLevel;
+  }> | null;
+};
+
+// =========================================================
+// HELPERS
+// =========================================================
+
+const SCOPE_LABEL: Record<LocationAccessScope, string> = {
+  PRIMARY: 'Primary only',
+  SELECTED: 'Selected',
+  ALL: 'All locations',
+};
+
+const SCOPE_ICON: Record<LocationAccessScope, string> = {
+  PRIMARY: 'home-circle-outline',
+  SELECTED: 'checkbox-multiple-marked-outline',
+  ALL: 'earth',
+};
+
+const SCOPE_COLOR: Record<LocationAccessScope, string> = {
+  PRIMARY: '#0EA5E9',
+  SELECTED: '#7C3AED',
+  ALL: '#10B981',
+};
+
+/**
+ * The backend GET /employees/{id}/locations endpoint returns a **flat
+ * array** of location objects, each carrying its own `access_level`.
+ * It does NOT return the wrapper shape `{ primary_location_id,
+ * location_access_scope, selected_locations }` that the PUT accepts.
+ *
+ * This normalizer bridges the gap so the UI can keep working with the
+ * wrapper shape it already understands.
+ *
+ * Heuristics when the response is a flat array:
+ *   - primary  = location with the highest access level
+ *                (ADMIN > MANAGE > VIEW), ties broken by first
+ *   - scope    = 'PRIMARY'  if 1 entry
+ *                'SELECTED' if >1 entries
+ *                null       if 0 entries
+ */
+function normalizeEmployeeLocations(
+  raw: any,
+): EmployeeLocationAccessShape | null {
+  if (!raw) return null;
+
+  // Case A: already the wrapper shape
+  if (
+    raw.primary_location_id !== undefined ||
+    raw.location_access_scope !== undefined ||
+    Array.isArray(raw.selected_locations)
+  ) {
+    const sel = Array.isArray(raw.selected_locations)
+      ? raw.selected_locations
+      : [];
+    return {
+      primary_location_id: raw.primary_location_id ?? null,
+      location_access_scope:
+        (raw.location_access_scope as LocationAccessScope) ?? null,
+      selected_locations: sel
+        .map((s: any) => ({
+          location_id: s?.location_id ?? s?.id ?? '',
+          access_level: (s?.access_level ?? 'VIEW') as LocationAccessLevel,
+        }))
+        .filter((s: any) => !!s.location_id),
+    };
+  }
+
+  // Case B: flat array of locations
+  if (Array.isArray(raw)) {
+    const selected = raw
+      .map((loc: any) => ({
+        location_id: loc?.location_id ?? loc?.id ?? '',
+        access_level: (loc?.access_level ?? 'VIEW') as LocationAccessLevel,
+      }))
+      .filter((s: any) => !!s.location_id);
+
+    const RANK: Record<LocationAccessLevel, number> = {
+      ADMIN: 3,
+      MANAGE: 2,
+      VIEW: 1,
+    };
+
+    let primaryId: string | null = null;
+    let bestRank = 0;
+    for (const loc of raw) {
+      const id = loc?.location_id ?? loc?.id;
+      if (!id) continue;
+      const level = (loc?.access_level ?? 'VIEW') as LocationAccessLevel;
+      const rank = RANK[level] ?? 0;
+      if (rank > bestRank) {
+        bestRank = rank;
+        primaryId = id;
+      }
+    }
+    if (!primaryId && raw[0]) {
+      primaryId = raw[0]?.location_id ?? raw[0]?.id ?? null;
+    }
+
+    let scope: LocationAccessScope | null = null;
+    if (selected.length === 1) scope = 'PRIMARY';
+    else if (selected.length > 1) scope = 'SELECTED';
+
+    return {
+      primary_location_id: primaryId,
+      location_access_scope: scope,
+      selected_locations: selected,
+    };
+  }
+
+  return null;
+}
 
 // =========================================================
 // COMPONENT
@@ -195,6 +324,19 @@ export default function EditEmployeeScreen() {
     useState<CompanyEmployee[]>([]);
 
   // -------------------------------------------------------
+  // Location access
+  // -------------------------------------------------------
+
+  const [locations, setLocations] =
+    useState<AccessibleLocation[]>([]);
+
+  const [locationAccess, setLocationAccess] =
+    useState<EmployeeLocationAccessShape | null>(null);
+
+  const [locationLoading, setLocationLoading] =
+    useState(false);
+
+  // -------------------------------------------------------
   // Modals
   // -------------------------------------------------------
 
@@ -274,6 +416,74 @@ export default function EditEmployeeScreen() {
           'Failed to load managers',
           error
         );
+      }
+    },
+    [
+      accessToken,
+      companyId,
+      deviceId,
+      userId,
+    ]
+  );
+
+  // =======================================================
+  // LOAD LOCATION ACCESS
+  // =======================================================
+
+  const loadLocationAccess = useCallback(
+    async () => {
+      if (
+        !accessToken ||
+        !companyId ||
+        !deviceId
+      ) {
+        return;
+      }
+
+      setLocationLoading(true);
+
+      try {
+        const [locRes, empRes] = await Promise.all([
+          listLocations(companyId, 1, 100),
+          getEmployeeLocations(companyId, userId),
+        ]);
+
+        // listLocations unwraps to { locations: [...] }
+        const list: AccessibleLocation[] =
+          (locRes as any)?.locations ??
+          (locRes as any)?.data?.locations ??
+          [];
+        setLocations(list);
+
+        // getEmployeeLocations currently returns either:
+        //   - a wrapper object  { primary_location_id, location_access_scope, selected_locations }
+        //   - a flat array      [ { location_id, access_level, ... }, ... ]
+        //   - null (404)
+        // Normalize into the wrapper shape the UI understands.
+        const normalized =
+          normalizeEmployeeLocations(empRes);
+
+        console.log(
+          '[EditEmployee/loadLocationAccess] applied:',
+          {
+            locationsCount: list.length,
+            rawEmployeeLocations: empRes,
+            normalized,
+            resolvedPrimaryId: normalized?.primary_location_id ?? null,
+            resolvedScope: normalized?.location_access_scope ?? null,
+            selectedCount: normalized?.selected_locations?.length ?? 0,
+          },
+        );
+
+        setLocationAccess(normalized);
+      } catch (error) {
+        console.error(
+          '[EditEmployee/loadLocationAccess] FAILED:',
+          error,
+        );
+        setLocationAccess(null);
+      } finally {
+        setLocationLoading(false);
       }
     },
     [
@@ -497,6 +707,22 @@ export default function EditEmployeeScreen() {
   }, [loadManagers]);
 
   // =======================================================
+  // LOAD LOCATION ACCESS (initial + on focus so we pick up
+  // changes made in EmployeeLocationAccessScreen)
+  // =======================================================
+
+  useEffect(() => {
+    loadLocationAccess();
+  }, [loadLocationAccess]);
+
+  useFocusEffect(
+    useCallback(() => {
+      // Refetch when screen refocuses (e.g., after editing access)
+      loadLocationAccess();
+    }, [loadLocationAccess])
+  );
+
+  // =======================================================
   // RESET MANAGER SEARCH
   // =======================================================
 
@@ -603,6 +829,58 @@ export default function EditEmployeeScreen() {
         selectedManager.username ||
         selectedManager.user_id
       : 'No manager assigned';
+
+  // =======================================================
+  // LOCATION ACCESS DERIVED VALUES
+  // =======================================================
+
+  const currentScope: LocationAccessScope =
+    (locationAccess?.location_access_scope as LocationAccessScope) ||
+    'PRIMARY';
+
+  const currentPrimaryId: string | null =
+    locationAccess?.primary_location_id ?? null;
+
+  const currentPrimaryLocation = useMemo(
+    () =>
+      locations.find(
+        (loc) =>
+          loc.location_id === currentPrimaryId
+      ) || null,
+    [locations, currentPrimaryId]
+  );
+
+  const selectedLocationIds = useMemo(() => {
+    const raw = locationAccess?.selected_locations ?? [];
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((s: any) => ({
+        location_id: s?.location_id ?? s?.id ?? '',
+        access_level: (s?.access_level ?? 'VIEW') as LocationAccessLevel,
+      }))
+      .filter((s) => !!s.location_id);
+  }, [locationAccess]);
+
+  const selectedLocationCount =
+    selectedLocationIds.length;
+
+  const scopeColor = SCOPE_COLOR[currentScope];
+  const scopeIcon = SCOPE_ICON[currentScope];
+  const scopeLabel = SCOPE_LABEL[currentScope];
+
+  // =======================================================
+  // NAVIGATE TO LOCATION ACCESS EDITOR
+  // =======================================================
+
+  const handleOpenLocationAccess = () => {
+    navigation.navigate(
+      'EmployeeLocationAccess',
+      {
+        employeeUserId: userId,
+        employeeName: fullName || username,
+      }
+    );
+  };
 
   // =======================================================
   // VALIDATION
@@ -738,16 +1016,14 @@ export default function EditEmployeeScreen() {
             payload.hire_date = dateObj.toISOString();
           }
         } else {
-          payload.hire_date = null; // or undefined? We'll set to null to clear
+          payload.hire_date = null; // clear
         }
       }
 
       // Handle reports_to: we don't have original, so only send if not null
-      // (since we assume it was null originally, we only need to send if user selected someone)
       if (reportsTo !== null) {
         payload.reports_to = reportsTo;
       }
-      // If reportsTo is null, we don't send it (keep existing value, which we assume is null)
 
       // If no fields changed, show a message
       if (Object.keys(payload).length === 0) {
@@ -1588,6 +1864,267 @@ export default function EditEmployeeScreen() {
               </TouchableOpacity>
 
             </View>
+
+          </View>
+
+          {/* =================================================
+              LOCATION ACCESS (read-only summary + edit entry)
+          ================================================= */}
+
+          <View
+            style={[
+              styles.sectionHeader,
+              {
+                marginTop: 25,
+              },
+            ]}
+          >
+
+            <View
+              style={styles.sectionIcon}
+            >
+              <Icon
+                name="map-marker-multiple-outline"
+                size={18}
+                color={PRIMARY_COLOR}
+              />
+            </View>
+
+            <View>
+              <Text
+                style={
+                  styles.sectionTitle
+                }
+              >
+                Location Access
+              </Text>
+
+              <Text
+                style={
+                  styles.sectionSubtitle
+                }
+              >
+                Where this employee can operate
+              </Text>
+            </View>
+
+          </View>
+
+          <View style={styles.locationCard}>
+
+            {locationLoading ? (
+              <View style={styles.locationLoading}>
+                <ActivityIndicator
+                  size="small"
+                  color={PRIMARY_COLOR}
+                />
+                <Text style={styles.locationLoadingText}>
+                  Loading location access...
+                </Text>
+              </View>
+            ) : locationAccess ? (
+              <>
+                {/* Scope row */}
+
+                <View style={styles.locationRow}>
+
+                  <View
+                    style={[
+                      styles.locationRowIcon,
+                      {
+                        backgroundColor:
+                          `${scopeColor}14`,
+                      },
+                    ]}
+                  >
+                    <Icon
+                      name={scopeIcon}
+                      size={19}
+                      color={scopeColor}
+                    />
+                  </View>
+
+                  <View style={styles.locationRowText}>
+                    <Text style={styles.locationRowLabel}>
+                      Access Scope
+                    </Text>
+                    <Text style={styles.locationRowValue}>
+                      {scopeLabel}
+                    </Text>
+                  </View>
+
+                  <View
+                    style={[
+                      styles.scopePill,
+                      {
+                        backgroundColor:
+                          `${scopeColor}14`,
+                        borderColor:
+                          `${scopeColor}30`,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.scopePillText,
+                        { color: scopeColor },
+                      ]}
+                    >
+                      {currentScope}
+                    </Text>
+                  </View>
+
+                </View>
+
+                <View style={styles.locationDivider} />
+
+                {/* Primary location row */}
+
+                <View style={styles.locationRow}>
+
+                  <View
+                    style={[
+                      styles.locationRowIcon,
+                      {
+                        backgroundColor:
+                          '#F59E0B14',
+                      },
+                    ]}
+                  >
+                    <Icon
+                      name="star-outline"
+                      size={19}
+                      color="#F59E0B"
+                    />
+                  </View>
+
+                  <View style={styles.locationRowText}>
+                    <Text style={styles.locationRowLabel}>
+                      Primary Location
+                    </Text>
+                    <Text style={styles.locationRowValue}>
+                      {currentPrimaryLocation?.location_name ||
+                        (currentPrimaryId
+                          ? 'Unknown location'
+                          : 'Not set')}
+                    </Text>
+                    {currentPrimaryLocation?.location_code ? (
+                      <Text style={styles.locationRowSub}>
+                        {currentPrimaryLocation.location_code}
+                        {currentPrimaryLocation.city
+                          ? ` • ${currentPrimaryLocation.city}`
+                          : ''}
+                      </Text>
+                    ) : null}
+                  </View>
+
+                </View>
+
+                {/* Selected locations row — only if scope is SELECTED */}
+
+                {currentScope === 'SELECTED' && (
+                  <>
+                    <View style={styles.locationDivider} />
+
+                    <View style={styles.locationRow}>
+
+                      <View
+                        style={[
+                          styles.locationRowIcon,
+                          {
+                            backgroundColor:
+                              '#7C3AED14',
+                          },
+                        ]}
+                      >
+                        <Icon
+                          name="checkbox-multiple-marked-outline"
+                          size={19}
+                          color="#7C3AED"
+                        />
+                      </View>
+
+                      <View style={styles.locationRowText}>
+                        <Text style={styles.locationRowLabel}>
+                          Selected Locations
+                        </Text>
+                        <Text style={styles.locationRowValue}>
+                          {selectedLocationCount === 0
+                            ? 'None selected'
+                            : `${selectedLocationCount} location${
+                                selectedLocationCount === 1
+                                  ? ''
+                                  : 's'
+                              }`}
+                        </Text>
+                      </View>
+
+                    </View>
+                  </>
+                )}
+
+                {/* Edit button */}
+
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={handleOpenLocationAccess}
+                  style={styles.editAccessButton}
+                >
+                  <Icon
+                    name="pencil-outline"
+                    size={17}
+                    color={PRIMARY_COLOR}
+                  />
+                  <Text style={styles.editAccessText}>
+                    Edit location access
+                  </Text>
+                  <Icon
+                    name="chevron-right"
+                    size={18}
+                    color={PRIMARY_COLOR}
+                  />
+                </TouchableOpacity>
+              </>
+            ) : (
+              <View style={styles.locationEmpty}>
+
+                <View
+                  style={[
+                    styles.locationRowIcon,
+                    {
+                      backgroundColor:
+                        '#F1F5F914',
+                    },
+                  ]}
+                >
+                  <Icon
+                    name="map-marker-off-outline"
+                    size={19}
+                    color={TEXT_SECONDARY}
+                  />
+                </View>
+
+                <View style={styles.locationRowText}>
+                  <Text style={styles.locationRowLabel}>
+                    Location Access
+                  </Text>
+                  <Text style={styles.locationRowValue}>
+                    Not configured
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={handleOpenLocationAccess}
+                  style={styles.editAccessButtonSmall}
+                >
+                  <Text style={styles.editAccessTextSmall}>
+                    Configure
+                  </Text>
+                </TouchableOpacity>
+
+              </View>
+            )}
 
           </View>
 
@@ -3095,6 +3632,189 @@ const styles = StyleSheet.create({
     marginLeft: -5,
 
     fontSize: 10,
+  },
+
+  // =======================================================
+  // LOCATION ACCESS CARD
+  // =======================================================
+
+  locationCard: {
+    padding: 14,
+
+    borderRadius: 16,
+
+    backgroundColor:
+      CARD_BACKGROUND,
+
+    borderWidth: 1,
+
+    borderColor:
+      BORDER_COLOR,
+
+    shadowColor: '#000',
+
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+
+    shadowOpacity: 0.035,
+
+    shadowRadius: 7,
+
+    elevation: 1,
+  },
+
+  locationLoading: {
+    paddingVertical: 18,
+
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  locationLoadingText: {
+    marginTop: 8,
+
+    color: TEXT_SECONDARY,
+
+    fontSize: 10,
+  },
+
+  locationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+
+  locationRowIcon: {
+    width: 38,
+    height: 38,
+
+    alignItems: 'center',
+    justifyContent: 'center',
+
+    borderRadius: 10,
+  },
+
+  locationRowText: {
+    flex: 1,
+
+    marginLeft: 12,
+
+    minWidth: 0,
+  },
+
+  locationRowLabel: {
+    color: TEXT_SECONDARY,
+
+    fontSize: 9,
+
+    fontWeight: '600',
+
+    textTransform: 'uppercase',
+
+    letterSpacing: 0.45,
+  },
+
+  locationRowValue: {
+    marginTop: 3,
+
+    color: TEXT_PRIMARY,
+
+    fontSize: 13,
+
+    fontWeight: '700',
+  },
+
+  locationRowSub: {
+    marginTop: 2,
+
+    color: TEXT_SECONDARY,
+
+    fontSize: 9,
+
+    fontWeight: '500',
+  },
+
+  locationDivider: {
+    marginVertical: 12,
+
+    height: 1,
+
+    backgroundColor:
+      '#EDF0F4',
+  },
+
+  scopePill: {
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+
+    borderRadius: 8,
+
+    borderWidth: 1,
+  },
+
+  scopePillText: {
+    fontSize: 9,
+
+    fontWeight: '800',
+
+    letterSpacing: 0.4,
+  },
+
+  editAccessButton: {
+    marginTop: 14,
+
+    minHeight: 42,
+
+    paddingHorizontal: 12,
+
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+
+    gap: 6,
+
+    borderRadius: 11,
+
+    backgroundColor:
+      `${PRIMARY_COLOR}10`,
+
+    borderWidth: 1,
+    borderColor:
+      `${PRIMARY_COLOR}25`,
+  },
+
+  editAccessText: {
+    flex: 1,
+
+    color: PRIMARY_COLOR,
+
+    fontSize: 12,
+
+    fontWeight: '700',
+  },
+
+  editAccessButtonSmall: {
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+
+    borderRadius: 9,
+
+    backgroundColor:
+      `${PRIMARY_COLOR}12`,
+  },
+
+  editAccessTextSmall: {
+    color: PRIMARY_COLOR,
+
+    fontSize: 10,
+
+    fontWeight: '700',
+  },
+
+  locationEmpty: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
 
   // =======================================================

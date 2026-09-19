@@ -1,6 +1,10 @@
 // apps/prayantra-b2b/src/screens/module/administration/CreateWorkCenterScreen.tsx
 
-import React, { useMemo, useState } from 'react';
+import React, {
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 
 import {
   View,
@@ -54,7 +58,12 @@ import {
 
 import {
   createWorkCenter,
+  getMyLocations,
 } from '@b2b/api-client';
+
+import type {
+  AccessibleLocation,
+} from '@b2b/shared-types';
 
 import {
   useUserAuthStore,
@@ -75,8 +84,10 @@ import {
 } from '../../../constants/colors';
 
 // =========================================================
-// TIMEZONES
+// CONSTANTS
 // =========================================================
+
+const ALL_LOCATIONS_SENTINEL = 'ALL';
 
 const TIMEZONES = [
   'Asia/Kolkata',
@@ -94,6 +105,10 @@ const TIMEZONES = [
 // =========================================================
 
 const schema = z.object({
+  location_id: z
+    .string()
+    .min(1, 'Location is required'),
+
   work_center_code: z
     .string()
     .trim()
@@ -118,36 +133,61 @@ const schema = z.object({
 
 type FormData = z.infer<typeof schema>;
 
-type NavigationProp =
-  StackNavigationProp<any>;
+type NavigationProp = StackNavigationProp<any>;
 
 // =========================================================
 // COMPONENT
 // =========================================================
 
 export default function CreateWorkCenterScreen() {
-  const navigation =
-    useNavigation<NavigationProp>();
+  const navigation = useNavigation<NavigationProp>();
 
   const {
     accessToken,
     deviceId,
     companyId,
+    // ✅ reactive location context — no sync getter needed
+    locationId: activeLocationId,
+    accessibleLocations,
   } = useUserAuthStore();
 
   // =======================================================
-  // STATE
+  // DERIVED
   // =======================================================
 
-  const [
-    modalVisible,
-    setModalVisible,
-  ] = useState(false);
+  const allLocationsMode =
+    activeLocationId === ALL_LOCATIONS_SENTINEL;
 
-  const [
-    timezoneSearch,
-    setTimezoneSearch,
-  ] = useState('');
+  // The currently-active location, looked up from the store.
+  // In specific-location mode this is what gets used verbatim.
+  const currentLocation = useMemo(
+    () =>
+      accessibleLocations.find(
+        (l) => l.location_id === activeLocationId
+      ) ?? null,
+    [accessibleLocations, activeLocationId]
+  );
+
+  // =======================================================
+  // STATE — TIMEZONE
+  // =======================================================
+
+  const [modalVisible, setModalVisible] = useState(false);
+  const [timezoneSearch, setTimezoneSearch] = useState('');
+
+  // =======================================================
+  // STATE — LOCATION (only used in ALL mode)
+  // =======================================================
+
+  const [locations, setLocations] =
+    useState<AccessibleLocation[]>([]);
+  const [locationsLoading, setLocationsLoading] =
+    useState(false);
+  const [locationsError, setLocationsError] =
+    useState<string | null>(null);
+  const [locationModalVisible, setLocationModalVisible] =
+    useState(false);
+  const [locationSearch, setLocationSearch] = useState('');
 
   // =======================================================
   // FORM
@@ -158,14 +198,16 @@ export default function CreateWorkCenterScreen() {
     handleSubmit,
     setValue,
     watch,
-    formState: {
-      errors,
-      isSubmitting,
-    },
+    formState: { errors, isSubmitting },
   } = useForm<FormData>({
     resolver: zodResolver(schema),
 
     defaultValues: {
+      // ✅ Specific mode: force the active location.
+      //    ALL mode: empty — user must pick from the modal.
+      location_id: allLocationsMode
+        ? ''
+        : (activeLocationId ?? ''),
       work_center_code: '',
       name: '',
       description: '',
@@ -174,52 +216,135 @@ export default function CreateWorkCenterScreen() {
     },
   });
 
-  const selectedTimezone =
-    watch('timezone');
+  const selectedTimezone = watch('timezone');
+  const selectedLocationId = watch('location_id');
+  const isActive = watch('is_active');
 
-  const isActive =
-    watch('is_active');
+  // Keep the form's location locked to the active location in
+  // specific mode, even if something tries to change it.
+  useEffect(() => {
+    if (
+      !allLocationsMode &&
+      activeLocationId &&
+      selectedLocationId !== activeLocationId
+    ) {
+      setValue('location_id', activeLocationId, {
+        shouldValidate: false,
+      });
+    }
+  }, [
+    allLocationsMode,
+    activeLocationId,
+    selectedLocationId,
+    setValue,
+  ]);
+
+  // =======================================================
+  // FETCH LOCATIONS — only in ALL mode
+  // =======================================================
+
+  useEffect(() => {
+    if (!allLocationsMode || !companyId) {
+      // Specific mode: nothing to fetch, form is already locked.
+      return;
+    }
+
+    const fetchLocations = async () => {
+      try {
+        setLocationsLoading(true);
+        setLocationsError(null);
+
+        const res = await getMyLocations(companyId);
+        const items: AccessibleLocation[] = res?.locations ?? [];
+
+        // Only writable locations in SELECTED scope
+        const writable =
+          res?.location_scope === 'SELECTED'
+            ? items.filter(
+                (l) =>
+                  l.access_level === 'MANAGE' ||
+                  l.access_level === 'ADMIN'
+              )
+            : items;
+
+        setLocations(writable);
+
+        // Auto-select if only one option
+        if (writable.length === 1) {
+          setValue('location_id', writable[0].location_id, {
+            shouldValidate: true,
+          });
+        }
+      } catch (e: any) {
+        console.warn('Failed to load locations', e);
+        setLocationsError(
+          e?.response?.data?.message ||
+            e?.message ||
+            'Could not load locations'
+        );
+      } finally {
+        setLocationsLoading(false);
+      }
+    };
+
+    fetchLocations();
+  }, [allLocationsMode, companyId, setValue]);
 
   // =======================================================
   // FILTER TIMEZONES
   // =======================================================
 
-  const filteredTimezones =
-    useMemo(() => {
-      const query =
-        timezoneSearch
-          .trim()
-          .toLowerCase();
+  const filteredTimezones = useMemo(() => {
+    const query = timezoneSearch.trim().toLowerCase();
+    if (!query) return TIMEZONES;
+    return TIMEZONES.filter((tz) =>
+      tz.toLowerCase().includes(query)
+    );
+  }, [timezoneSearch]);
 
-      if (!query) {
-        return TIMEZONES;
-      }
+  // =======================================================
+  // FILTER LOCATIONS (ALL mode only)
+  // =======================================================
 
-      return TIMEZONES.filter(
-        (timezone) =>
-          timezone
-            .toLowerCase()
-            .includes(query)
-      );
-    }, [timezoneSearch]);
+  const filteredLocations = useMemo(() => {
+    const q = locationSearch.trim().toLowerCase();
+    if (!q) return locations;
+    return locations.filter(
+      (l) =>
+        l.location_name?.toLowerCase().includes(q) ||
+        l.location_code?.toLowerCase().includes(q) ||
+        l.city?.toLowerCase().includes(q)
+    );
+  }, [locationSearch, locations]);
 
   // =======================================================
   // SUBMIT
   // =======================================================
 
-  const onSubmit = async (
-    data: FormData
-  ) => {
-    if (
-      !accessToken ||
-      !companyId ||
-      !deviceId
-    ) {
+  const onSubmit = async (data: FormData) => {
+    if (!accessToken || !companyId || !deviceId) {
       Alert.alert(
         'Authentication Error',
         'Your authentication session is missing. Please log in again.'
       );
+      return;
+    }
 
+    // Lock the target location:
+    //  - specific mode  → active location from the store
+    //  - ALL mode       → the one the user picked
+    const targetLocationId = allLocationsMode
+      ? data.location_id
+      : activeLocationId;
+
+    if (
+      !targetLocationId ||
+      targetLocationId === ALL_LOCATIONS_SENTINEL
+    ) {
+      Alert.alert(
+        'Pick a Location',
+        'Please select a specific location for this work center.'
+      );
       return;
     }
 
@@ -227,8 +352,17 @@ export default function CreateWorkCenterScreen() {
       await createWorkCenter(
         companyId,
         deviceId,
-        data,
-        accessToken
+        {
+          work_center_code: data.work_center_code,
+          location_id: targetLocationId,
+          name: data.name,
+          description: data.description,
+          timezone: data.timezone,
+          is_active: data.is_active,
+        },
+        accessToken,
+        // Force X-Location-ID to match the target location
+        targetLocationId
       );
 
       Alert.alert(
@@ -237,31 +371,23 @@ export default function CreateWorkCenterScreen() {
         [
           {
             text: 'Done',
-            onPress: () =>
-              navigation.goBack(),
+            onPress: () => navigation.goBack(),
           },
         ]
       );
     } catch (error: any) {
-      console.error(
-        'Create work center error:',
-        error
-      );
-
+      console.error('Create work center error:', error);
       const message =
         error?.response?.data?.message ||
+        error?.response?.data?.error ||
         error?.message ||
         'Unable to create the work center. Please try again.';
-
-      Alert.alert(
-        'Unable to Create',
-        message
-      );
+      Alert.alert('Unable to Create', message);
     }
   };
 
   // =======================================================
-  // TIMEZONE
+  // TIMEZONE HANDLERS
   // =======================================================
 
   const openTimezoneModal = () => {
@@ -274,19 +400,39 @@ export default function CreateWorkCenterScreen() {
     setModalVisible(false);
   };
 
-  const selectTimezone = (
-    timezone: string
-  ) => {
-    setValue(
-      'timezone',
-      timezone,
-      {
-        shouldValidate: true,
-      }
-    );
-
+  const selectTimezone = (timezone: string) => {
+    setValue('timezone', timezone, { shouldValidate: true });
     closeTimezoneModal();
   };
+
+  // =======================================================
+  // LOCATION HANDLERS (ALL mode only)
+  // =======================================================
+
+  const openLocationModal = () => {
+    setLocationSearch('');
+    setLocationModalVisible(true);
+  };
+
+  const closeLocationModal = () => {
+    setLocationSearch('');
+    setLocationModalVisible(false);
+  };
+
+  const selectLocation = (locationId: string) => {
+    setValue('location_id', locationId, {
+      shouldValidate: true,
+    });
+    closeLocationModal();
+  };
+
+  const selectedLocation = useMemo(
+    () =>
+      locations.find(
+        (l) => l.location_id === selectedLocationId
+      ),
+    [locations, selectedLocationId]
+  );
 
   // =======================================================
   // MAIN
@@ -297,16 +443,12 @@ export default function CreateWorkCenterScreen() {
       edges={['top', 'bottom']}
       style={styles.container}
     >
-
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={
-          Platform.OS === 'ios'
-            ? 'padding'
-            : undefined
+          Platform.OS === 'ios' ? 'padding' : undefined
         }
       >
-
         {/* =================================================
             HEADER
         ================================================= */}
@@ -317,16 +459,10 @@ export default function CreateWorkCenterScreen() {
           end={GRADIENT_END}
           style={styles.header}
         >
-
           <View style={styles.headerRow}>
-
-            {/* Back */}
-
             <TouchableOpacity
               style={styles.backButton}
-              onPress={() =>
-                navigation.goBack()
-              }
+              onPress={() => navigation.goBack()}
               activeOpacity={0.8}
             >
               <Icon
@@ -336,29 +472,14 @@ export default function CreateWorkCenterScreen() {
               />
             </TouchableOpacity>
 
-            {/* Title */}
-
-            <View
-              style={
-                styles.headerTitleContainer
-              }
-            >
-
-              <Text
-                style={styles.headerEyebrow}
-              >
+            <View style={styles.headerTitleContainer}>
+              <Text style={styles.headerEyebrow}>
                 ADMINISTRATION
               </Text>
-
-              <Text
-                style={styles.headerTitle}
-              >
+              <Text style={styles.headerTitle}>
                 Create Work Center
               </Text>
-
             </View>
-
-            {/* Header icon */}
 
             <View style={styles.headerIcon}>
               <Icon
@@ -367,23 +488,17 @@ export default function CreateWorkCenterScreen() {
                 color="#FFFFFF"
               />
             </View>
-
           </View>
 
-          {/* Breadcrumb */}
-
           <View style={styles.breadcrumb}>
-
             <Text style={styles.breadcrumbText}>
               Administration
             </Text>
-
             <Icon
               name="chevron-right"
               size={14}
               color="rgba(255,255,255,0.55)"
             />
-
             <Text
               style={[
                 styles.breadcrumbText,
@@ -392,13 +507,11 @@ export default function CreateWorkCenterScreen() {
             >
               Work Centers
             </Text>
-
             <Icon
               name="chevron-right"
               size={14}
               color="rgba(255,255,255,0.55)"
             />
-
             <Text
               style={[
                 styles.breadcrumbText,
@@ -407,9 +520,7 @@ export default function CreateWorkCenterScreen() {
             >
               New
             </Text>
-
           </View>
-
         </LinearGradient>
 
         {/* =================================================
@@ -417,65 +528,243 @@ export default function CreateWorkCenterScreen() {
         ================================================= */}
 
         <ScrollView
-          contentContainerStyle={
-            styles.scrollContent
-          }
+          contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
+          {/* =================================================
+              ALL-MODE BANNER
+          ================================================= */}
+
+          {allLocationsMode && (
+            <View style={styles.allModeBanner}>
+              <Icon
+                name="information-outline"
+                size={18}
+                color="#B45309"
+              />
+              <Text style={styles.allModeBannerText}>
+                You're viewing{' '}
+                <Text style={{ fontWeight: '700' }}>
+                  All Locations
+                </Text>
+                . Pick the specific location where this
+                work center should be created.
+              </Text>
+            </View>
+          )}
 
           {/* =================================================
               INTRO
           ================================================= */}
 
           <View style={styles.introSection}>
-
-            <View
-              style={styles.introIcon}
-            >
+            <View style={styles.introIcon}>
               <Icon
                 name="factory"
                 size={24}
                 color={PRIMARY_COLOR}
               />
             </View>
-
             <View style={styles.introText}>
-
-              <Text
-                style={styles.introTitle}
-              >
+              <Text style={styles.introTitle}>
                 Work Center Details
               </Text>
-
-              <Text
-                style={styles.introDescription}
-              >
-                Add the basic information for
-                this work center.
+              <Text style={styles.introDescription}>
+                Add the basic information for this work
+                center.
               </Text>
-
             </View>
-
           </View>
 
           {/* =================================================
-              BASIC INFORMATION CARD
+              LOCATION
+              ------------------------------------------------
+              • Specific mode  → read-only info card
+              • ALL mode       → interactive picker
           ================================================= */}
 
           <View style={styles.formCard}>
-
-            <View
-              style={styles.sectionHeading}
-            >
-
+            <View style={styles.sectionHeading}>
               <View
                 style={[
                   styles.sectionIcon,
-                  {
-                    backgroundColor:
-                      `${PRIMARY_COLOR}12`,
-                  },
+                  { backgroundColor: '#8B5CF612' },
+                ]}
+              >
+                <Icon
+                  name="map-marker-outline"
+                  size={18}
+                  color="#8B5CF6"
+                />
+              </View>
+              <View>
+                <Text style={styles.sectionTitle}>
+                  Location
+                </Text>
+                <Text style={styles.sectionSubtitle}>
+                  {allLocationsMode
+                    ? 'Where this work center lives'
+                    : 'Locked to your current location'}
+                </Text>
+              </View>
+            </View>
+
+            {allLocationsMode ? (
+              /* ------------ INTERACTIVE PICKER ------------- */
+              <View style={styles.fieldContainer}>
+                <Text style={styles.fieldLabel}>
+                  Location
+                  <Text style={styles.required}> *</Text>
+                </Text>
+
+                <Controller
+                  control={control}
+                  name="location_id"
+                  render={({ field: { value } }) => (
+                    <>
+                      <TouchableOpacity
+                        style={[
+                          styles.selectButton,
+                          errors.location_id &&
+                            styles.selectButtonError,
+                        ]}
+                        onPress={openLocationModal}
+                        activeOpacity={0.8}
+                      >
+                        <View style={styles.selectLeft}>
+                          <View
+                            style={[
+                              styles.selectIcon,
+                              {
+                                backgroundColor:
+                                  `${PRIMARY_COLOR}10`,
+                              },
+                            ]}
+                          >
+                            <Icon
+                              name="map-marker"
+                              size={19}
+                              color={PRIMARY_COLOR}
+                            />
+                          </View>
+                          <View
+                            style={
+                              styles.selectTextContainer
+                            }
+                          >
+                            <Text
+                              style={styles.selectValue}
+                              numberOfLines={1}
+                            >
+                              {selectedLocation?.location_name ||
+                                (locationsLoading
+                                  ? 'Loading…'
+                                  : 'Select a location')}
+                            </Text>
+                            <Text
+                              style={styles.selectHint}
+                            >
+                              {selectedLocation
+                                ? `${selectedLocation.location_code}${
+                                    selectedLocation.city
+                                      ? ` • ${selectedLocation.city}`
+                                      : ''
+                                  }`
+                                : 'Tap to choose location'}
+                            </Text>
+                          </View>
+                        </View>
+                        <Icon
+                          name="chevron-down"
+                          size={22}
+                          color={TEXT_SECONDARY}
+                        />
+                      </TouchableOpacity>
+
+                      {errors.location_id && (
+                        <View style={styles.errorRow}>
+                          <Icon
+                            name="alert-circle-outline"
+                            size={14}
+                            color={ERROR_COLOR}
+                          />
+                          <Text style={styles.error}>
+                            {errors.location_id.message}
+                          </Text>
+                        </View>
+                      )}
+
+                      {locationsError && (
+                        <View style={styles.errorRow}>
+                          <Icon
+                            name="alert-circle-outline"
+                            size={14}
+                            color={ERROR_COLOR}
+                          />
+                          <Text style={styles.error}>
+                            {locationsError}
+                          </Text>
+                        </View>
+                      )}
+                    </>
+                  )}
+                />
+              </View>
+            ) : (
+              /* ------------ READ-ONLY INFO CARD ------------ */
+              <View style={styles.lockedLocationCard}>
+                <View style={styles.lockedLocationIcon}>
+                  <Icon
+                    name="map-marker"
+                    size={22}
+                    color={PRIMARY_COLOR}
+                  />
+                </View>
+
+                <View style={styles.lockedLocationInfo}>
+                  <Text
+                    style={styles.lockedLocationName}
+                    numberOfLines={1}
+                  >
+                    {currentLocation?.location_name ??
+                      'Your current location'}
+                  </Text>
+                  <Text
+                    style={styles.lockedLocationMeta}
+                    numberOfLines={1}
+                  >
+                    {currentLocation?.location_code ?? '—'}
+                    {currentLocation?.city
+                      ? ` • ${currentLocation.city}`
+                      : ''}
+                  </Text>
+                </View>
+
+                <View style={styles.lockedBadge}>
+                  <Icon
+                    name="lock-outline"
+                    size={11}
+                    color="#64748B"
+                  />
+                  <Text style={styles.lockedBadgeText}>
+                    Locked
+                  </Text>
+                </View>
+              </View>
+            )}
+          </View>
+
+          {/* =================================================
+              BASIC INFORMATION
+          ================================================= */}
+
+          <View style={styles.formCard}>
+            <View style={styles.sectionHeading}>
+              <View
+                style={[
+                  styles.sectionIcon,
+                  { backgroundColor: `${PRIMARY_COLOR}12` },
                 ]}
               >
                 <Icon
@@ -484,53 +773,28 @@ export default function CreateWorkCenterScreen() {
                   color={PRIMARY_COLOR}
                 />
               </View>
-
               <View>
-                <Text
-                  style={
-                    styles.sectionTitle
-                  }
-                >
+                <Text style={styles.sectionTitle}>
                   Basic Information
                 </Text>
-
-                <Text
-                  style={
-                    styles.sectionSubtitle
-                  }
-                >
+                <Text style={styles.sectionSubtitle}>
                   Required details
                 </Text>
               </View>
-
             </View>
 
-            {/* =================================================
-                WORK CENTER CODE
-            ================================================= */}
-
+            {/* WORK CENTER CODE */}
             <View style={styles.fieldContainer}>
-
-              <Text
-                style={styles.fieldLabel}
-              >
+              <Text style={styles.fieldLabel}>
                 Work Center Code
-                <Text
-                  style={styles.required}
-                >
-                  {' '}*
-                </Text>
+                <Text style={styles.required}> *</Text>
               </Text>
 
               <Controller
                 control={control}
                 name="work_center_code"
                 render={({
-                  field: {
-                    onChange,
-                    onBlur,
-                    value,
-                  },
+                  field: { onChange, onBlur, value },
                 }) => (
                   <TextInput
                     mode="outlined"
@@ -541,12 +805,8 @@ export default function CreateWorkCenterScreen() {
                     placeholderTextColor="#A0A9B5"
                     autoCapitalize="characters"
                     autoCorrect={false}
-                    error={
-                      !!errors.work_center_code
-                    }
-                    style={
-                      styles.textInput
-                    }
+                    error={!!errors.work_center_code}
+                    style={styles.textInput}
                     outlineColor={
                       errors.work_center_code
                         ? ERROR_COLOR
@@ -560,10 +820,8 @@ export default function CreateWorkCenterScreen() {
                     textColor={TEXT_PRIMARY}
                     theme={{
                       colors: {
-                        primary:
-                          PRIMARY_COLOR,
-                        error:
-                          ERROR_COLOR,
+                        primary: PRIMARY_COLOR,
+                        error: ERROR_COLOR,
                       },
                     }}
                   />
@@ -571,57 +829,31 @@ export default function CreateWorkCenterScreen() {
               />
 
               {errors.work_center_code && (
-                <View
-                  style={
-                    styles.errorRow
-                  }
-                >
+                <View style={styles.errorRow}>
                   <Icon
                     name="alert-circle-outline"
                     size={14}
                     color={ERROR_COLOR}
                   />
-
-                  <Text
-                    style={styles.error}
-                  >
-                    {
-                      errors
-                        .work_center_code
-                        .message
-                    }
+                  <Text style={styles.error}>
+                    {errors.work_center_code.message}
                   </Text>
                 </View>
               )}
-
             </View>
 
-            {/* =================================================
-                NAME
-            ================================================= */}
-
+            {/* NAME */}
             <View style={styles.fieldContainer}>
-
-              <Text
-                style={styles.fieldLabel}
-              >
+              <Text style={styles.fieldLabel}>
                 Work Center Name
-                <Text
-                  style={styles.required}
-                >
-                  {' '}*
-                </Text>
+                <Text style={styles.required}> *</Text>
               </Text>
 
               <Controller
                 control={control}
                 name="name"
                 render={({
-                  field: {
-                    onChange,
-                    onBlur,
-                    value,
-                  },
+                  field: { onChange, onBlur, value },
                 }) => (
                   <TextInput
                     mode="outlined"
@@ -631,12 +863,8 @@ export default function CreateWorkCenterScreen() {
                     placeholder="e.g. Assembly Line 1"
                     placeholderTextColor="#A0A9B5"
                     autoCapitalize="sentences"
-                    error={
-                      !!errors.name
-                    }
-                    style={
-                      styles.textInput
-                    }
+                    error={!!errors.name}
+                    style={styles.textInput}
                     outlineColor={
                       errors.name
                         ? ERROR_COLOR
@@ -650,10 +878,8 @@ export default function CreateWorkCenterScreen() {
                     textColor={TEXT_PRIMARY}
                     theme={{
                       colors: {
-                        primary:
-                          PRIMARY_COLOR,
-                        error:
-                          ERROR_COLOR,
+                        primary: PRIMARY_COLOR,
+                        error: ERROR_COLOR,
                       },
                     }}
                   />
@@ -661,39 +887,22 @@ export default function CreateWorkCenterScreen() {
               />
 
               {errors.name && (
-                <View
-                  style={
-                    styles.errorRow
-                  }
-                >
+                <View style={styles.errorRow}>
                   <Icon
                     name="alert-circle-outline"
                     size={14}
                     color={ERROR_COLOR}
                   />
-
-                  <Text
-                    style={styles.error}
-                  >
-                    {
-                      errors.name
-                        .message
-                    }
+                  <Text style={styles.error}>
+                    {errors.name.message}
                   </Text>
                 </View>
               )}
-
             </View>
 
-            {/* =================================================
-                DESCRIPTION
-            ================================================= */}
-
+            {/* DESCRIPTION */}
             <View style={styles.fieldContainer}>
-
-              <Text
-                style={styles.fieldLabel}
-              >
+              <Text style={styles.fieldLabel}>
                 Description
               </Text>
 
@@ -701,11 +910,7 @@ export default function CreateWorkCenterScreen() {
                 control={control}
                 name="description"
                 render={({
-                  field: {
-                    onChange,
-                    onBlur,
-                    value,
-                  },
+                  field: { onChange, onBlur, value },
                 }) => (
                   <TextInput
                     mode="outlined"
@@ -721,51 +926,33 @@ export default function CreateWorkCenterScreen() {
                       styles.textInput,
                       styles.descriptionInput,
                     ]}
-                    outlineColor={
-                      BORDER_COLOR
-                    }
-                    activeOutlineColor={
-                      PRIMARY_COLOR
-                    }
+                    outlineColor={BORDER_COLOR}
+                    activeOutlineColor={PRIMARY_COLOR}
                     textColor={TEXT_PRIMARY}
                     theme={{
-                      colors: {
-                        primary:
-                          PRIMARY_COLOR,
-                      },
+                      colors: { primary: PRIMARY_COLOR },
                     }}
                   />
                 )}
               />
 
-              <Text
-                style={styles.helperText}
-              >
-                Optional. Describe the purpose
-                or function of this work center.
+              <Text style={styles.helperText}>
+                Optional. Describe the purpose or function
+                of this work center.
               </Text>
-
             </View>
-
           </View>
 
           {/* =================================================
-              LOCATION & TIMEZONE
+              REGIONAL SETTINGS
           ================================================= */}
 
           <View style={styles.formCard}>
-
-            <View
-              style={styles.sectionHeading}
-            >
-
+            <View style={styles.sectionHeading}>
               <View
                 style={[
                   styles.sectionIcon,
-                  {
-                    backgroundColor:
-                      '#3B82F612',
-                  },
+                  { backgroundColor: '#3B82F612' },
                 ]}
               >
                 <Icon
@@ -774,42 +961,20 @@ export default function CreateWorkCenterScreen() {
                   color="#3B82F6"
                 />
               </View>
-
               <View>
-
-                <Text
-                  style={
-                    styles.sectionTitle
-                  }
-                >
+                <Text style={styles.sectionTitle}>
                   Regional Settings
                 </Text>
-
-                <Text
-                  style={
-                    styles.sectionSubtitle
-                  }
-                >
-                  Time and location
+                <Text style={styles.sectionSubtitle}>
+                  Time settings
                 </Text>
-
               </View>
-
             </View>
 
-            {/* Timezone */}
-
             <View style={styles.fieldContainer}>
-
-              <Text
-                style={styles.fieldLabel}
-              >
+              <Text style={styles.fieldLabel}>
                 Timezone
-                <Text
-                  style={styles.required}
-                >
-                  {' '}*
-                </Text>
+                <Text style={styles.required}> *</Text>
               </Text>
 
               <TouchableOpacity
@@ -818,18 +983,10 @@ export default function CreateWorkCenterScreen() {
                   errors.timezone &&
                     styles.selectButtonError,
                 ]}
-                onPress={
-                  openTimezoneModal
-                }
+                onPress={openTimezoneModal}
                 activeOpacity={0.8}
               >
-
-                <View
-                  style={
-                    styles.selectLeft
-                  }
-                >
-
+                <View style={styles.selectLeft}>
                   <View
                     style={[
                       styles.selectIcon,
@@ -845,67 +1002,40 @@ export default function CreateWorkCenterScreen() {
                       color={PRIMARY_COLOR}
                     />
                   </View>
-
                   <View
-                    style={
-                      styles.selectTextContainer
-                    }
+                    style={styles.selectTextContainer}
                   >
-
                     <Text
-                      style={
-                        styles.selectValue
-                      }
+                      style={styles.selectValue}
                       numberOfLines={1}
                     >
                       {selectedTimezone}
                     </Text>
-
-                    <Text
-                      style={
-                        styles.selectHint
-                      }
-                    >
+                    <Text style={styles.selectHint}>
                       Tap to change timezone
                     </Text>
-
                   </View>
-
                 </View>
-
                 <Icon
                   name="chevron-down"
                   size={22}
                   color={TEXT_SECONDARY}
                 />
-
               </TouchableOpacity>
 
               {errors.timezone && (
-                <View
-                  style={
-                    styles.errorRow
-                  }
-                >
+                <View style={styles.errorRow}>
                   <Icon
                     name="alert-circle-outline"
                     size={14}
                     color={ERROR_COLOR}
                   />
-
-                  <Text
-                    style={styles.error}
-                  >
-                    {
-                      errors.timezone
-                        .message
-                    }
+                  <Text style={styles.error}>
+                    {errors.timezone.message}
                   </Text>
                 </View>
               )}
-
             </View>
-
           </View>
 
           {/* =================================================
@@ -913,15 +1043,13 @@ export default function CreateWorkCenterScreen() {
           ================================================= */}
 
           <View style={styles.statusCard}>
-
             <View
               style={[
                 styles.statusIcon,
                 {
-                  backgroundColor:
-                    isActive
-                      ? '#10B98112'
-                      : '#94A3B812',
+                  backgroundColor: isActive
+                    ? '#10B98112'
+                    : '#94A3B812',
                 },
               ]}
             >
@@ -932,44 +1060,26 @@ export default function CreateWorkCenterScreen() {
                     : 'pause-circle-outline'
                 }
                 size={22}
-                color={
-                  isActive
-                    ? '#10B981'
-                    : '#94A3B8'
-                }
+                color={isActive ? '#10B981' : '#94A3B8'}
               />
             </View>
 
-            <View
-              style={styles.statusText}
-            >
-
-              <Text
-                style={styles.statusTitle}
-              >
+            <View style={styles.statusText}>
+              <Text style={styles.statusTitle}>
                 Work Center Status
               </Text>
-
-              <Text
-                style={
-                  styles.statusDescription
-                }
-              >
+              <Text style={styles.statusDescription}>
                 {isActive
                   ? 'This work center is active and available for use.'
                   : 'This work center is inactive and unavailable for use.'}
               </Text>
-
             </View>
 
             <Controller
               control={control}
               name="is_active"
               render={({
-                field: {
-                  onChange,
-                  value,
-                },
+                field: { onChange, value },
               }) => (
                 <Switch
                   value={value}
@@ -980,14 +1090,11 @@ export default function CreateWorkCenterScreen() {
                     true: `${PRIMARY_COLOR}70`,
                   }}
                   thumbColor={
-                    value
-                      ? PRIMARY_COLOR
-                      : '#F8FAFC'
+                    value ? PRIMARY_COLOR : '#F8FAFC'
                   }
                 />
               )}
             />
-
           </View>
 
           {/* =================================================
@@ -995,19 +1102,14 @@ export default function CreateWorkCenterScreen() {
           ================================================= */}
 
           <View style={styles.requiredNote}>
-
             <Icon
               name="information-outline"
               size={15}
               color={TEXT_SECONDARY}
             />
-
-            <Text
-              style={styles.requiredNoteText}
-            >
+            <Text style={styles.requiredNoteText}>
               Fields marked with * are required.
             </Text>
-
           </View>
 
           {/* =================================================
@@ -1015,38 +1117,30 @@ export default function CreateWorkCenterScreen() {
           ================================================= */}
 
           <TouchableOpacity
-            onPress={handleSubmit(
-              onSubmit
-            )}
+            onPress={handleSubmit(onSubmit)}
             disabled={isSubmitting}
             activeOpacity={0.88}
             style={[
               styles.submitButton,
-              isSubmitting &&
-                styles.submitButtonDisabled,
+              isSubmitting && styles.submitButtonDisabled,
             ]}
           >
-
             <LinearGradient
               colors={GRADIENT_COLORS}
               start={GRADIENT_START}
               end={GRADIENT_END}
               style={styles.submitGradient}
             >
-
               {isSubmitting ? (
                 <>
                   <ActivityIndicator
                     color="#FFFFFF"
                     size="small"
                   />
-
                   <Text
                     style={[
                       styles.submitText,
-                      {
-                        marginLeft: 9,
-                      },
+                      { marginLeft: 9 },
                     ]}
                   >
                     Creating Work Center...
@@ -1059,40 +1153,227 @@ export default function CreateWorkCenterScreen() {
                     size={21}
                     color="#FFFFFF"
                   />
-
                   <Text
                     style={[
                       styles.submitText,
-                      {
-                        marginLeft: 8,
-                      },
+                      { marginLeft: 8 },
                     ]}
                   >
                     Create Work Center
                   </Text>
-
                   <Icon
                     name="arrow-right"
                     size={19}
                     color="rgba(255,255,255,0.85)"
-                    style={{
-                      marginLeft: 'auto',
-                    }}
+                    style={{ marginLeft: 'auto' }}
                   />
                 </>
               )}
-
             </LinearGradient>
-
           </TouchableOpacity>
 
-          <View
-            style={styles.bottomSpace}
-          />
-
+          <View style={styles.bottomSpace} />
         </ScrollView>
-
       </KeyboardAvoidingView>
+
+      {/* =====================================================
+          LOCATION MODAL (rendered only in ALL mode)
+      ===================================================== */}
+
+      {allLocationsMode && (
+        <Modal
+          visible={locationModalVisible}
+          transparent
+          animationType="slide"
+          onRequestClose={closeLocationModal}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <View style={styles.modalHandle} />
+
+              <View style={styles.modalHeader}>
+                <View>
+                  <Text style={styles.modalEyebrow}>
+                    WORK CENTER
+                  </Text>
+                  <Text style={styles.modalTitle}>
+                    Select Location
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.modalClose}
+                  onPress={closeLocationModal}
+                  activeOpacity={0.8}
+                >
+                  <Icon
+                    name="close"
+                    size={20}
+                    color={TEXT_SECONDARY}
+                  />
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.timezoneSearch}>
+                <Icon
+                  name="magnify"
+                  size={20}
+                  color="#94A3B8"
+                />
+                <TextInput
+                  value={locationSearch}
+                  onChangeText={setLocationSearch}
+                  placeholder="Search by name, code, city"
+                  placeholderTextColor="#94A3B8"
+                  style={styles.timezoneSearchInput}
+                  underlineColor="transparent"
+                  activeUnderlineColor="transparent"
+                />
+                {locationSearch.length > 0 && (
+                  <TouchableOpacity
+                    onPress={() => setLocationSearch('')}
+                  >
+                    <Icon
+                      name="close-circle"
+                      size={18}
+                      color="#94A3B8"
+                    />
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {selectedLocation && (
+                <View style={styles.currentTimezone}>
+                  <View
+                    style={[
+                      styles.currentTimezoneIcon,
+                      {
+                        backgroundColor:
+                          `${PRIMARY_COLOR}12`,
+                      },
+                    ]}
+                  >
+                    <Icon
+                      name="check-circle"
+                      size={18}
+                      color={PRIMARY_COLOR}
+                    />
+                  </View>
+                  <View
+                    style={styles.currentTimezoneText}
+                  >
+                    <Text
+                      style={styles.currentTimezoneLabel}
+                    >
+                      Current selection
+                    </Text>
+                    <Text
+                      style={styles.currentTimezoneValue}
+                    >
+                      {selectedLocation.location_name}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              <FlatList
+                data={filteredLocations}
+                keyExtractor={(item) => item.location_id}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.timezoneList}
+                keyboardShouldPersistTaps="handled"
+                renderItem={({ item }) => {
+                  const selected =
+                    selectedLocationId === item.location_id;
+                  return (
+                    <TouchableOpacity
+                      style={[
+                        styles.timezoneItem,
+                        selected &&
+                          styles.timezoneItemSelected,
+                      ]}
+                      onPress={() =>
+                        selectLocation(item.location_id)
+                      }
+                      activeOpacity={0.8}
+                    >
+                      <View
+                        style={[
+                          styles.timezoneItemIcon,
+                          selected && {
+                            backgroundColor:
+                              `${PRIMARY_COLOR}12`,
+                          },
+                        ]}
+                      >
+                        <Icon
+                          name="map-marker"
+                          size={18}
+                          color={
+                            selected
+                              ? PRIMARY_COLOR
+                              : '#94A3B8'
+                          }
+                        />
+                      </View>
+                      <View
+                        style={{ flex: 1, marginLeft: 9 }}
+                      >
+                        <Text
+                          style={[
+                            styles.timezoneItemText,
+                            selected &&
+                              styles.timezoneItemTextSelected,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {item.location_name}
+                        </Text>
+                        <Text
+                          style={{
+                            fontSize: 9,
+                            color: TEXT_SECONDARY,
+                            marginTop: 2,
+                          }}
+                          numberOfLines={1}
+                        >
+                          {item.location_code}
+                          {item.city ? ` • ${item.city}` : ''}
+                        </Text>
+                      </View>
+                      {selected && (
+                        <Icon
+                          name="check-circle"
+                          size={20}
+                          color={PRIMARY_COLOR}
+                        />
+                      )}
+                    </TouchableOpacity>
+                  );
+                }}
+                ListEmptyComponent={
+                  <View style={styles.noTimezone}>
+                    <Icon
+                      name="map-marker-off"
+                      size={30}
+                      color="#CBD5E1"
+                    />
+                    <Text style={styles.noTimezoneTitle}>
+                      {locationsLoading
+                        ? 'Loading locations…'
+                        : 'No locations available'}
+                    </Text>
+                    <Text style={styles.noTimezoneText}>
+                      {locationsLoading
+                        ? 'Please wait'
+                        : 'Ask an admin to grant you access.'}
+                    </Text>
+                  </View>
+                }
+              />
+            </View>
+          </View>
+        </Modal>
+      )}
 
       {/* =====================================================
           TIMEZONE MODAL
@@ -1102,52 +1383,24 @@ export default function CreateWorkCenterScreen() {
         visible={modalVisible}
         transparent
         animationType="slide"
-        onRequestClose={
-          closeTimezoneModal
-        }
+        onRequestClose={closeTimezoneModal}
       >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHandle} />
 
-        <View
-          style={styles.modalOverlay}
-        >
-
-          <View
-            style={styles.modalContent}
-          >
-
-            {/* Modal handle */}
-
-            <View
-              style={styles.modalHandle}
-            />
-
-            {/* Modal header */}
-
-            <View
-              style={styles.modalHeader}
-            >
-
+            <View style={styles.modalHeader}>
               <View>
-
-                <Text
-                  style={styles.modalEyebrow}
-                >
+                <Text style={styles.modalEyebrow}>
                   REGIONAL SETTINGS
                 </Text>
-
-                <Text
-                  style={styles.modalTitle}
-                >
+                <Text style={styles.modalTitle}>
                   Select Timezone
                 </Text>
-
               </View>
-
               <TouchableOpacity
                 style={styles.modalClose}
-                onPress={
-                  closeTimezoneModal
-                }
+                onPress={closeTimezoneModal}
                 activeOpacity={0.8}
               >
                 <Icon
@@ -1156,41 +1409,26 @@ export default function CreateWorkCenterScreen() {
                   color={TEXT_SECONDARY}
                 />
               </TouchableOpacity>
-
             </View>
 
-            {/* Search */}
-
-            <View
-              style={styles.timezoneSearch}
-            >
-
+            <View style={styles.timezoneSearch}>
               <Icon
                 name="magnify"
                 size={20}
                 color="#94A3B8"
               />
-
               <TextInput
                 value={timezoneSearch}
-                onChangeText={
-                  setTimezoneSearch
-                }
+                onChangeText={setTimezoneSearch}
                 placeholder="Search timezone"
                 placeholderTextColor="#94A3B8"
-                style={
-                  styles.timezoneSearchInput
-                }
+                style={styles.timezoneSearchInput}
                 underlineColor="transparent"
                 activeUnderlineColor="transparent"
               />
-
-              {timezoneSearch.length >
-                0 && (
+              {timezoneSearch.length > 0 && (
                 <TouchableOpacity
-                  onPress={() =>
-                    setTimezoneSearch('')
-                  }
+                  onPress={() => setTimezoneSearch('')}
                 >
                   <Icon
                     name="close-circle"
@@ -1199,15 +1437,9 @@ export default function CreateWorkCenterScreen() {
                   />
                 </TouchableOpacity>
               )}
-
             </View>
 
-            {/* Current timezone */}
-
-            <View
-              style={styles.currentTimezone}
-            >
-
+            <View style={styles.currentTimezone}>
               <View
                 style={[
                   styles.currentTimezoneIcon,
@@ -1223,54 +1455,28 @@ export default function CreateWorkCenterScreen() {
                   color={PRIMARY_COLOR}
                 />
               </View>
-
-              <View
-                style={
-                  styles.currentTimezoneText
-                }
-              >
-
+              <View style={styles.currentTimezoneText}>
                 <Text
-                  style={
-                    styles.currentTimezoneLabel
-                  }
+                  style={styles.currentTimezoneLabel}
                 >
                   Current selection
                 </Text>
-
                 <Text
-                  style={
-                    styles.currentTimezoneValue
-                  }
+                  style={styles.currentTimezoneValue}
                 >
                   {selectedTimezone}
                 </Text>
-
               </View>
-
             </View>
-
-            {/* List */}
 
             <FlatList
               data={filteredTimezones}
-              keyExtractor={(item) =>
-                item
-              }
-              showsVerticalScrollIndicator={
-                false
-              }
-              contentContainerStyle={
-                styles.timezoneList
-              }
+              keyExtractor={(item) => item}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.timezoneList}
               keyboardShouldPersistTaps="handled"
-              renderItem={({
-                item,
-              }) => {
-                const selected =
-                  selectedTimezone ===
-                  item;
-
+              renderItem={({ item }) => {
+                const selected = selectedTimezone === item;
                 return (
                   <TouchableOpacity
                     style={[
@@ -1278,14 +1484,9 @@ export default function CreateWorkCenterScreen() {
                       selected &&
                         styles.timezoneItemSelected,
                     ]}
-                    onPress={() =>
-                      selectTimezone(
-                        item
-                      )
-                    }
+                    onPress={() => selectTimezone(item)}
                     activeOpacity={0.8}
                   >
-
                     <View
                       style={[
                         styles.timezoneItemIcon,
@@ -1305,7 +1506,6 @@ export default function CreateWorkCenterScreen() {
                         }
                       />
                     </View>
-
                     <Text
                       style={[
                         styles.timezoneItemText,
@@ -1315,57 +1515,35 @@ export default function CreateWorkCenterScreen() {
                     >
                       {item}
                     </Text>
-
                     {selected && (
                       <Icon
                         name="check-circle"
                         size={20}
-                        color={
-                          PRIMARY_COLOR
-                        }
+                        color={PRIMARY_COLOR}
                       />
                     )}
-
                   </TouchableOpacity>
                 );
               }}
               ListEmptyComponent={
-                <View
-                  style={
-                    styles.noTimezone
-                  }
-                >
+                <View style={styles.noTimezone}>
                   <Icon
                     name="earth-off"
                     size={30}
                     color="#CBD5E1"
                   />
-
-                  <Text
-                    style={
-                      styles.noTimezoneTitle
-                    }
-                  >
+                  <Text style={styles.noTimezoneTitle}>
                     No timezone found
                   </Text>
-
-                  <Text
-                    style={
-                      styles.noTimezoneText
-                    }
-                  >
+                  <Text style={styles.noTimezoneText}>
                     Try a different search.
                   </Text>
                 </View>
               }
             />
-
           </View>
-
         </View>
-
       </Modal>
-
     </SafeAreaView>
   );
 }
@@ -1375,808 +1553,532 @@ export default function CreateWorkCenterScreen() {
 // =========================================================
 
 const styles = StyleSheet.create({
-
-  // =======================================================
-  // GENERAL
-  // =======================================================
-
   container: {
     flex: 1,
     backgroundColor: BACKGROUND_COLOR,
   },
 
-  flex: {
-    flex: 1,
-  },
+  flex: { flex: 1 },
 
-  // =======================================================
   // HEADER
-  // =======================================================
-
   header: {
     paddingHorizontal: 20,
     paddingTop: 11,
     paddingBottom: 16,
-
     borderBottomLeftRadius: 22,
     borderBottomRightRadius: 22,
-
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.12,
     shadowRadius: 10,
-
     elevation: 5,
   },
-
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
   },
-
   backButton: {
     width: 40,
     height: 40,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 11,
-
-    backgroundColor:
-      'rgba(255,255,255,0.13)',
-
+    backgroundColor: 'rgba(255,255,255,0.13)',
     borderWidth: 1,
-    borderColor:
-      'rgba(255,255,255,0.18)',
+    borderColor: 'rgba(255,255,255,0.18)',
   },
-
   headerTitleContainer: {
     flex: 1,
     marginLeft: 12,
   },
-
   headerEyebrow: {
-    color:
-      'rgba(255,255,255,0.62)',
-
+    color: 'rgba(255,255,255,0.62)',
     fontSize: 8,
-
     fontWeight: '700',
-
     letterSpacing: 1,
   },
-
   headerTitle: {
     marginTop: 3,
-
     color: '#FFFFFF',
-
     fontSize: 17,
-
     fontWeight: '700',
   },
-
   headerIcon: {
     width: 40,
     height: 40,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 11,
-
-    backgroundColor:
-      'rgba(255,255,255,0.13)',
-
+    backgroundColor: 'rgba(255,255,255,0.13)',
     borderWidth: 1,
-    borderColor:
-      'rgba(255,255,255,0.18)',
+    borderColor: 'rgba(255,255,255,0.18)',
   },
-
   breadcrumb: {
     flexDirection: 'row',
     alignItems: 'center',
-
     marginTop: 14,
-
     paddingLeft: 52,
   },
-
   breadcrumbText: {
-    color:
-      'rgba(255,255,255,0.55)',
-
+    color: 'rgba(255,255,255,0.55)',
     fontSize: 9,
-
     fontWeight: '500',
   },
-
   breadcrumbActive: {
-    color:
-      'rgba(255,255,255,0.88)',
-
+    color: 'rgba(255,255,255,0.88)',
     fontWeight: '600',
   },
-
-  // =======================================================
-  // SCROLL
-  // =======================================================
 
   scrollContent: {
     paddingHorizontal: 20,
     paddingTop: 20,
   },
 
-  // =======================================================
-  // INTRO
-  // =======================================================
+  allModeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 12,
+    marginBottom: 14,
+    borderRadius: 11,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  allModeBannerText: {
+    flex: 1,
+    color: '#92400E',
+    fontSize: 11,
+    lineHeight: 16,
+  },
 
   introSection: {
     flexDirection: 'row',
     alignItems: 'center',
-
     marginBottom: 17,
   },
-
   introIcon: {
     width: 46,
     height: 46,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 13,
-
-    backgroundColor:
-      `${PRIMARY_COLOR}12`,
+    backgroundColor: `${PRIMARY_COLOR}12`,
   },
-
-  introText: {
-    flex: 1,
-    marginLeft: 11,
-  },
-
+  introText: { flex: 1, marginLeft: 11 },
   introTitle: {
     color: TEXT_PRIMARY,
-
     fontSize: 18,
-
     fontWeight: '700',
   },
-
   introDescription: {
     marginTop: 3,
-
     color: TEXT_SECONDARY,
-
     fontSize: 10,
-
     lineHeight: 15,
-
     fontWeight: '500',
   },
-
-  // =======================================================
-  // FORM CARD
-  // =======================================================
 
   formCard: {
     padding: 17,
-
     marginBottom: 13,
-
     borderRadius: 17,
-
     backgroundColor: CARD_BACKGROUND,
-
     borderWidth: 1,
     borderColor: '#E5EAF0',
-
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.035,
     shadowRadius: 7,
-
     elevation: 1,
   },
-
-  // =======================================================
-  // SECTION HEADER
-  // =======================================================
-
   sectionHeading: {
     flexDirection: 'row',
     alignItems: 'center',
-
     paddingBottom: 15,
-
     marginBottom: 2,
-
     borderBottomWidth: 1,
     borderBottomColor: '#EEF1F5',
   },
-
   sectionIcon: {
     width: 37,
     height: 37,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 10,
   },
-
   sectionTitle: {
     marginLeft: 10,
-
     color: TEXT_PRIMARY,
-
     fontSize: 14,
-
     fontWeight: '700',
   },
-
   sectionSubtitle: {
     marginLeft: 10,
     marginTop: 2,
-
     color: TEXT_SECONDARY,
-
     fontSize: 9,
-
     fontWeight: '500',
   },
 
-  // =======================================================
-  // FIELD
-  // =======================================================
-
-  fieldContainer: {
-    marginTop: 17,
-  },
-
+  fieldContainer: { marginTop: 17 },
   fieldLabel: {
     marginBottom: 7,
-
     color: TEXT_PRIMARY,
-
     fontSize: 11,
-
     fontWeight: '600',
   },
-
-  required: {
-    color: ERROR_COLOR,
-  },
+  required: { color: ERROR_COLOR },
 
   textInput: {
     minHeight: 50,
-
-    backgroundColor:
-      CARD_BACKGROUND,
-
+    backgroundColor: CARD_BACKGROUND,
     fontSize: 13,
   },
-
   descriptionInput: {
     minHeight: 105,
     paddingTop: 12,
   },
-
   helperText: {
     marginTop: 6,
-
     color: '#94A3B8',
-
     fontSize: 9,
-
     lineHeight: 14,
   },
-
-  // =======================================================
-  // ERROR
-  // =======================================================
 
   errorRow: {
     flexDirection: 'row',
     alignItems: 'center',
-
     marginTop: 5,
-
     paddingLeft: 2,
   },
-
   error: {
     marginLeft: 4,
-
     color: ERROR_COLOR,
-
     fontSize: 10,
-
     fontWeight: '500',
   },
 
-  // =======================================================
-  // SELECT
-  // =======================================================
+  // READ-ONLY LOCKED LOCATION CARD
+  lockedLocationCard: {
+    marginTop: 17,
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: `${PRIMARY_COLOR}08`,
+    borderWidth: 1,
+    borderColor: `${PRIMARY_COLOR}22`,
+  },
+  lockedLocationIcon: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 11,
+    backgroundColor: `${PRIMARY_COLOR}12`,
+  },
+  lockedLocationInfo: {
+    flex: 1,
+    marginLeft: 11,
+  },
+  lockedLocationName: {
+    color: TEXT_PRIMARY,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  lockedLocationMeta: {
+    marginTop: 3,
+    color: TEXT_SECONDARY,
+    fontSize: 10,
+    fontWeight: '500',
+  },
+  lockedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: '#F1F5F9',
+  },
+  lockedBadgeText: {
+    color: '#64748B',
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+  },
 
+  // SELECT
   selectButton: {
     minHeight: 62,
-
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-
     paddingHorizontal: 12,
-
     borderWidth: 1,
     borderColor: BORDER_COLOR,
-
     borderRadius: 10,
-
-    backgroundColor:
-      CARD_BACKGROUND,
+    backgroundColor: CARD_BACKGROUND,
   },
-
-  selectButtonError: {
-    borderColor: ERROR_COLOR,
-  },
-
+  selectButtonError: { borderColor: ERROR_COLOR },
   selectLeft: {
     flex: 1,
-
     flexDirection: 'row',
     alignItems: 'center',
   },
-
   selectIcon: {
     width: 38,
     height: 38,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 10,
   },
-
-  selectTextContainer: {
-    flex: 1,
-
-    marginLeft: 10,
-  },
-
+  selectTextContainer: { flex: 1, marginLeft: 10 },
   selectValue: {
     color: TEXT_PRIMARY,
-
     fontSize: 12,
-
     fontWeight: '600',
   },
-
   selectHint: {
     marginTop: 3,
-
     color: TEXT_SECONDARY,
-
     fontSize: 8,
-
     fontWeight: '500',
   },
 
-  // =======================================================
-  // STATUS CARD
-  // =======================================================
-
+  // STATUS
   statusCard: {
     minHeight: 82,
-
     padding: 14,
-
     marginBottom: 13,
-
     flexDirection: 'row',
     alignItems: 'center',
-
     borderRadius: 16,
-
     backgroundColor: CARD_BACKGROUND,
-
     borderWidth: 1,
     borderColor: '#E5EAF0',
-
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.03,
     shadowRadius: 6,
-
     elevation: 1,
   },
-
   statusIcon: {
     width: 42,
     height: 42,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 11,
   },
-
   statusText: {
     flex: 1,
-
     marginLeft: 10,
     marginRight: 8,
   },
-
   statusTitle: {
     color: TEXT_PRIMARY,
-
     fontSize: 12,
-
     fontWeight: '700',
   },
-
   statusDescription: {
     marginTop: 4,
-
     color: TEXT_SECONDARY,
-
     fontSize: 9,
-
     lineHeight: 13,
-
     fontWeight: '500',
   },
-
-  // =======================================================
-  // REQUIRED NOTE
-  // =======================================================
 
   requiredNote: {
     flexDirection: 'row',
     alignItems: 'center',
-
     marginTop: 3,
     marginBottom: 14,
-
     paddingHorizontal: 2,
   },
-
   requiredNoteText: {
     marginLeft: 5,
-
     color: TEXT_SECONDARY,
-
     fontSize: 9,
-
     fontWeight: '500',
   },
 
-  // =======================================================
-  // SUBMIT
-  // =======================================================
-
   submitButton: {
     minHeight: 55,
-
     borderRadius: 13,
-
     overflow: 'hidden',
-
     shadowColor: '#6D35A5',
-    shadowOffset: {
-      width: 0,
-      height: 6,
-    },
+    shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.22,
     shadowRadius: 10,
-
     elevation: 5,
   },
-
-  submitButtonDisabled: {
-    opacity: 0.75,
-  },
-
+  submitButtonDisabled: { opacity: 0.75 },
   submitGradient: {
     minHeight: 55,
-
     paddingHorizontal: 17,
-
     flexDirection: 'row',
     alignItems: 'center',
   },
-
   submitText: {
     color: '#FFFFFF',
-
     fontSize: 13,
-
     fontWeight: '700',
-
     letterSpacing: 0.1,
   },
+  bottomSpace: { height: 30 },
 
-  bottomSpace: {
-    height: 30,
-  },
-
-  // =======================================================
   // MODAL
-  // =======================================================
-
   modalOverlay: {
     flex: 1,
-
     justifyContent: 'flex-end',
-
-    backgroundColor:
-      'rgba(15,23,42,0.48)',
+    backgroundColor: 'rgba(15,23,42,0.48)',
   },
-
   modalContent: {
     maxHeight: '82%',
-
     paddingTop: 9,
     paddingBottom: 20,
-
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-
-    backgroundColor:
-      CARD_BACKGROUND,
-
+    backgroundColor: CARD_BACKGROUND,
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: -4,
-    },
+    shadowOffset: { width: 0, height: -4 },
     shadowOpacity: 0.15,
     shadowRadius: 15,
-
     elevation: 10,
   },
-
   modalHandle: {
     alignSelf: 'center',
-
     width: 38,
     height: 4,
-
     marginBottom: 15,
-
     borderRadius: 3,
-
     backgroundColor: '#CBD5E1',
   },
-
   modalHeader: {
     paddingHorizontal: 20,
-
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-
   modalEyebrow: {
     color: PRIMARY_COLOR,
-
     fontSize: 8,
-
     fontWeight: '700',
-
     letterSpacing: 0.8,
   },
-
   modalTitle: {
     marginTop: 4,
-
     color: TEXT_PRIMARY,
-
     fontSize: 19,
-
     fontWeight: '700',
   },
-
   modalClose: {
     width: 38,
     height: 38,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 11,
-
     backgroundColor: '#F1F5F9',
   },
-
-  // =======================================================
-  // TIMEZONE SEARCH
-  // =======================================================
-
   timezoneSearch: {
     height: 48,
-
     marginHorizontal: 20,
     marginTop: 17,
-
     paddingHorizontal: 12,
-
     flexDirection: 'row',
     alignItems: 'center',
-
     borderWidth: 1,
     borderColor: BORDER_COLOR,
-
     borderRadius: 11,
-
     backgroundColor: '#F8FAFC',
   },
-
   timezoneSearchInput: {
     flex: 1,
-
     marginLeft: 7,
-
     paddingVertical: 0,
-
-    backgroundColor:
-      'transparent',
-
+    backgroundColor: 'transparent',
     color: TEXT_PRIMARY,
-
     fontSize: 12,
   },
-
-  // =======================================================
-  // CURRENT TIMEZONE
-  // =======================================================
-
   currentTimezone: {
     marginHorizontal: 20,
     marginTop: 13,
-
     padding: 11,
-
     flexDirection: 'row',
     alignItems: 'center',
-
     borderRadius: 11,
-
-    backgroundColor:
-      `${PRIMARY_COLOR}08`,
-
+    backgroundColor: `${PRIMARY_COLOR}08`,
     borderWidth: 1,
-    borderColor:
-      `${PRIMARY_COLOR}18`,
+    borderColor: `${PRIMARY_COLOR}18`,
   },
-
   currentTimezoneIcon: {
     width: 35,
     height: 35,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 9,
   },
-
-  currentTimezoneText: {
-    marginLeft: 9,
-  },
-
+  currentTimezoneText: { marginLeft: 9, flex: 1 },
   currentTimezoneLabel: {
     color: TEXT_SECONDARY,
-
     fontSize: 8,
-
     fontWeight: '600',
   },
-
   currentTimezoneValue: {
     marginTop: 2,
-
     color: TEXT_PRIMARY,
-
     fontSize: 11,
-
     fontWeight: '700',
   },
-
-  // =======================================================
-  // TIMEZONE LIST
-  // =======================================================
-
   timezoneList: {
     paddingHorizontal: 20,
-
     paddingTop: 10,
     paddingBottom: 15,
   },
-
   timezoneItem: {
     minHeight: 55,
-
     paddingHorizontal: 10,
-
     flexDirection: 'row',
     alignItems: 'center',
-
     borderRadius: 11,
-
     marginBottom: 4,
   },
-
   timezoneItemSelected: {
     backgroundColor:
-      SELECTED_ITEM_BG ||
-      `${PRIMARY_COLOR}08`,
+      SELECTED_ITEM_BG || `${PRIMARY_COLOR}08`,
   },
-
   timezoneItemIcon: {
     width: 34,
     height: 34,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 9,
   },
-
   timezoneItemText: {
     flex: 1,
-
     marginLeft: 9,
-
     color: TEXT_PRIMARY,
-
     fontSize: 12,
-
     fontWeight: '500',
   },
-
   timezoneItemTextSelected: {
     color: PRIMARY_COLOR,
-
     fontWeight: '700',
   },
-
-  // =======================================================
-  // NO TIMEZONE
-  // =======================================================
-
   noTimezone: {
     alignItems: 'center',
-
     paddingVertical: 45,
   },
-
   noTimezoneTitle: {
     marginTop: 10,
-
     color: TEXT_PRIMARY,
-
     fontSize: 13,
-
     fontWeight: '700',
   },
-
   noTimezoneText: {
     marginTop: 4,
-
     color: TEXT_SECONDARY,
-
     fontSize: 10,
   },
 });

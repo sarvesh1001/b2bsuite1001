@@ -32,6 +32,7 @@ import {
   getRootDepartments,
   getRolePermissionsDetailed,
   getRoleDepartments,
+  getModulePermissions, // 🆕 from @b2b/api-client (roles.ts)
 } from '@b2b/api-client';
 import { useUserAuthStore } from '../../../store/userAuthStore';
 import { RootStackParamList } from '../../../navigation';
@@ -46,6 +47,19 @@ import {
   GRADIENT_START,
   GRADIENT_END,
 } from '../../../constants/colors';
+
+// ---------------------------------------------------------------------------
+// Centralized logger so you can grep "[EditRole]" in the metro console
+// ---------------------------------------------------------------------------
+const LOG_PREFIX = '[EditRole]';
+const log = {
+  info: (...args: any[]) => console.log(LOG_PREFIX, 'ℹ️', ...args),
+  ok: (...args: any[]) => console.log(LOG_PREFIX, '✅', ...args),
+  warn: (...args: any[]) => console.warn(LOG_PREFIX, '⚠️', ...args),
+  error: (...args: any[]) => console.error(LOG_PREFIX, '❌', ...args),
+  group: (label: string) =>
+    console.log(LOG_PREFIX, '────────', label, '────────'),
+};
 
 type EditRoleRouteProp = RouteProp<RootStackParamList, 'EditRole'> & {
   params?: { roleId?: string };
@@ -69,14 +83,24 @@ const schema = z.object({
 });
 
 type FormData = z.infer<typeof schema>;
-type DepartmentItem = { department_id: string; department_name: string; module_code?: string };
-type PermissionItem = { permission_name: string; description: string; module: string };
+type DepartmentItem = {
+  department_id: string;
+  department_name: string;
+  module_code?: string;
+};
+type PermissionItem = {
+  permission_name: string;
+  description: string;
+  module: string;
+};
 
 export default function EditRoleScreen() {
   const navigation = useNavigation<NavigationProp>();
   const route = useRoute<EditRoleRouteProp>();
   const roleId = route.params?.roleId;
   const isCreateMode = !roleId || roleId === 'new';
+
+  log.info('render', { roleId, isCreateMode });
 
   const { accessToken, deviceId, companyId } = useUserAuthStore();
 
@@ -91,8 +115,12 @@ export default function EditRoleScreen() {
   const [originalPermissionNames, setOriginalPermissionNames] = useState<string[]>([]);
 
   const [selectedDepartmentIds, setSelectedDepartmentIds] = useState<string[]>([]);
-  const [selectedPermissions, setSelectedPermissions] = useState<Record<string, string[]>>({});
-  const [permissionCache, setPermissionCache] = useState<Record<string, PermissionItem[]>>({});
+  const [selectedPermissions, setSelectedPermissions] = useState<
+    Record<string, string[]>
+  >({});
+  const [permissionCache, setPermissionCache] = useState<
+    Record<string, PermissionItem[]>
+  >({});
 
   // Department modal
   const [deptModalVisible, setDeptModalVisible] = useState(false);
@@ -105,18 +133,40 @@ export default function EditRoleScreen() {
   const [tempPermsForModule, setTempPermsForModule] = useState<string[]>([]);
   const [permissionSearch, setPermissionSearch] = useState('');
 
-  const { control, handleSubmit, reset, formState: { errors } } = useForm<FormData>({
+  const {
+    control,
+    handleSubmit,
+    reset,
+    formState: { errors },
+  } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: { role_name: '', role_level: '100', description: '' },
   });
 
   const fetchedRef = useRef(false);
   const permissionsLoadedRef = useRef<Record<string, boolean>>({});
+  const permissionsLoadInFlightRef = useRef(false);
 
-  // ---- Load all module permissions once ----
+  // ---------------------------------------------------------------------------
+  // Load all module permissions once.
+  // Uses api-client (axios) so X-Company-ID, X-Location-ID, Authorization
+  // headers are injected by interceptors, and 401s auto-refresh + retry.
+  // ---------------------------------------------------------------------------
   const loadAllModulePermissions = useCallback(
     async (departments: DepartmentItem[]) => {
-      if (!accessToken || !companyId || !deviceId) return;
+      if (!accessToken || !companyId || !deviceId) {
+        log.warn('loadAllModulePermissions: missing auth/session, skipping', {
+          hasToken: !!accessToken,
+          hasCompany: !!companyId,
+          hasDevice: !!deviceId,
+        });
+        return;
+      }
+
+      if (permissionsLoadInFlightRef.current) {
+        log.info('loadAllModulePermissions: already in flight, skipping');
+        return;
+      }
 
       const moduleCodes = [
         ...new Set(
@@ -126,54 +176,142 @@ export default function EditRoleScreen() {
         ),
       ];
 
+      log.group('loadAllModulePermissions');
+      log.info('Discovered module codes:', moduleCodes);
+      log.info(
+        'Already loaded (ref):',
+        Object.keys(permissionsLoadedRef.current)
+      );
+
       const modulesToLoad = moduleCodes.filter(
         (moduleCode) => !permissionsLoadedRef.current[moduleCode]
       );
 
-      if (modulesToLoad.length === 0) return;
+      log.info('Modules still to load:', modulesToLoad);
+      if (modulesToLoad.length === 0) {
+        log.ok('All modules already cached, nothing to do');
+        return;
+      }
+
+      permissionsLoadInFlightRef.current = true;
 
       try {
-        const results = await Promise.all(
+        const settled = await Promise.allSettled(
           modulesToLoad.map(async (moduleCode) => {
-            const response = await fetch(
-              `${process.env.EXPO_PUBLIC_API_BASE_URL}/companies/${companyId}/hr/permissions/module/${moduleCode}`,
-              {
-                headers: {
-                  Authorization: `Bearer ${accessToken}`,
-                  'X-Device-ID': deviceId,
-                  'X-Company-ID': companyId,
-                },
+            log.info(`→ getModulePermissions "${moduleCode}"`);
+            try {
+              const res = await getModulePermissions(
+                companyId,
+                deviceId,
+                moduleCode,
+                accessToken
+              );
+              const permissions = (res?.data ?? []) as PermissionItem[];
+              log.ok(
+                `← getModulePermissions "${moduleCode}" → ${permissions.length} permissions`
+              );
+              return { moduleCode, permissions };
+            } catch (err: any) {
+              const status = err?.response?.status;
+              const backendMsg = err?.response?.data?.message;
+
+              // 404 → module genuinely has no permissions. Treat as empty.
+              if (status === 404) {
+                log.warn(
+                  `"${moduleCode}": 404 — module has no permissions (treating as empty)`
+                );
+                return { moduleCode, permissions: [] as PermissionItem[] };
               }
-            );
-            if (!response.ok) {
-              throw new Error(`Failed to load permissions for ${moduleCode}`);
+
+              log.error(
+                `"${moduleCode}": HTTP ${status ?? 'network'} — ${
+                  backendMsg ?? err.message
+                }`
+              );
+              throw err;
             }
-            const json = await response.json();
-            return { moduleCode, permissions: json.data || [] };
           })
         );
 
-        setPermissionCache((prev) => {
-          const next = { ...prev };
-          results.forEach(({ moduleCode, permissions }) => {
-            next[moduleCode] = permissions;
-            permissionsLoadedRef.current[moduleCode] = true;
-          });
-          return next;
+        const successful: {
+          moduleCode: string;
+          permissions: PermissionItem[];
+        }[] = [];
+        const failed: { moduleCode: string; reason: any }[] = [];
+
+        settled.forEach((result, index) => {
+          const moduleCode = modulesToLoad[index];
+          if (result.status === 'fulfilled') {
+            successful.push(result.value);
+          } else {
+            failed.push({ moduleCode, reason: result.reason });
+          }
         });
-      } catch (error) {
-        console.error('Failed to load module permissions:', error);
-        Alert.alert('Unable to Load Permissions', 'Could not load all permissions. Some may be missing.');
+
+        log.group('loadAllModulePermissions summary');
+        log.ok(
+          'Successful modules:',
+          successful.map((s) => `${s.moduleCode}(${s.permissions.length})`)
+        );
+        if (failed.length) {
+          log.error(
+            'Failed modules:',
+            failed.map((f) => {
+              const s = f.reason?.response?.status;
+              const m =
+                f.reason?.response?.data?.message ?? f.reason?.message;
+              return `${f.moduleCode}: ${s ?? 'net'} — ${m}`;
+            })
+          );
+        }
+
+        if (successful.length > 0) {
+          setPermissionCache((prev) => {
+            const next = { ...prev };
+            successful.forEach(({ moduleCode, permissions }) => {
+              next[moduleCode] = permissions;
+              permissionsLoadedRef.current[moduleCode] = true;
+            });
+            log.info('Permission cache updated. Keys now:', Object.keys(next));
+            return next;
+          });
+        }
+
+        if (failed.length > 0) {
+          log.warn(
+            'Some modules could not be loaded. UI shows them with 0 permissions. Retry occurs on next mount.'
+          );
+        }
+      } catch (err) {
+        // allSettled never rejects, but keep safe
+        log.error('Unexpected error in loadAllModulePermissions:', err);
+      } finally {
+        permissionsLoadInFlightRef.current = false;
       }
     },
     [accessToken, companyId, deviceId]
   );
 
-  // ---- Initial data fetch ----
+  // ---------------------------------------------------------------------------
+  // Initial data fetch
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     const fetchData = async () => {
+      log.group('fetchData (initial)');
+      log.info('Auth snapshot:', {
+        hasToken: !!accessToken,
+        hasCompany: !!companyId,
+        hasDevice: !!deviceId,
+        roleId,
+        isCreateMode,
+      });
+
       if (!accessToken || !companyId || !deviceId) {
-        Alert.alert('Authentication Required', 'Your authentication session is missing.');
+        log.error('Missing auth/session — aborting');
+        Alert.alert(
+          'Authentication Required',
+          'Your authentication session is missing.'
+        );
         navigation.goBack();
         return;
       }
@@ -183,53 +321,81 @@ export default function EditRoleScreen() {
 
       try {
         // 1) Load departments
-        const deptRes = await getRootDepartments(companyId, deviceId, accessToken);
-        const departments = deptRes.data || [];
+        log.info('Step 1: getRootDepartments');
+        const deptRes = await getRootDepartments(
+          companyId,
+          deviceId,
+          accessToken
+        );
+        const departments = (deptRes?.data ?? []) as DepartmentItem[];
+        log.ok(`getRootDepartments → ${departments.length} departments`);
+        log.info(
+          'Departments:',
+          departments.map((d) => ({
+            id: d.department_id,
+            name: d.department_name,
+            module_code: d.module_code,
+          }))
+        );
         setAllDepartments(departments);
 
         // 2) Load all module permissions once (cached)
+        log.info('Step 2: loadAllModulePermissions');
         await loadAllModulePermissions(departments);
+        log.ok('Step 2 complete');
 
         // 3) If create mode, set defaults and finish
         if (isCreateMode) {
-          reset({
-            role_name: '',
-            role_level: '100',
-            description: '',
-          });
+          log.info('Create mode → setting defaults and finishing');
+          reset({ role_name: '', role_level: '100', description: '' });
           setSelectedDepartmentIds([]);
           setSelectedPermissions({});
           setOriginalDepartmentIds([]);
           setOriginalPermissionNames([]);
           setIsSystemRole(false);
-          setLoading(false);
-          setLoadingDepartments(false);
           fetchedRef.current = true;
           return;
         }
 
         // 4) Edit mode: load role, permissions, departments
+        log.info('Step 3: parallel load role/permissions/departments', {
+          roleId,
+        });
         const [roleRes, permRes, roleDeptRes] = await Promise.all([
           getRole(companyId, deviceId, roleId!, accessToken),
-          getRolePermissionsDetailed(companyId, deviceId, roleId!, accessToken),
+          getRolePermissionsDetailed(
+            companyId,
+            deviceId,
+            roleId!,
+            accessToken
+          ),
           getRoleDepartments(companyId, deviceId, roleId!, accessToken),
         ]);
 
-        const role = roleRes.data;
+        const role = roleRes?.data;
+        log.info('Role loaded:', role);
+
         if (!role) {
-          Alert.alert('Role Not Found', 'The requested role could not be found.');
+          log.error('Role not found');
+          Alert.alert(
+            'Role Not Found',
+            'The requested role could not be found.'
+          );
           navigation.goBack();
           return;
         }
 
-        setIsSystemRole(role.is_system_role);
+        setIsSystemRole(!!role.is_system_role);
+        log.info('is_system_role:', role.is_system_role);
 
-        const deptIds = (roleDeptRes.data || []).map((d) => d.department_id);
+        const deptIds = (roleDeptRes?.data ?? []).map((d) => d.department_id);
+        log.info('Role departments:', deptIds);
         setOriginalDepartmentIds(deptIds);
         setSelectedDepartmentIds(deptIds);
 
-        const perms = permRes.data || [];
+        const perms = permRes?.data ?? [];
         const permNames = perms.map((p) => p.permission_name);
+        log.info(`Role permissions → ${permNames.length}`, permNames);
         setOriginalPermissionNames(permNames);
 
         const grouped: Record<string, string[]> = {};
@@ -238,6 +404,7 @@ export default function EditRoleScreen() {
           if (!grouped[mod]) grouped[mod] = [];
           grouped[mod].push(p.permission_name);
         });
+        log.info('Grouped permissions:', grouped);
         setSelectedPermissions(grouped);
 
         reset({
@@ -247,24 +414,49 @@ export default function EditRoleScreen() {
         });
 
         fetchedRef.current = true;
+        log.ok('fetchData complete');
       } catch (error: any) {
-        console.error('Failed to load data:', error);
-        Alert.alert('Unable to Load', error?.message || 'Something went wrong while loading.');
+        log.error('fetchData failed:', {
+          message: error?.message,
+          status: error?.response?.status,
+          data: error?.response?.data,
+        });
+        Alert.alert(
+          'Unable to Load',
+          error?.message || 'Something went wrong while loading.'
+        );
         navigation.goBack();
       } finally {
         setLoading(false);
         setLoadingDepartments(false);
+        log.info('fetchData finally — loading=false');
       }
     };
 
     if (!fetchedRef.current) {
       fetchData();
+    } else {
+      log.info('fetchData skipped (already fetched)');
     }
-  }, [roleId, accessToken, companyId, deviceId, navigation, reset, isCreateMode, loadAllModulePermissions]);
+  }, [
+    roleId,
+    accessToken,
+    companyId,
+    deviceId,
+    navigation,
+    reset,
+    isCreateMode,
+    loadAllModulePermissions,
+  ]);
 
-  // ---- Memoized selections ----
+  // ---------------------------------------------------------------------------
+  // Memoized selections
+  // ---------------------------------------------------------------------------
   const selectedDepartments = useMemo(
-    () => allDepartments.filter((dept) => selectedDepartmentIds.includes(dept.department_id)),
+    () =>
+      allDepartments.filter((dept) =>
+        selectedDepartmentIds.includes(dept.department_id)
+      ),
     [allDepartments, selectedDepartmentIds]
   );
 
@@ -285,8 +477,13 @@ export default function EditRoleScreen() {
     [selectedPermissions]
   );
 
-  // ---- Department modal handlers ----
+  // ---------------------------------------------------------------------------
+  // Department modal handlers
+  // ---------------------------------------------------------------------------
   const openDeptModal = () => {
+    log.info('openDeptModal', {
+      currentlySelected: selectedDepartmentIds.length,
+    });
     setTempDeptIds([...selectedDepartmentIds]);
     setDepartmentSearch('');
     setDeptModalVisible(true);
@@ -307,12 +504,18 @@ export default function EditRoleScreen() {
   };
 
   const confirmDepartments = () => {
+    log.info('confirmDepartments', { count: tempDeptIds.length });
     setSelectedDepartmentIds(tempDeptIds);
     setDeptModalVisible(false);
   };
 
-  // ---- Permission modal handlers ----
+  // ---------------------------------------------------------------------------
+  // Permission modal handlers
+  // ---------------------------------------------------------------------------
   const openPermissionModal = () => {
+    log.info('openPermissionModal', {
+      selectedDepts: selectedDepartmentIds.length,
+    });
     if (selectedDepartmentIds.length === 0) {
       Alert.alert(
         'Select Department First',
@@ -326,6 +529,7 @@ export default function EditRoleScreen() {
   };
 
   const closePermissionModal = () => {
+    log.info('closePermissionModal');
     setPermModalVisible(false);
     setCurrentModule(null);
     setPermissionSearch('');
@@ -333,11 +537,31 @@ export default function EditRoleScreen() {
 
   // No API call – all permissions already cached
   const handleDepartmentSelect = (dept: DepartmentItem) => {
+    log.info('handleDepartmentSelect', {
+      department: dept.department_name,
+      module_code: dept.module_code,
+    });
+
     if (!dept.module_code) {
-      Alert.alert('Module Not Assigned', 'This department does not have a module assigned.');
+      Alert.alert(
+        'Module Not Assigned',
+        'This department does not have a module assigned.'
+      );
       return;
     }
     const moduleCode = dept.module_code;
+
+    const cached = permissionCache[moduleCode];
+    if (!cached) {
+      log.warn(
+        `No cached permissions for module "${moduleCode}". ` +
+          `Earlier load failed (network / 4xx / 5xx) or module has no permissions. ` +
+          `Showing empty list.`
+      );
+    } else {
+      log.info(`Cache hit for "${moduleCode}":`, cached.length, 'permissions');
+    }
+
     setCurrentModule(moduleCode);
     setPermissionSearch('');
     setTempPermsForModule(selectedPermissions[moduleCode] || []);
@@ -355,7 +579,14 @@ export default function EditRoleScreen() {
     if (!currentModule) return;
     const permissions = permissionCache[currentModule] || [];
     const names = permissions.map((p) => p.permission_name);
-    const allSelected = names.length > 0 && names.every((name) => tempPermsForModule.includes(name));
+    const allSelected =
+      names.length > 0 &&
+      names.every((name) => tempPermsForModule.includes(name));
+    log.info('toggleAllTempPermissions', {
+      currentModule,
+      allSelected,
+      count: names.length,
+    });
     setTempPermsForModule(allSelected ? [] : names);
   };
 
@@ -363,6 +594,11 @@ export default function EditRoleScreen() {
     if (!currentModule) return;
     const module = currentModule;
     const permissions = [...tempPermsForModule];
+    log.info('saveModulePermissions', {
+      module,
+      count: permissions.length,
+      permissions,
+    });
     setSelectedPermissions((prev) => ({
       ...prev,
       [module]: permissions,
@@ -373,18 +609,22 @@ export default function EditRoleScreen() {
   };
 
   const cancelDepartmentPermissions = () => {
+    log.info('cancelDepartmentPermissions', { currentModule });
     setCurrentModule(null);
     setTempPermsForModule([]);
     setPermissionSearch('');
   };
 
   const confirmAllPermissions = () => {
+    log.info('confirmAllPermissions', { totalPermissionCount });
     setPermModalVisible(false);
     setCurrentModule(null);
     setPermissionSearch('');
   };
 
-  const currentPermissions = currentModule ? permissionCache[currentModule] || [] : [];
+  const currentPermissions = currentModule
+    ? permissionCache[currentModule] || []
+    : [];
   const filteredPermissions = useMemo(() => {
     const query = permissionSearch.trim().toLowerCase();
     if (!query) return currentPermissions;
@@ -395,40 +635,50 @@ export default function EditRoleScreen() {
     );
   }, [currentPermissions, permissionSearch]);
 
-  // ---- SUBMIT (fixed for create vs update) ----
+  // ---------------------------------------------------------------------------
+  // SUBMIT (create vs update — logic preserved from your file)
+  // ---------------------------------------------------------------------------
   const onSubmit = async (data: FormData) => {
+    log.group('onSubmit');
+    log.info('Form data:', data);
+
     if (!accessToken || !companyId || !deviceId) {
+      log.error('onSubmit: missing auth');
       Alert.alert('Authentication Required', 'Your session has expired.');
       return;
     }
-  
+
     setSaving(true);
-  
+
     try {
-      // Compute selected permissions (only for departments that are currently selected)
+      // Compute selected permissions (only for departments currently selected)
       const selectedModuleCodes = new Set(
         allDepartments
-          .filter((dept) => selectedDepartmentIds.includes(dept.department_id))
+          .filter((dept) =>
+            selectedDepartmentIds.includes(dept.department_id)
+          )
           .map((dept) => dept.module_code)
           .filter((code): code is string => !!code)
       );
-  
+
       const allSelectedPerms = Object.entries(selectedPermissions)
         .filter(([moduleCode]) => selectedModuleCodes.has(moduleCode))
         .flatMap(([, permissions]) => permissions);
-  
+
       if (isCreateMode) {
         // ---- CREATE: uses department_ids and permission_names ----
         const payload = {
           role_name: data.role_name,
-          role_level: Number(data.role_level), // ✅ always a number
+          role_level: Number(data.role_level),
           description: data.description || '',
           department_ids: selectedDepartmentIds,
           permission_names: allSelectedPerms,
         };
-  
+
+        log.info('Create payload:', payload);
         await createRole(companyId, deviceId, payload, accessToken);
-  
+        log.ok('Role created');
+
         Alert.alert(
           'Role Created',
           'The new role has been created successfully.',
@@ -436,82 +686,125 @@ export default function EditRoleScreen() {
         );
         return;
       }
-  
+
       // ---- UPDATE: uses add/remove with names ----
       const deptIdToName = Object.fromEntries(
         allDepartments.map((d) => [d.department_id, d.department_name])
       );
-  
-      const addDeptIds = selectedDepartmentIds.filter((id) => !originalDepartmentIds.includes(id));
-      const removeDeptIds = originalDepartmentIds.filter((id) => !selectedDepartmentIds.includes(id));
-  
-      const addDeptNames = addDeptIds.map((id) => deptIdToName[id]).filter(Boolean);
-      const removeDeptNames = removeDeptIds.map((id) => deptIdToName[id]).filter(Boolean);
-  
+
+      const addDeptIds = selectedDepartmentIds.filter(
+        (id) => !originalDepartmentIds.includes(id)
+      );
+      const removeDeptIds = originalDepartmentIds.filter(
+        (id) => !selectedDepartmentIds.includes(id)
+      );
+
+      const addDeptNames = addDeptIds
+        .map((id) => deptIdToName[id])
+        .filter(Boolean);
+      const removeDeptNames = removeDeptIds
+        .map((id) => deptIdToName[id])
+        .filter(Boolean);
+
       const addPerms = allSelectedPerms.filter(
         (permission) => !originalPermissionNames.includes(permission)
       );
       const removePerms = originalPermissionNames.filter(
         (permission) => !allSelectedPerms.includes(permission)
       );
-  
+
       const payload = {
         role_name: data.role_name,
-        role_level: Number(data.role_level), // ✅ always a number
+        role_level: Number(data.role_level),
         description: data.description || '',
         add_departments: addDeptNames,
         remove_departments: removeDeptNames,
         add_permissions: addPerms,
         remove_permissions: removePerms,
       };
-  
+
+      log.info('Update payload:', payload);
       await updateRole(companyId, deviceId, roleId!, payload, accessToken);
-  
+      log.ok('Role updated');
+
       Alert.alert(
         'Role Updated',
         'The role has been updated successfully.',
         [{ text: 'Done', onPress: () => navigation.goBack() }]
       );
-  
     } catch (error: any) {
-      const message = error?.response?.data?.message || error?.message || 'Unable to save the role.';
+      log.error('Save failed:', {
+        message: error?.message,
+        status: error?.response?.status,
+        data: error?.response?.data,
+      });
+      const message =
+        error?.response?.data?.message ||
+        error?.message ||
+        'Unable to save the role.';
       Alert.alert('Save Failed', message);
     } finally {
       setSaving(false);
     }
   };
-  // ---- Loading screen ----
+
+  // ---------------------------------------------------------------------------
+  // Loading screen
+  // ---------------------------------------------------------------------------
   if (loading) {
     return (
       <SafeAreaView edges={['top', 'bottom']} style={styles.container}>
         <View style={styles.loadingScreen}>
           <View style={styles.loadingIcon}>
-            <Icon name="account-edit-outline" size={30} color={PRIMARY_COLOR} />
+            <Icon
+              name="account-edit-outline"
+              size={30}
+              color={PRIMARY_COLOR}
+            />
           </View>
-          <ActivityIndicator size="small" color={PRIMARY_COLOR} style={{ marginTop: 18 }} />
+          <ActivityIndicator
+            size="small"
+            color={PRIMARY_COLOR}
+            style={{ marginTop: 18 }}
+          />
           <Text style={styles.loadingTitle}>
             {isCreateMode ? 'Preparing new role' : 'Loading role'}
           </Text>
           <Text style={styles.loadingSubtitle}>
-            {isCreateMode ? 'Loading departments...' : 'Preparing role settings...'}
+            {isCreateMode
+              ? 'Loading departments...'
+              : 'Preparing role settings...'}
           </Text>
         </View>
       </SafeAreaView>
     );
   }
 
-  // ---- Main render (unchanged except for the submit) ----
+  // ---------------------------------------------------------------------------
+  // Main render
+  // ---------------------------------------------------------------------------
   return (
     <SafeAreaView edges={['top', 'bottom']} style={styles.container}>
       {/* HEADER */}
-      <LinearGradient colors={GRADIENT_COLORS} start={GRADIENT_START} end={GRADIENT_END} style={styles.header}>
+      <LinearGradient
+        colors={GRADIENT_COLORS}
+        start={GRADIENT_START}
+        end={GRADIENT_END}
+        style={styles.header}
+      >
         <View style={styles.headerRow}>
-          <TouchableOpacity style={styles.headerBack} onPress={() => navigation.goBack()} activeOpacity={0.8}>
+          <TouchableOpacity
+            style={styles.headerBack}
+            onPress={() => navigation.goBack()}
+            activeOpacity={0.8}
+          >
             <Icon name="arrow-left" size={21} color="#FFFFFF" />
           </TouchableOpacity>
           <View style={styles.headerTitleContainer}>
             <Text style={styles.headerEyebrow}>ADMINISTRATION</Text>
-            <Text style={styles.headerTitle}>{isCreateMode ? 'Create Role' : 'Edit Role'}</Text>
+            <Text style={styles.headerTitle}>
+              {isCreateMode ? 'Create Role' : 'Edit Role'}
+            </Text>
           </View>
           <View style={styles.headerRoleIcon}>
             <Icon name="shield-account-outline" size={22} color="#FFFFFF" />
@@ -533,8 +826,8 @@ export default function EditRoleScreen() {
             <View style={styles.systemNoticeContent}>
               <Text style={styles.systemNoticeTitle}>System Role</Text>
               <Text style={styles.systemNoticeText}>
-                This role is protected by the system. You can modify its information and permissions,
-                but it cannot be deleted.
+                This role is protected by the system. You can modify its
+                information and permissions, but it cannot be deleted.
               </Text>
             </View>
           </View>
@@ -544,11 +837,17 @@ export default function EditRoleScreen() {
         <View style={styles.sectionCard}>
           <View style={styles.sectionCardHeader}>
             <View style={styles.sectionIcon}>
-              <Icon name="account-edit-outline" size={20} color={PRIMARY_COLOR} />
+              <Icon
+                name="account-edit-outline"
+                size={20}
+                color={PRIMARY_COLOR}
+              />
             </View>
             <View>
               <Text style={styles.sectionTitle}>Role Information</Text>
-              <Text style={styles.sectionSubtitle}>Basic details about this role</Text>
+              <Text style={styles.sectionSubtitle}>
+                Basic details about this role
+              </Text>
             </View>
           </View>
 
@@ -572,7 +871,9 @@ export default function EditRoleScreen() {
               />
             )}
           />
-          {errors.role_name && <Text style={styles.errorText}>{errors.role_name.message}</Text>}
+          {errors.role_name && (
+            <Text style={styles.errorText}>{errors.role_name.message}</Text>
+          )}
 
           {/* Role Level – string handling */}
           <Controller
@@ -600,7 +901,9 @@ export default function EditRoleScreen() {
               />
             )}
           />
-          {errors.role_level && <Text style={styles.errorText}>{errors.role_level.message}</Text>}
+          {errors.role_level && (
+            <Text style={styles.errorText}>{errors.role_level.message}</Text>
+          )}
 
           {/* Description */}
           <Controller
@@ -629,14 +932,22 @@ export default function EditRoleScreen() {
         <View style={styles.sectionCard}>
           <View style={styles.sectionCardHeader}>
             <View style={styles.sectionIcon}>
-              <Icon name="office-building-outline" size={20} color={PRIMARY_COLOR} />
+              <Icon
+                name="office-building-outline"
+                size={20}
+                color={PRIMARY_COLOR}
+              />
             </View>
             <View style={styles.sectionHeaderText}>
               <Text style={styles.sectionTitle}>Departments</Text>
-              <Text style={styles.sectionSubtitle}>Choose departments this role can access</Text>
+              <Text style={styles.sectionSubtitle}>
+                Choose departments this role can access
+              </Text>
             </View>
             <View style={styles.countBadge}>
-              <Text style={styles.countBadgeText}>{selectedDepartmentIds.length}</Text>
+              <Text style={styles.countBadgeText}>
+                {selectedDepartmentIds.length}
+              </Text>
             </View>
           </View>
 
@@ -644,7 +955,11 @@ export default function EditRoleScreen() {
             <View style={styles.selectedItems}>
               {selectedDepartments.slice(0, 6).map((dept) => (
                 <View key={dept.department_id} style={styles.selectedChip}>
-                  <Icon name="office-building-outline" size={14} color={PRIMARY_COLOR} />
+                  <Icon
+                    name="office-building-outline"
+                    size={14}
+                    color={PRIMARY_COLOR}
+                  />
                   <Text numberOfLines={1} style={styles.selectedChipText}>
                     {dept.department_name}
                   </Text>
@@ -652,21 +967,41 @@ export default function EditRoleScreen() {
               ))}
               {selectedDepartments.length > 6 && (
                 <View style={styles.moreChip}>
-                  <Text style={styles.moreChipText}>+{selectedDepartments.length - 6} more</Text>
+                  <Text style={styles.moreChipText}>
+                    +{selectedDepartments.length - 6} more
+                  </Text>
                 </View>
               )}
             </View>
           ) : (
             <View style={styles.emptySelection}>
-              <Icon name="office-building-outline" size={22} color="#94A3B8" />
-              <Text style={styles.emptySelectionText}>No departments selected</Text>
+              <Icon
+                name="office-building-outline"
+                size={22}
+                color="#94A3B8"
+              />
+              <Text style={styles.emptySelectionText}>
+                No departments selected
+              </Text>
             </View>
           )}
 
-          <TouchableOpacity style={styles.outlineAction} onPress={openDeptModal} activeOpacity={0.8}>
-            <Icon name={selectedDepartments.length > 0 ? 'pencil-outline' : 'plus'} size={17} color={PRIMARY_COLOR} />
+          <TouchableOpacity
+            style={styles.outlineAction}
+            onPress={openDeptModal}
+            activeOpacity={0.8}
+          >
+            <Icon
+              name={
+                selectedDepartments.length > 0 ? 'pencil-outline' : 'plus'
+              }
+              size={17}
+              color={PRIMARY_COLOR}
+            />
             <Text style={styles.outlineActionText}>
-              {selectedDepartments.length > 0 ? 'Change Departments' : 'Select Departments'}
+              {selectedDepartments.length > 0
+                ? 'Change Departments'
+                : 'Select Departments'}
             </Text>
           </TouchableOpacity>
         </View>
@@ -675,11 +1010,17 @@ export default function EditRoleScreen() {
         <View style={styles.sectionCard}>
           <View style={styles.sectionCardHeader}>
             <View style={styles.sectionIcon}>
-              <Icon name="shield-key-outline" size={20} color={PRIMARY_COLOR} />
+              <Icon
+                name="shield-key-outline"
+                size={20}
+                color={PRIMARY_COLOR}
+              />
             </View>
             <View style={styles.sectionHeaderText}>
               <Text style={styles.sectionTitle}>Permissions</Text>
-              <Text style={styles.sectionSubtitle}>Control what this role can do</Text>
+              <Text style={styles.sectionSubtitle}>
+                Control what this role can do
+              </Text>
             </View>
             <View style={styles.countBadge}>
               <Text style={styles.countBadgeText}>{totalPermissionCount}</Text>
@@ -694,29 +1035,42 @@ export default function EditRoleScreen() {
                 .map(([module, perms]) => (
                   <View key={module} style={styles.permissionRow}>
                     <View style={styles.permissionModuleIcon}>
-                      <Icon name="shield-outline" size={15} color={PRIMARY_COLOR} />
+                      <Icon
+                        name="shield-outline"
+                        size={15}
+                        color={PRIMARY_COLOR}
+                      />
                     </View>
                     <Text style={styles.permissionModuleName}>{module}</Text>
                     <View style={styles.permissionCount}>
-                      <Text style={styles.permissionCountText}>{perms.length}</Text>
+                      <Text style={styles.permissionCountText}>
+                        {perms.length}
+                      </Text>
                     </View>
                   </View>
                 ))}
               {Object.keys(selectedPermissions).filter(
                 (module) => (selectedPermissions[module] || []).length > 0
               ).length > 6 && (
-                <Text style={styles.morePermissions}>More permission modules selected</Text>
+                <Text style={styles.morePermissions}>
+                  More permission modules selected
+                </Text>
               )}
             </View>
           ) : (
             <View style={styles.emptySelection}>
               <Icon name="shield-off-outline" size={22} color="#94A3B8" />
-              <Text style={styles.emptySelectionText}>No permissions selected</Text>
+              <Text style={styles.emptySelectionText}>
+                No permissions selected
+              </Text>
             </View>
           )}
 
           <TouchableOpacity
-            style={[styles.outlineAction, selectedDepartmentIds.length === 0 && styles.disabledAction]}
+            style={[
+              styles.outlineAction,
+              selectedDepartmentIds.length === 0 && styles.disabledAction,
+            ]}
             onPress={openPermissionModal}
             disabled={selectedDepartmentIds.length === 0}
             activeOpacity={0.8}
@@ -724,14 +1078,24 @@ export default function EditRoleScreen() {
             <Icon
               name="shield-key-outline"
               size={17}
-              color={selectedDepartmentIds.length === 0 ? '#94A3B8' : PRIMARY_COLOR}
+              color={
+                selectedDepartmentIds.length === 0 ? '#94A3B8' : PRIMARY_COLOR
+              }
             />
-            <Text style={[styles.outlineActionText, selectedDepartmentIds.length === 0 && styles.disabledActionText]}>
+            <Text
+              style={[
+                styles.outlineActionText,
+                selectedDepartmentIds.length === 0 &&
+                  styles.disabledActionText,
+              ]}
+            >
               Manage Permissions
             </Text>
           </TouchableOpacity>
           {selectedDepartmentIds.length === 0 && (
-            <Text style={styles.helperText}>Select at least one department before assigning permissions.</Text>
+            <Text style={styles.helperText}>
+              Select at least one department before assigning permissions.
+            </Text>
           )}
         </View>
 
@@ -742,7 +1106,12 @@ export default function EditRoleScreen() {
           activeOpacity={0.88}
           style={styles.updateButtonWrapper}
         >
-          <LinearGradient colors={GRADIENT_COLORS} start={GRADIENT_START} end={GRADIENT_END} style={styles.updateButton}>
+          <LinearGradient
+            colors={GRADIENT_COLORS}
+            start={GRADIENT_START}
+            end={GRADIENT_END}
+            style={styles.updateButton}
+          >
             {saving ? (
               <>
                 <ActivityIndicator size="small" color="#FFFFFF" />
@@ -750,13 +1119,21 @@ export default function EditRoleScreen() {
               </>
             ) : (
               <>
-                <Icon name="content-save-outline" size={19} color="#FFFFFF" />
-                <Text style={styles.updateButtonText}>{isCreateMode ? 'Create Role' : 'Save Changes'}</Text>
+                <Icon
+                  name="content-save-outline"
+                  size={19}
+                  color="#FFFFFF"
+                />
+                <Text style={styles.updateButtonText}>
+                  {isCreateMode ? 'Create Role' : 'Save Changes'}
+                </Text>
               </>
             )}
           </LinearGradient>
         </TouchableOpacity>
-        <Text style={styles.bottomHint}>Changes will be applied to this role immediately.</Text>
+        <Text style={styles.bottomHint}>
+          Changes will be applied to this role immediately.
+        </Text>
       </ScrollView>
 
       {/* DEPARTMENT MODAL */}
@@ -771,9 +1148,14 @@ export default function EditRoleScreen() {
             <View style={styles.modalHeader}>
               <View>
                 <Text style={styles.modalTitle}>Select Departments</Text>
-                <Text style={styles.modalSubtitle}>{tempDeptIds.length} selected</Text>
+                <Text style={styles.modalSubtitle}>
+                  {tempDeptIds.length} selected
+                </Text>
               </View>
-              <TouchableOpacity style={styles.closeButton} onPress={() => setDeptModalVisible(false)}>
+              <TouchableOpacity
+                style={styles.closeButton}
+                onPress={() => setDeptModalVisible(false)}
+              >
                 <Icon name="close" size={21} color={TEXT_SECONDARY} />
               </TouchableOpacity>
             </View>
@@ -794,17 +1176,26 @@ export default function EditRoleScreen() {
               ) : null}
             </View>
 
-            <TouchableOpacity style={styles.selectAllCard} onPress={toggleAllTempDepts} activeOpacity={0.8}>
+            <TouchableOpacity
+              style={styles.selectAllCard}
+              onPress={toggleAllTempDepts}
+              activeOpacity={0.8}
+            >
               <View style={styles.selectAllIcon}>
                 <Icon name="select-all" size={19} color={PRIMARY_COLOR} />
               </View>
               <View style={styles.selectAllTextContainer}>
                 <Text style={styles.selectAllTitle}>Select All</Text>
-                <Text style={styles.selectAllSubtitle}>{allDepartments.length} departments available</Text>
+                <Text style={styles.selectAllSubtitle}>
+                  {allDepartments.length} departments available
+                </Text>
               </View>
               <Checkbox
                 status={
-                  tempDeptIds.length === allDepartments.length && allDepartments.length > 0 ? 'checked' : 'unchecked'
+                  tempDeptIds.length === allDepartments.length &&
+                  allDepartments.length > 0
+                    ? 'checked'
+                    : 'unchecked'
                 }
                 onPress={toggleAllTempDepts}
                 color={PRIMARY_COLOR}
@@ -814,7 +1205,9 @@ export default function EditRoleScreen() {
             {loadingDepartments ? (
               <View style={styles.modalLoading}>
                 <ActivityIndicator size="small" color={PRIMARY_COLOR} />
-                <Text style={styles.modalLoadingText}>Loading departments...</Text>
+                <Text style={styles.modalLoadingText}>
+                  Loading departments...
+                </Text>
               </View>
             ) : (
               <FlatList
@@ -827,14 +1220,29 @@ export default function EditRoleScreen() {
                   const checked = tempDeptIds.includes(item.department_id);
                   return (
                     <TouchableOpacity
-                      style={[styles.departmentItem, checked && styles.departmentItemSelected]}
+                      style={[
+                        styles.departmentItem,
+                        checked && styles.departmentItemSelected,
+                      ]}
                       onPress={() => toggleTempDept(item.department_id)}
                       activeOpacity={0.8}
                     >
-                      <View style={[styles.departmentItemIcon, checked && styles.departmentItemIconSelected]}>
-                        <Icon name="office-building-outline" size={18} color={checked ? PRIMARY_COLOR : '#64748B'} />
+                      <View
+                        style={[
+                          styles.departmentItemIcon,
+                          checked && styles.departmentItemIconSelected,
+                        ]}
+                      >
+                        <Icon
+                          name="office-building-outline"
+                          size={18}
+                          color={checked ? PRIMARY_COLOR : '#64748B'}
+                        />
                       </View>
-                      <Text style={styles.departmentItemText} numberOfLines={1}>
+                      <Text
+                        style={styles.departmentItemText}
+                        numberOfLines={1}
+                      >
                         {item.department_name}
                       </Text>
                       <Checkbox
@@ -848,18 +1256,30 @@ export default function EditRoleScreen() {
                 ListEmptyComponent={
                   <View style={styles.modalEmpty}>
                     <Icon name="magnify-close" size={30} color="#94A3B8" />
-                    <Text style={styles.modalEmptyTitle}>No departments found</Text>
-                    <Text style={styles.modalEmptyText}>Try a different search.</Text>
+                    <Text style={styles.modalEmptyTitle}>
+                      No departments found
+                    </Text>
+                    <Text style={styles.modalEmptyText}>
+                      Try a different search.
+                    </Text>
                   </View>
                 }
               />
             )}
 
             <SafeAreaView edges={['bottom']} style={{ marginTop: 'auto' }}>
-              <TouchableOpacity style={styles.modalPrimaryButton} onPress={confirmDepartments} activeOpacity={0.85}>
-                <Text style={styles.modalPrimaryButtonText}>Confirm Selection</Text>
+              <TouchableOpacity
+                style={styles.modalPrimaryButton}
+                onPress={confirmDepartments}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.modalPrimaryButtonText}>
+                  Confirm Selection
+                </Text>
                 <View style={styles.modalButtonCount}>
-                  <Text style={styles.modalButtonCountText}>{tempDeptIds.length}</Text>
+                  <Text style={styles.modalButtonCountText}>
+                    {tempDeptIds.length}
+                  </Text>
                 </View>
               </TouchableOpacity>
             </SafeAreaView>
@@ -879,14 +1299,23 @@ export default function EditRoleScreen() {
             <View style={styles.modalHeader}>
               <View style={styles.permissionHeaderLeft}>
                 {currentModule && (
-                  <TouchableOpacity style={styles.modalBackButton} onPress={cancelDepartmentPermissions}>
-                    <Icon name="arrow-left" size={20} color={PRIMARY_COLOR} />
+                  <TouchableOpacity
+                    style={styles.modalBackButton}
+                    onPress={cancelDepartmentPermissions}
+                  >
+                    <Icon
+                      name="arrow-left"
+                      size={20}
+                      color={PRIMARY_COLOR}
+                    />
                   </TouchableOpacity>
                 )}
                 <View>
                   <Text style={styles.modalTitle}>
                     {currentModule
-                      ? allDepartments.find((d) => d.module_code === currentModule)?.department_name || currentModule
+                      ? allDepartments.find(
+                          (d) => d.module_code === currentModule
+                        )?.department_name || currentModule
                       : 'Permissions'}
                   </Text>
                   <Text style={styles.modalSubtitle}>
@@ -896,7 +1325,10 @@ export default function EditRoleScreen() {
                   </Text>
                 </View>
               </View>
-              <TouchableOpacity style={styles.closeButton} onPress={closePermissionModal}>
+              <TouchableOpacity
+                style={styles.closeButton}
+                onPress={closePermissionModal}
+              >
                 <Icon name="close" size={21} color={TEXT_SECONDARY} />
               </TouchableOpacity>
             </View>
@@ -905,10 +1337,16 @@ export default function EditRoleScreen() {
               <>
                 <View style={styles.permissionIntro}>
                   <View style={styles.permissionIntroIcon}>
-                    <Icon name="shield-key-outline" size={22} color={PRIMARY_COLOR} />
+                    <Icon
+                      name="shield-key-outline"
+                      size={22}
+                      color={PRIMARY_COLOR}
+                    />
                   </View>
                   <View style={styles.permissionIntroText}>
-                    <Text style={styles.permissionIntroTitle}>Choose a department</Text>
+                    <Text style={styles.permissionIntroTitle}>
+                      Choose a department
+                    </Text>
                     <Text style={styles.permissionIntroSubtitle}>
                       Select a department to manage its permissions.
                     </Text>
@@ -916,55 +1354,94 @@ export default function EditRoleScreen() {
                 </View>
 
                 <FlatList
-                  data={allDepartments.filter((d) => selectedDepartmentIds.includes(d.department_id))}
+                  data={allDepartments.filter((d) =>
+                    selectedDepartmentIds.includes(d.department_id)
+                  )}
                   keyExtractor={(item) => item.department_id}
                   showsVerticalScrollIndicator={false}
                   contentContainerStyle={styles.moduleList}
                   renderItem={({ item }) => {
                     const moduleCode = item.module_code;
-                    const count = moduleCode ? (selectedPermissions[moduleCode] || []).length : 0;
+                    const count = moduleCode
+                      ? (selectedPermissions[moduleCode] || []).length
+                      : 0;
+                    const cached = moduleCode
+                      ? permissionCache[moduleCode]
+                      : undefined;
                     return (
                       <TouchableOpacity
-                        style={[styles.modulePermissionItem, !moduleCode && styles.disabledModuleItem]}
+                        style={[
+                          styles.modulePermissionItem,
+                          !moduleCode && styles.disabledModuleItem,
+                        ]}
                         onPress={() => handleDepartmentSelect(item)}
                         disabled={!moduleCode}
                         activeOpacity={0.8}
                       >
                         <View style={styles.modulePermissionIcon}>
                           <Icon
-                            name={moduleCode ? 'shield-account-outline' : 'shield-off-outline'}
+                            name={
+                              moduleCode
+                                ? 'shield-account-outline'
+                                : 'shield-off-outline'
+                            }
                             size={21}
                             color={moduleCode ? PRIMARY_COLOR : '#94A3B8'}
                           />
                         </View>
                         <View style={styles.modulePermissionContent}>
-                          <Text style={styles.modulePermissionName}>{item.department_name}</Text>
+                          <Text style={styles.modulePermissionName}>
+                            {item.department_name}
+                          </Text>
                           <Text style={styles.modulePermissionSubtitle}>
-                            {moduleCode ? `${count} permissions selected` : 'No module assigned'}
+                            {!moduleCode
+                              ? 'No module assigned'
+                              : cached === undefined
+                              ? 'Permissions unavailable (load failed)'
+                              : `${count} permissions selected · ${cached.length} available`}
                           </Text>
                         </View>
                         {moduleCode ? (
                           <View style={styles.permissionNumber}>
-                            <Text style={styles.permissionNumberText}>{count}</Text>
+                            <Text style={styles.permissionNumberText}>
+                              {count}
+                            </Text>
                           </View>
                         ) : null}
-                        <Icon name="chevron-right" size={20} color="#94A3B8" />
+                        <Icon
+                          name="chevron-right"
+                          size={20}
+                          color="#94A3B8"
+                        />
                       </TouchableOpacity>
                     );
                   }}
                   ListEmptyComponent={
                     <View style={styles.modalEmpty}>
-                      <Icon name="office-building-remove-outline" size={32} color="#94A3B8" />
-                      <Text style={styles.modalEmptyTitle}>No departments selected</Text>
-                      <Text style={styles.modalEmptyText}>Select departments first.</Text>
+                      <Icon
+                        name="office-building-remove-outline"
+                        size={32}
+                        color="#94A3B8"
+                      />
+                      <Text style={styles.modalEmptyTitle}>
+                        No departments selected
+                      </Text>
+                      <Text style={styles.modalEmptyText}>
+                        Select departments first.
+                      </Text>
                     </View>
                   }
                 />
 
-                <TouchableOpacity style={styles.modalPrimaryButton} onPress={confirmAllPermissions}>
+                <TouchableOpacity
+                  style={styles.modalPrimaryButton}
+                  onPress={confirmAllPermissions}
+                >
                   <Text style={styles.modalPrimaryButtonText}>Done</Text>
                   <View style={styles.modalButtonCount}>
-                    <Text style={styles.modalButtonCountText}>{totalPermissionCount}</Text>
+                    <Text style={styles.modalButtonCountText}>
+                      {totalPermissionCount}
+                    </Text>
                   </View>
                 </TouchableOpacity>
               </>
@@ -980,17 +1457,23 @@ export default function EditRoleScreen() {
                     style={styles.modalSearchInput}
                   />
                   {permissionSearch ? (
-                    <TouchableOpacity onPress={() => setPermissionSearch('')}>
+                    <TouchableOpacity
+                      onPress={() => setPermissionSearch('')}
+                    >
                       <Icon name="close-circle" size={18} color="#94A3B8" />
                     </TouchableOpacity>
                   ) : null}
                 </View>
 
                 <View style={styles.permissionToolbar}>
-                  <Text style={styles.permissionToolbarText}>{filteredPermissions.length} permissions</Text>
+                  <Text style={styles.permissionToolbarText}>
+                    {filteredPermissions.length} permissions
+                  </Text>
                   <TouchableOpacity onPress={toggleAllTempPermissions}>
                     <Text style={styles.selectAllText}>
-                      {tempPermsForModule.length === currentPermissions.length && currentPermissions.length > 0
+                      {tempPermsForModule.length ===
+                        currentPermissions.length &&
+                      currentPermissions.length > 0
                         ? 'Deselect All'
                         : 'Select All'}
                     </Text>
@@ -1003,26 +1486,46 @@ export default function EditRoleScreen() {
                   showsVerticalScrollIndicator={false}
                   contentContainerStyle={styles.permissionList}
                   renderItem={({ item }) => {
-                    const checked = tempPermsForModule.includes(item.permission_name);
+                    const checked = tempPermsForModule.includes(
+                      item.permission_name
+                    );
                     return (
                       <TouchableOpacity
-                        style={[styles.permissionItem, checked && styles.permissionItemSelected]}
-                        onPress={() => toggleTempPermission(item.permission_name)}
+                        style={[
+                          styles.permissionItem,
+                          checked && styles.permissionItemSelected,
+                        ]}
+                        onPress={() =>
+                          toggleTempPermission(item.permission_name)
+                        }
                         activeOpacity={0.8}
                       >
-                        <View style={[styles.permissionCheck, checked && styles.permissionCheckSelected]}>
+                        <View
+                          style={[
+                            styles.permissionCheck,
+                            checked && styles.permissionCheckSelected,
+                          ]}
+                        >
                           <Checkbox
                             status={checked ? 'checked' : 'unchecked'}
-                            onPress={() => toggleTempPermission(item.permission_name)}
+                            onPress={() =>
+                              toggleTempPermission(item.permission_name)
+                            }
                             color={PRIMARY_COLOR}
                           />
                         </View>
                         <View style={styles.permissionItemContent}>
-                          <Text style={styles.permissionName} numberOfLines={2}>
+                          <Text
+                            style={styles.permissionName}
+                            numberOfLines={2}
+                          >
                             {item.permission_name}
                           </Text>
                           {!!item.description && (
-                            <Text style={styles.permissionDescription} numberOfLines={2}>
+                            <Text
+                              style={styles.permissionDescription}
+                              numberOfLines={2}
+                            >
                               {item.description}
                             </Text>
                           )}
@@ -1032,17 +1535,31 @@ export default function EditRoleScreen() {
                   }}
                   ListEmptyComponent={
                     <View style={styles.modalEmpty}>
-                      <Icon name="shield-search-outline" size={32} color="#94A3B8" />
-                      <Text style={styles.modalEmptyTitle}>No permissions found</Text>
-                      <Text style={styles.modalEmptyText}>Try another search.</Text>
+                      {/* ✅ FIXED: shield-search-outline → shield-search */}
+                      <Icon name="shield-search" size={32} color="#94A3B8" />
+                      <Text style={styles.modalEmptyTitle}>
+                        No permissions found
+                      </Text>
+                      <Text style={styles.modalEmptyText}>
+                        {currentPermissions.length === 0
+                          ? 'This module has no permissions available.'
+                          : 'Try another search.'}
+                      </Text>
                     </View>
                   }
                 />
 
-                <TouchableOpacity style={styles.modalPrimaryButton} onPress={saveModulePermissions}>
-                  <Text style={styles.modalPrimaryButtonText}>Save Permissions</Text>
+                <TouchableOpacity
+                  style={styles.modalPrimaryButton}
+                  onPress={saveModulePermissions}
+                >
+                  <Text style={styles.modalPrimaryButtonText}>
+                    Save Permissions
+                  </Text>
                   <View style={styles.modalButtonCount}>
-                    <Text style={styles.modalButtonCountText}>{tempPermsForModule.length}</Text>
+                    <Text style={styles.modalButtonCountText}>
+                      {tempPermsForModule.length}
+                    </Text>
                   </View>
                 </TouchableOpacity>
               </>
@@ -1081,8 +1598,18 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.18)',
   },
   headerTitleContainer: { flex: 1, marginLeft: 12 },
-  headerEyebrow: { color: 'rgba(255,255,255,0.65)', fontSize: 8, fontWeight: '800', letterSpacing: 1 },
-  headerTitle: { marginTop: 3, color: '#FFFFFF', fontSize: 20, fontWeight: '700' },
+  headerEyebrow: {
+    color: 'rgba(255,255,255,0.65)',
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  headerTitle: {
+    marginTop: 3,
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '700',
+  },
   headerRoleIcon: {
     width: 40,
     height: 40,
@@ -1110,7 +1637,13 @@ const styles = StyleSheet.create({
   },
   systemNoticeContent: { flex: 1, marginLeft: 10 },
   systemNoticeTitle: { color: '#92400E', fontSize: 12, fontWeight: '700' },
-  systemNoticeText: { marginTop: 4, color: '#A16207', fontSize: 10, lineHeight: 15, fontWeight: '500' },
+  systemNoticeText: {
+    marginTop: 4,
+    color: '#A16207',
+    fontSize: 10,
+    lineHeight: 15,
+    fontWeight: '500',
+  },
   sectionCard: {
     padding: 16,
     marginBottom: 14,
@@ -1124,7 +1657,11 @@ const styles = StyleSheet.create({
     shadowRadius: 7,
     elevation: 1,
   },
-  sectionCardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
+  sectionCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 15,
+  },
   sectionIcon: {
     width: 39,
     height: 39,
@@ -1135,7 +1672,12 @@ const styles = StyleSheet.create({
   },
   sectionHeaderText: { flex: 1, marginLeft: 10 },
   sectionTitle: { color: TEXT_PRIMARY, fontSize: 15, fontWeight: '700' },
-  sectionSubtitle: { marginTop: 3, color: TEXT_SECONDARY, fontSize: 9, fontWeight: '500' },
+  sectionSubtitle: {
+    marginTop: 3,
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    fontWeight: '500',
+  },
   countBadge: {
     minWidth: 30,
     height: 27,
@@ -1148,8 +1690,19 @@ const styles = StyleSheet.create({
   countBadgeText: { color: PRIMARY_COLOR, fontSize: 11, fontWeight: '800' },
   input: { marginTop: 11, backgroundColor: CARD_BACKGROUND },
   descriptionInput: { minHeight: 105, textAlignVertical: 'top' },
-  errorText: { marginTop: 4, marginLeft: 4, color: ERROR_COLOR, fontSize: 10, fontWeight: '500' },
-  selectedItems: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 },
+  errorText: {
+    marginTop: 4,
+    marginLeft: 4,
+    color: ERROR_COLOR,
+    fontSize: 10,
+    fontWeight: '500',
+  },
+  selectedItems: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 12,
+  },
   selectedChip: {
     maxWidth: '100%',
     flexDirection: 'row',
@@ -1161,8 +1714,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: `${PRIMARY_COLOR}20`,
   },
-  selectedChipText: { maxWidth: 150, marginLeft: 5, color: PRIMARY_COLOR, fontSize: 9, fontWeight: '600' },
-  moreChip: { paddingHorizontal: 10, paddingVertical: 7, borderRadius: 9, backgroundColor: '#F1F5F9' },
+  selectedChipText: {
+    maxWidth: 150,
+    marginLeft: 5,
+    color: PRIMARY_COLOR,
+    fontSize: 9,
+    fontWeight: '600',
+  },
+  moreChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 9,
+    backgroundColor: '#F1F5F9',
+  },
   moreChipText: { color: '#64748B', fontSize: 9, fontWeight: '600' },
   emptySelection: {
     minHeight: 60,
@@ -1175,7 +1739,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#FAFBFC',
     marginBottom: 11,
   },
-  emptySelectionText: { marginTop: 5, color: '#94A3B8', fontSize: 10, fontWeight: '500' },
+  emptySelectionText: {
+    marginTop: 5,
+    color: '#94A3B8',
+    fontSize: 10,
+    fontWeight: '500',
+  },
   outlineAction: {
     minHeight: 42,
     flexDirection: 'row',
@@ -1186,10 +1755,20 @@ const styles = StyleSheet.create({
     borderColor: `${PRIMARY_COLOR}35`,
     backgroundColor: `${PRIMARY_COLOR}08`,
   },
-  outlineActionText: { marginLeft: 7, color: PRIMARY_COLOR, fontSize: 11, fontWeight: '700' },
+  outlineActionText: {
+    marginLeft: 7,
+    color: PRIMARY_COLOR,
+    fontSize: 11,
+    fontWeight: '700',
+  },
   disabledAction: { borderColor: '#E2E8F0', backgroundColor: '#F8FAFC' },
   disabledActionText: { color: '#94A3B8' },
-  helperText: { marginTop: 7, color: '#94A3B8', fontSize: 9, textAlign: 'center' },
+  helperText: {
+    marginTop: 7,
+    color: '#94A3B8',
+    fontSize: 9,
+    textAlign: 'center',
+  },
   permissionSummary: { marginBottom: 11 },
   permissionRow: {
     minHeight: 42,
@@ -1207,7 +1786,13 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: `${PRIMARY_COLOR}0C`,
   },
-  permissionModuleName: { flex: 1, marginLeft: 8, color: TEXT_PRIMARY, fontSize: 11, fontWeight: '600' },
+  permissionModuleName: {
+    flex: 1,
+    marginLeft: 8,
+    color: TEXT_PRIMARY,
+    fontSize: 11,
+    fontWeight: '600',
+  },
   permissionCount: {
     minWidth: 25,
     height: 23,
@@ -1217,7 +1802,13 @@ const styles = StyleSheet.create({
     backgroundColor: `${PRIMARY_COLOR}12`,
   },
   permissionCountText: { color: PRIMARY_COLOR, fontSize: 9, fontWeight: '700' },
-  morePermissions: { marginTop: 8, color: TEXT_SECONDARY, fontSize: 9, fontWeight: '500', textAlign: 'center' },
+  morePermissions: {
+    marginTop: 8,
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
   updateButtonWrapper: {
     marginTop: 7,
     borderRadius: 13,
@@ -1228,11 +1819,32 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 5,
   },
-  updateButton: { minHeight: 53, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  updateButton: {
+    minHeight: 53,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
   updateButtonText: { color: '#FFFFFF', fontSize: 13, fontWeight: '700' },
-  bottomHint: { marginTop: 10, color: '#94A3B8', fontSize: 9, fontWeight: '500', textAlign: 'center' },
-  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(15,23,42,0.48)' },
-  modalSheet: { backgroundColor: CARD_BACKGROUND, borderTopLeftRadius: 24, borderTopRightRadius: 24, overflow: 'hidden' },
+  bottomHint: {
+    marginTop: 10,
+    color: '#94A3B8',
+    fontSize: 9,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(15,23,42,0.48)',
+  },
+  modalSheet: {
+    backgroundColor: CARD_BACKGROUND,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    overflow: 'hidden',
+  },
   departmentSheet: { height: '88%' },
   permissionSheet: { height: '91%' },
   modalHeader: {
@@ -1246,7 +1858,12 @@ const styles = StyleSheet.create({
   },
   permissionHeaderLeft: { flex: 1, flexDirection: 'row', alignItems: 'center' },
   modalTitle: { color: TEXT_PRIMARY, fontSize: 16, fontWeight: '700' },
-  modalSubtitle: { marginTop: 3, color: TEXT_SECONDARY, fontSize: 9, fontWeight: '500' },
+  modalSubtitle: {
+    marginTop: 3,
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    fontWeight: '500',
+  },
   closeButton: {
     width: 35,
     height: 35,
@@ -1277,7 +1894,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E2E8F0',
   },
-  modalSearchInput: { flex: 1, marginLeft: 8, paddingVertical: 0, color: TEXT_PRIMARY, fontSize: 12 },
+  modalSearchInput: {
+    flex: 1,
+    marginLeft: 8,
+    paddingVertical: 0,
+    color: TEXT_PRIMARY,
+    fontSize: 12,
+  },
   selectAllCard: {
     minHeight: 59,
     flexDirection: 'row',
@@ -1313,7 +1936,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E8EDF2',
   },
-  departmentItemSelected: { backgroundColor: `${PRIMARY_COLOR}08`, borderColor: `${PRIMARY_COLOR}25` },
+  departmentItemSelected: {
+    backgroundColor: `${PRIMARY_COLOR}08`,
+    borderColor: `${PRIMARY_COLOR}25`,
+  },
   departmentItemIcon: {
     width: 34,
     height: 34,
@@ -1323,12 +1949,33 @@ const styles = StyleSheet.create({
     backgroundColor: '#F1F5F9',
   },
   departmentItemIconSelected: { backgroundColor: `${PRIMARY_COLOR}12` },
-  departmentItemText: { flex: 1, marginLeft: 9, color: TEXT_PRIMARY, fontSize: 11, fontWeight: '600' },
+  departmentItemText: {
+    flex: 1,
+    marginLeft: 9,
+    color: TEXT_PRIMARY,
+    fontSize: 11,
+    fontWeight: '600',
+  },
   modalLoading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   modalLoadingText: { marginTop: 10, color: TEXT_SECONDARY, fontSize: 10 },
-  modalEmpty: { paddingVertical: 50, alignItems: 'center', justifyContent: 'center' },
-  modalEmptyTitle: { marginTop: 12, color: TEXT_PRIMARY, fontSize: 13, fontWeight: '700' },
-  modalEmptyText: { marginTop: 4, color: TEXT_SECONDARY, fontSize: 10 },
+  modalEmpty: {
+    paddingVertical: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalEmptyTitle: {
+    marginTop: 12,
+    color: TEXT_PRIMARY,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  modalEmptyText: {
+    marginTop: 4,
+    color: TEXT_SECONDARY,
+    fontSize: 10,
+    textAlign: 'center',
+    paddingHorizontal: 20,
+  },
   modalPrimaryButton: {
     minHeight: 50,
     marginHorizontal: 16,
@@ -1340,7 +1987,14 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     backgroundColor: PRIMARY_COLOR,
   },
-  modalPrimaryButtonText: { flex: 1, color: '#FFFFFF', fontSize: 12, fontWeight: '700', textAlign: 'center', marginLeft: 25 },
+  modalPrimaryButtonText: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+    marginLeft: 25,
+  },
   modalButtonCount: {
     minWidth: 27,
     height: 27,
@@ -1371,7 +2025,12 @@ const styles = StyleSheet.create({
   },
   permissionIntroText: { flex: 1, marginLeft: 9 },
   permissionIntroTitle: { color: TEXT_PRIMARY, fontSize: 11, fontWeight: '700' },
-  permissionIntroSubtitle: { marginTop: 3, color: TEXT_SECONDARY, fontSize: 9, lineHeight: 13 },
+  permissionIntroSubtitle: {
+    marginTop: 3,
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    lineHeight: 13,
+  },
   moduleList: { paddingHorizontal: 16, paddingBottom: 10 },
   modulePermissionItem: {
     minHeight: 66,
@@ -1395,7 +2054,12 @@ const styles = StyleSheet.create({
   },
   modulePermissionContent: { flex: 1, marginLeft: 10 },
   modulePermissionName: { color: TEXT_PRIMARY, fontSize: 12, fontWeight: '700' },
-  modulePermissionSubtitle: { marginTop: 3, color: TEXT_SECONDARY, fontSize: 8, fontWeight: '500' },
+  modulePermissionSubtitle: {
+    marginTop: 3,
+    color: TEXT_SECONDARY,
+    fontSize: 8,
+    fontWeight: '500',
+  },
   permissionNumber: {
     minWidth: 27,
     height: 27,
@@ -1415,7 +2079,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#EEF1F4',
   },
-  permissionToolbarText: { color: TEXT_SECONDARY, fontSize: 9, fontWeight: '600' },
+  permissionToolbarText: {
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    fontWeight: '600',
+  },
   selectAllText: { color: PRIMARY_COLOR, fontSize: 10, fontWeight: '700' },
   permissionList: { paddingHorizontal: 16, paddingBottom: 10 },
   permissionItem: {
@@ -1429,7 +2097,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E5EAF0',
   },
-  permissionItemSelected: { backgroundColor: `${PRIMARY_COLOR}08`, borderColor: `${PRIMARY_COLOR}25` },
+  permissionItemSelected: {
+    backgroundColor: `${PRIMARY_COLOR}08`,
+    borderColor: `${PRIMARY_COLOR}25`,
+  },
   permissionCheck: {
     width: 36,
     height: 36,
@@ -1440,9 +2111,24 @@ const styles = StyleSheet.create({
   },
   permissionCheckSelected: { backgroundColor: `${PRIMARY_COLOR}12` },
   permissionItemContent: { flex: 1, marginLeft: 8 },
-  permissionName: { color: TEXT_PRIMARY, fontSize: 10, fontWeight: '700', lineHeight: 14 },
-  permissionDescription: { marginTop: 3, color: TEXT_SECONDARY, fontSize: 8, lineHeight: 12 },
-  loadingScreen: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 30 },
+  permissionName: {
+    color: TEXT_PRIMARY,
+    fontSize: 10,
+    fontWeight: '700',
+    lineHeight: 14,
+  },
+  permissionDescription: {
+    marginTop: 3,
+    color: TEXT_SECONDARY,
+    fontSize: 8,
+    lineHeight: 12,
+  },
+  loadingScreen: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 30,
+  },
   loadingIcon: {
     width: 68,
     height: 68,
@@ -1451,6 +2137,11 @@ const styles = StyleSheet.create({
     borderRadius: 19,
     backgroundColor: `${PRIMARY_COLOR}12`,
   },
-  loadingTitle: { marginTop: 13, color: TEXT_PRIMARY, fontSize: 17, fontWeight: '700' },
+  loadingTitle: {
+    marginTop: 13,
+    color: TEXT_PRIMARY,
+    fontSize: 17,
+    fontWeight: '700',
+  },
   loadingSubtitle: { marginTop: 5, color: TEXT_SECONDARY, fontSize: 10 },
 });

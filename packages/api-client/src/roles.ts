@@ -175,3 +175,22 @@ export const bulkAssignRoles = async (
     const headers = getBaseHeaders(companyId, deviceId, accessToken);
     return idempotentPost<ApiResponse<null>>(url, payload, 'bulkAssignRoles', { headers });
 };
+
+// packages/api-client/src/roles.ts  (append)
+
+// ---- Get all permissions for a module (used when editing/creating roles) ----
+export const getModulePermissions = async (
+    companyId: string,
+    deviceId: string,
+    moduleCode: string,
+    accessToken: string,
+  ): Promise<ApiResponse<Permission[]>> => {
+    const url = `/companies/${companyId}/hr/permissions/module/${moduleCode}`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    console.log('📦 [roles] getModulePermissions', { moduleCode, url });
+    const response = await axiosInstance.get<ApiResponse<Permission[]>>(url, { headers });
+    console.log(
+      `📦 [roles] getModulePermissions "${moduleCode}" → ${response.data?.data?.length ?? 0} permissions`
+    );
+    return response.data;
+  };

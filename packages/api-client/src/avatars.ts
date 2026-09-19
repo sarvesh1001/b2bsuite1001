@@ -1,22 +1,34 @@
+// packages/api-client/src/avatars.ts
 import { axiosInstance } from './axios-instance';
 import { Avatar, ApiResponse } from '@b2b/shared-types';
 import axios from 'axios';
+import { idempotentPost, idempotentPut, idempotentDelete } from './idempotency';
 
 // ---- Helper to build the full avatar URL using the /avatars/file endpoint ----
 const buildFileUrl = (key: string): string => {
-  // If it's already an absolute URL, return as-is
   if (key.startsWith('http://') || key.startsWith('https://')) {
     return key;
   }
-  // Get the base API URL from environment, fallback to localhost
-  const base = process.env.EXPO_PUBLIC_API_BASE_URL || 'http://localhost:8080/api/v1';
+  const base =
+    process.env.EXPO_PUBLIC_API_BASE_URL || 'http://localhost:8080/api/v1';
   const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;
-  // Construct the download URL
   return `${normalizedBase}/avatars/file?key=${encodeURIComponent(key)}`;
 };
 
+// ---- Helpers to build standard headers (without idempotency) ----
+const getBaseHeaders = (
+  deviceId: string,
+  accessToken: string,
+  companyId: string,
+) => ({
+  'X-Device-ID': deviceId,
+  Authorization: `Bearer ${accessToken}`,
+  'X-Company-ID': companyId,
+});
+
 /**
  * Generate an upload URL for a new avatar.
+ * (No idempotency needed – this is a GET-like URL generation.)
  */
 export const generateAvatarUploadUrl = async (
   mimeType: string,
@@ -26,10 +38,8 @@ export const generateAvatarUploadUrl = async (
 ): Promise<{ uploadUrl: string; fileKey: string; expiresIn: number }> => {
   const url = `/avatars/upload-url`;
   const headers = {
-    'X-Device-ID': deviceId,
-    'Authorization': `Bearer ${accessToken}`,
+    ...getBaseHeaders(deviceId, accessToken, companyId),
     'Content-Type': 'application/json',
-    'X-Company-ID': companyId,
   };
   const response = await axiosInstance.post<{
     success: boolean;
@@ -40,7 +50,26 @@ export const generateAvatarUploadUrl = async (
 
 /**
  * Upload the actual file to the obtained upload URL.
- * React Native compatible: uses object with uri, name, type.
+ *
+ * IMPORTANT: this bypasses `axiosInstance` and uses raw `axios`.
+ *
+ * Reasons:
+ *   1. The upload URL is usually absolute (`http://…` or `https://…`).
+ *      `axiosInstance` has a `baseURL`, and axios naïvely concatenates
+ *      them → `…/api/v1http://localhost:8080/avatars/upload` (broken).
+ *   2. The storage endpoint is separate from the JSON API. It should
+ *      not receive the request interceptor's auto-refresh logic.
+ *
+ * Because we bypass interceptors, we MUST attach the tenant/session
+ * headers manually:
+ *   - Authorization  → identifies the user
+ *   - X-Device-ID    → required by SessionValidationMiddleware
+ *   - X-Company-ID   → required by tenant-scoped routes
+ *   - X-Location-ID  → required by LocationValidationMiddleware on writes
+ *                      (must be a SPECIFIC location id, not "ALL")
+ *
+ * If the backend returns a **relative** path, we resolve it against the
+ * API baseURL manually so both shapes work.
  */
 export const uploadAvatarFile = async (
   uploadUrl: string,
@@ -49,30 +78,56 @@ export const uploadAvatarFile = async (
   fileName: string,
   mimeType: string,
   accessToken: string,
+  deviceId: string,
   companyId: string,
+  locationId?: string,
 ): Promise<{ file_key: string }> => {
   const formData = new FormData();
   formData.append('file_key', fileKey);
   formData.append('file', {
-    uri: uri,
+    uri,
     name: fileName,
     type: mimeType,
   } as any);
 
-  const headers = {
-    'Authorization': `Bearer ${accessToken}`,
-    'Content-Type': 'multipart/form-data',
-    'X-Company-ID': companyId,
-  };
-  const response = await axiosInstance.post<{
+  // Resolve the final URL:
+  //   - absolute (http://… or https://…) → use as-is
+  //   - relative (/avatars/upload)       → prepend the API baseURL
+  const baseURL = (axiosInstance.defaults.baseURL ?? '').replace(/\/$/, '');
+  const isAbsolute = /^https?:\/\//i.test(uploadUrl);
+  const finalUrl = isAbsolute
+    ? uploadUrl
+    : `${baseURL}/${uploadUrl.replace(/^\//, '')}`;
+
+  console.log('📤 [avatars] uploadAvatarFile →', finalUrl, {
+    isAbsolute,
+    originalUploadUrl: uploadUrl,
+  });
+
+  // Raw axios. No baseURL, no interceptors, no default headers.
+  // We attach every tenant/session header by hand.
+  const response = await axios.post<{
     success: boolean;
     data: { file_key: string };
-  }>(uploadUrl, formData, { headers });
+  }>(finalUrl, formData, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'X-Device-ID': deviceId,
+      'X-Company-ID': companyId,
+      ...(locationId ? { 'X-Location-ID': locationId } : {}),
+      'Content-Type': 'multipart/form-data',
+    },
+    timeout: 30_000,
+  });
+
   return response.data.data;
 };
 
+// ---- Idempotent mutating operations ----
+
 /**
  * Confirm avatar upload and create the avatar record.
+ * Uses idempotentPost.
  */
 export const confirmAvatarUpload = async (
   fileKey: string,
@@ -80,27 +135,23 @@ export const confirmAvatarUpload = async (
   setPrimary: boolean,
   deviceId: string,
   accessToken: string,
-  idempotencyKey: string,
+  idempotencyKey: string, // kept for signature compatibility; the wrapper generates its own
   companyId: string,
 ): Promise<Avatar> => {
   const url = `/avatars/confirm`;
-  const headers = {
-    'X-Device-ID': deviceId,
-    'Authorization': `Bearer ${accessToken}`,
-    'Content-Type': 'application/json',
-    'Idempotency-Key': idempotencyKey,
-    'X-Company-ID': companyId,
-  };
-  const response = await axiosInstance.post<ApiResponse<Avatar>>(
+  const headers = getBaseHeaders(deviceId, accessToken, companyId);
+  const response = await idempotentPost<ApiResponse<Avatar>>(
     url,
     { fileKey, mimeType, setPrimary },
-    { headers }
+    'confirmAvatarUpload',
+    { headers },
   );
-  return response.data.data;
+  return response.data;
 };
 
 /**
  * Get the primary avatar of the authenticated user.
+ * (Read‑only, no idempotency.)
  */
 export const getMyPrimaryAvatar = async (
   deviceId: string,
@@ -108,13 +159,11 @@ export const getMyPrimaryAvatar = async (
   companyId: string,
 ): Promise<Avatar | null> => {
   const url = `/avatars/primary`;
-  const headers = {
-    'X-Device-ID': deviceId,
-    'Authorization': `Bearer ${accessToken}`,
-    'X-Company-ID': companyId,
-  };
+  const headers = getBaseHeaders(deviceId, accessToken, companyId);
   try {
-    const response = await axiosInstance.get<ApiResponse<Avatar>>(url, { headers });
+    const response = await axiosInstance.get<ApiResponse<Avatar>>(url, {
+      headers,
+    });
     return response.data.data || null;
   } catch {
     return null;
@@ -123,6 +172,7 @@ export const getMyPrimaryAvatar = async (
 
 /**
  * List all active avatars of the authenticated user.
+ * (Read‑only.)
  */
 export const listMyAvatars = async (
   deviceId: string,
@@ -130,17 +180,16 @@ export const listMyAvatars = async (
   companyId: string,
 ): Promise<Avatar[]> => {
   const url = `/avatars/`;
-  const headers = {
-    'X-Device-ID': deviceId,
-    'Authorization': `Bearer ${accessToken}`,
-    'X-Company-ID': companyId,
-  };
-  const response = await axiosInstance.get<ApiResponse<Avatar[]>>(url, { headers });
+  const headers = getBaseHeaders(deviceId, accessToken, companyId);
+  const response = await axiosInstance.get<ApiResponse<Avatar[]>>(url, {
+    headers,
+  });
   return response.data.data || [];
 };
 
 /**
- * List all soft‑deleted (inactive) avatars of the authenticated user.
+ * List all soft‑deleted (inactive) avatars.
+ * (Read‑only.)
  */
 export const listInactiveAvatars = async (
   deviceId: string,
@@ -148,17 +197,16 @@ export const listInactiveAvatars = async (
   companyId: string,
 ): Promise<Avatar[]> => {
   const url = `/avatars/inactive`;
-  const headers = {
-    'X-Device-ID': deviceId,
-    'Authorization': `Bearer ${accessToken}`,
-    'X-Company-ID': companyId,
-  };
-  const response = await axiosInstance.get<ApiResponse<Avatar[]>>(url, { headers });
+  const headers = getBaseHeaders(deviceId, accessToken, companyId);
+  const response = await axiosInstance.get<ApiResponse<Avatar[]>>(url, {
+    headers,
+  });
   return response.data.data || [];
 };
 
 /**
  * Get a specific avatar by ID.
+ * (Read‑only.)
  */
 export const getAvatarById = async (
   avatarId: string,
@@ -167,82 +215,67 @@ export const getAvatarById = async (
   companyId: string,
 ): Promise<Avatar> => {
   const url = `/avatars/${avatarId}`;
-  const headers = {
-    'X-Device-ID': deviceId,
-    'Authorization': `Bearer ${accessToken}`,
-    'X-Company-ID': companyId,
-  };
-  const response = await axiosInstance.get<ApiResponse<Avatar>>(url, { headers });
+  const headers = getBaseHeaders(deviceId, accessToken, companyId);
+  const response = await axiosInstance.get<ApiResponse<Avatar>>(url, {
+    headers,
+  });
   return response.data.data;
 };
 
 /**
  * Set an avatar as primary.
+ * Uses idempotentPut.
  */
 export const setAvatarPrimary = async (
   avatarId: string,
   deviceId: string,
   accessToken: string,
-  idempotencyKey: string,
+  idempotencyKey: string, // kept for compatibility; wrapper generates its own
   companyId: string,
 ): Promise<void> => {
   const url = `/avatars/${avatarId}/primary`;
-  const headers = {
-    'X-Device-ID': deviceId,
-    'Authorization': `Bearer ${accessToken}`,
-    'Content-Type': 'application/json',
-    'Idempotency-Key': idempotencyKey,
-    'X-Company-ID': companyId,
-  };
-  await axiosInstance.put(url, {}, { headers });
+  const headers = getBaseHeaders(deviceId, accessToken, companyId);
+  await idempotentPut<void>(url, {}, 'setAvatarPrimary', { headers });
 };
 
 /**
  * Delete (soft‑delete) an avatar.
+ * Uses idempotentDelete.
  */
 export const deleteAvatar = async (
   avatarId: string,
   deviceId: string,
   accessToken: string,
-  idempotencyKey: string,
+  idempotencyKey: string, // kept for compatibility
   companyId: string,
 ): Promise<void> => {
   const url = `/avatars/${avatarId}`;
-  const headers = {
-    'X-Device-ID': deviceId,
-    'Authorization': `Bearer ${accessToken}`,
-    'Idempotency-Key': idempotencyKey,
-    'X-Company-ID': companyId,
-  };
-  await axiosInstance.delete(url, { headers });
+  const headers = getBaseHeaders(deviceId, accessToken, companyId);
+  await idempotentDelete<void>(url, {}, 'deleteAvatar', { headers });
 };
 
 /**
  * Reactivate a soft‑deleted avatar.
- * @param setPrimary - if true and no other primary exists, this avatar becomes primary.
+ * Uses idempotentPut.
  */
 export const reactivateAvatar = async (
   avatarId: string,
   deviceId: string,
   accessToken: string,
-  idempotencyKey: string,
+  idempotencyKey: string, // kept for compatibility
   companyId: string,
   setPrimary: boolean = false,
 ): Promise<void> => {
   const url = `/avatars/${avatarId}/reactivate`;
-  const headers = {
-    'X-Device-ID': deviceId,
-    'Authorization': `Bearer ${accessToken}`,
-    'Content-Type': 'application/json',
-    'Idempotency-Key': idempotencyKey,
-    'X-Company-ID': companyId,
-  };
-  await axiosInstance.put(url, { setPrimary }, { headers });
+  const headers = getBaseHeaders(deviceId, accessToken, companyId);
+  await idempotentPut<void>(url, { setPrimary }, 'reactivateAvatar', {
+    headers,
+  });
 };
 
 /**
  * Get the primary avatar of any user (by userId).
- * Requires hr.employee.view permission.
+ * (Read‑only, no idempotency.)
  */
 export const getUserPrimaryAvatar = async (
   userId: string,
@@ -251,13 +284,11 @@ export const getUserPrimaryAvatar = async (
   companyId: string,
 ): Promise<Avatar | null> => {
   const url = `/avatars/users/${userId}/primary`;
-  const headers = {
-    'Authorization': `Bearer ${accessToken}`,
-    'X-Company-ID': companyId,
-    'X-Device-ID': deviceId,
-  };
+  const headers = getBaseHeaders(deviceId, accessToken, companyId);
   try {
-    const response = await axiosInstance.get<ApiResponse<Avatar>>(url, { headers });
+    const response = await axiosInstance.get<ApiResponse<Avatar>>(url, {
+      headers,
+    });
     return response.data.data || null;
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 404) {
@@ -270,7 +301,7 @@ export const getUserPrimaryAvatar = async (
 
 /**
  * Convenience: extract the best available image URL from an Avatar object.
- * Now returns a full URL pointing to the /avatars/file endpoint.
+ * Returns a full URL pointing to the /avatars/file endpoint.
  */
 export const getAvatarUrl = (
   avatar: Avatar | null,
@@ -279,11 +310,14 @@ export const getAvatarUrl = (
   if (!avatar) return null;
   let key: string | null = null;
   if (avatar.variants) {
-    key = avatar.variants[prefer] || avatar.variants.small || avatar.variants.medium || avatar.variants.large || null;
+    key =
+      avatar.variants[prefer] ||
+      avatar.variants.small ||
+      avatar.variants.medium ||
+      avatar.variants.large ||
+      null;
   }
   if (!key) key = avatar.objectKey || null;
   if (!key) return null;
-
-  // Build the full URL
   return buildFileUrl(key);
 };

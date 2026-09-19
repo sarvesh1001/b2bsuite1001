@@ -1,13 +1,18 @@
+// apps/prayantra-b2b/src/api/employee.ts
+// (path may differ — this is the file that currently exports
+//  addEmployee / addManager / getEmployeeDetails / updateEmployee)
+
 import {
     CompanyEmployee,
     AddEmployeePayload,
     AddManagerPayload,
+    AddMemberPayload,                 // ← NEW
     SearchEmployeesPayload,
     AdvancedSearchEmployeesParams,
     ApiResponse,
 } from '@b2b/shared-types';
 import { axiosInstance } from './axios-instance';
-import { idempotentPost } from './idempotency';
+import { idempotentPost, idempotentPatch } from './idempotency'; // ← added idempotentPatch
 
 const getBaseHeaders = (companyId: string, deviceId: string, accessToken: string) => ({
     'X-Company-ID': companyId,
@@ -102,7 +107,7 @@ export const findEmployeeByUsername = async (
     return response.data;
 };
 
-// ---- Add employee (idempotent) ----
+// ---- Add employee (idempotent, legacy) ----
 export const addEmployee = async (
     companyId: string,
     deviceId: string,
@@ -114,7 +119,7 @@ export const addEmployee = async (
     return idempotentPost<ApiResponse<CompanyEmployee>>(url, payload, 'addEmployee', { headers });
 };
 
-// ---- Add manager (idempotent) ----
+// ---- Add manager (idempotent, legacy) ----
 export const addManager = async (
     companyId: string,
     deviceId: string,
@@ -124,6 +129,29 @@ export const addManager = async (
     const url = `/companies/${companyId}/rbac/managers`;
     const headers = getBaseHeaders(companyId, deviceId, accessToken);
     return idempotentPost<ApiResponse<CompanyEmployee>>(url, payload, 'addManager', { headers });
+};
+
+// ================================================================
+// UNIFIED MEMBER CREATION  (NEW — preferred for all new callers)
+// ----------------------------------------------------------------
+// Single endpoint replacing addEmployee / addManager.
+// Backend dispatches based on `member_type` ("employee" | "manager").
+// Also supports optional location assignment fields.
+// ================================================================
+export const addMember = async (
+    companyId: string,
+    deviceId: string,
+    payload: AddMemberPayload,
+    accessToken: string,
+): Promise<ApiResponse<CompanyEmployee>> => {
+    const url = `/companies/${companyId}/rbac/members`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    return idempotentPost<ApiResponse<CompanyEmployee>>(
+        url,
+        payload,
+        'addMember',
+        { headers },
+    );
 };
 
 // ================================================================
@@ -160,6 +188,7 @@ export const getEmployeeDetails = async (
  * Update employee fields using PATCH.
  * Supports partial updates; only provided fields will be updated.
  * Endpoint: PATCH /companies/{companyId}/rbac/employees/{userId}
+ * Now uses idempotentPatch to add Idempotency-Key header.
  */
 export const updateEmployee = async (
     companyId: string,
@@ -180,8 +209,12 @@ export const updateEmployee = async (
 ): Promise<ApiResponse<{ message: string }>> => {
     const url = `/companies/${companyId}/rbac/employees/${userId}`;
     const headers = getBaseHeaders(companyId, deviceId, accessToken);
-    const response = await axiosInstance.patch(url, payload, { headers });
-    return response.data;
+    return idempotentPatch<ApiResponse<{ message: string }>>(
+        url,
+        payload,
+        'updateEmployee',          // unique operation name for key caching
+        { headers }
+    );
 };
 
 // ---- Get departments for a user ----

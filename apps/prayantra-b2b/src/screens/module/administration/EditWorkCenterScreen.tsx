@@ -51,7 +51,7 @@ import {
 
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
-// API
+// API — ✅ no more isAllLocations import
 import {
   getWorkCenterByCode,
   updateWorkCenter,
@@ -79,6 +79,14 @@ import {
   GRADIENT_START,
   GRADIENT_END,
 } from '../../../constants/colors';
+
+// =========================================================
+// CONSTANTS
+// =========================================================
+
+// Local sentinel — matches ALL_LOCATIONS_ID from @b2b/api-client.
+// Inlined here so this screen has no runtime dependency on that export.
+const ALL_LOCATIONS_SENTINEL = 'ALL';
 
 // =========================================================
 // VALIDATION
@@ -139,7 +147,18 @@ export default function EditWorkCenterScreen() {
     accessToken,
     deviceId,
     companyId,
+    locationId,                 // ✅ read from store
   } = useUserAuthStore();
+
+  // =======================================================
+  // ALL-LOCATIONS MODE (derived locally)
+  // =======================================================
+  const allLocationsMode =
+    locationId === ALL_LOCATIONS_SENTINEL;
+
+  // =======================================================
+  // STATE
+  // =======================================================
 
   const [loading, setLoading] =
     useState(true);
@@ -290,6 +309,15 @@ export default function EditWorkCenterScreen() {
   const onSubmit = async (
     data: FormData
   ) => {
+    // ALL-mode guard — backend rejects writes with 400
+    if (allLocationsMode) {
+      Alert.alert(
+        'Pick a Location',
+        'You cannot edit work centers from the consolidated "All Locations" view. Please switch to a specific location.'
+      );
+      return;
+    }
+
     if (
       !accessToken ||
       !companyId ||
@@ -365,6 +393,7 @@ export default function EditWorkCenterScreen() {
       );
 
       const message =
+        error?.response?.data?.message ||
         error?.response?.data?.error ||
         error?.message ||
         'An unexpected error occurred.';
@@ -520,6 +549,27 @@ export default function EditWorkCenterScreen() {
         >
 
           {/* =================================================
+              ALL-LOCATIONS BANNER
+          ================================================= */}
+
+          {allLocationsMode && (
+            <View style={styles.allModeBanner}>
+              <Icon
+                name="alert-circle-outline"
+                size={18}
+                color="#B45309"
+              />
+              <Text style={styles.allModeBannerText}>
+                You're viewing{' '}
+                <Text style={{ fontWeight: '700' }}>
+                  All Locations
+                </Text>
+                . Switch to a specific location to edit.
+              </Text>
+            </View>
+          )}
+
+          {/* =================================================
               WORK CENTER IDENTITY
           ================================================= */}
 
@@ -553,6 +603,8 @@ export default function EditWorkCenterScreen() {
                   'Work Center'}
               </Text>
 
+              {/* Code */}
+
               <View
                 style={styles.codeRow}
               >
@@ -570,6 +622,33 @@ export default function EditWorkCenterScreen() {
                 </Text>
 
               </View>
+
+              {/* Location */}
+
+              {(workCenterData?.location_name ||
+                workCenterData?.location_code ||
+                workCenterData?.location_id) && (
+                <View
+                  style={styles.codeRow}
+                >
+
+                  <Icon
+                    name="map-marker-outline"
+                    size={13}
+                    color={TEXT_SECONDARY}
+                  />
+
+                  <Text
+                    numberOfLines={1}
+                    style={styles.codeText}
+                  >
+                    {workCenterData?.location_name ||
+                      workCenterData?.location_code ||
+                      workCenterData?.location_id}
+                  </Text>
+
+                </View>
+              )}
 
             </View>
 
@@ -932,7 +1011,7 @@ export default function EditWorkCenterScreen() {
           </View>
 
           {/* =================================================
-              CODE INFORMATION
+              IDENTITY INFORMATION (read-only)
           ================================================= */}
 
           <View
@@ -956,24 +1035,71 @@ export default function EditWorkCenterScreen() {
               <Text
                 style={styles.infoTitle}
               >
-                Work Center Code
+                Identity (read-only)
               </Text>
 
               <Text
                 style={styles.infoDescription}
               >
-                The code is a unique identifier and
-                cannot be changed from this screen.
+                Location and code cannot be changed from
+                this screen.
               </Text>
 
+              {/* Location pill */}
+
               <View
-                style={styles.codePill}
+                style={[
+                  styles.codePill,
+                  styles.pillRow,
+                ]}
               >
+
+                <Icon
+                  name="map-marker"
+                  size={11}
+                  color="#475569"
+                />
+
                 <Text
-                  style={styles.codePillText}
+                  numberOfLines={1}
+                  style={[
+                    styles.codePillText,
+                    { marginLeft: 4 },
+                  ]}
+                >
+                  {workCenterData?.location_name ||
+                    workCenterData?.location_code ||
+                    workCenterData?.location_id ||
+                    '—'}
+                </Text>
+
+              </View>
+
+              {/* Code pill */}
+
+              <View
+                style={[
+                  styles.codePill,
+                  styles.pillRow,
+                  { marginTop: 6 },
+                ]}
+              >
+
+                <Icon
+                  name="identifier"
+                  size={11}
+                  color="#475569"
+                />
+
+                <Text
+                  style={[
+                    styles.codePillText,
+                    { marginLeft: 4 },
+                  ]}
                 >
                   {code}
                 </Text>
+
               </View>
 
             </View>
@@ -986,13 +1112,13 @@ export default function EditWorkCenterScreen() {
 
           <TouchableOpacity
             activeOpacity={0.85}
-            disabled={saving}
+            disabled={saving || allLocationsMode}
             onPress={handleSubmit(
               onSubmit
             )}
             style={[
               styles.saveButton,
-              saving &&
+              (saving || allLocationsMode) &&
                 styles.saveButtonDisabled,
             ]}
           >
@@ -1170,6 +1296,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 20,
     paddingBottom: 40,
+  },
+
+  // =======================================================
+  // ALL-LOCATIONS BANNER
+  // =======================================================
+
+  allModeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+
+    gap: 8,
+
+    padding: 12,
+    marginBottom: 14,
+
+    borderRadius: 11,
+
+    backgroundColor: '#FEF3C7',
+
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+
+  allModeBannerText: {
+    flex: 1,
+
+    color: '#92400E',
+
+    fontSize: 11,
+    lineHeight: 16,
   },
 
   // =======================================================
@@ -1605,6 +1761,11 @@ const styles = StyleSheet.create({
       '#E2E8F0',
   },
 
+  pillRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+
   codePillText: {
     color: '#475569',
 
@@ -1642,7 +1803,7 @@ const styles = StyleSheet.create({
   },
 
   saveButtonDisabled: {
-    opacity: 0.8,
+    opacity: 0.6,
   },
 
   saveGradient: {

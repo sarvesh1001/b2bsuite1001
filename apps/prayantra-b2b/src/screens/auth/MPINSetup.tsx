@@ -10,10 +10,11 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  TouchableWithoutFeedback,
   Keyboard,
   Alert,
   TouchableOpacity,
+  Pressable,
+  TextInput as RNTextInput,
 } from 'react-native';
 
 import {
@@ -31,7 +32,6 @@ import {
 } from '@react-navigation/stack';
 
 import {
-  TextInput,
   Text,
   ActivityIndicator,
 } from 'react-native-paper';
@@ -52,10 +52,6 @@ import {
 } from '../../utils/device';
 
 import {
-  useUserAuthStore,
-} from '../../store/userAuthStore';
-
-import {
   RootStackParamList,
 } from '../../navigation';
 
@@ -64,17 +60,11 @@ import {
   BACKGROUND_COLOR,
   TEXT_PRIMARY,
   TEXT_SECONDARY,
-  GRADIENT_COLORS,
-  GRADIENT_START,
-  GRADIENT_END,
 } from '../../constants/colors';
 
 // =========================================================
 // TYPES
 // =========================================================
-
-type PaperTextInput =
-  React.ElementRef<typeof TextInput>;
 
 type MPINSetupScreenNavigationProp =
   StackNavigationProp<
@@ -159,20 +149,18 @@ export default function MPINSetupScreen() {
     companyId,
   } = route.params;
 
-  const [mpin, setMpin] = useState([
-    '',
-    '',
-    '',
-    '',
-    '',
-    '',
-  ]);
+  // -----------------------------------------------------
+  // MPIN STATE — single source of truth
+  // -----------------------------------------------------
+
+  const [mpinCode, setMpinCode] =
+    useState('');
+
+  const [isFocused, setIsFocused] =
+    useState(false);
 
   const [loading, setLoading] =
     useState(false);
-
-  const [focusedIndex, setFocusedIndex] =
-    useState(0);
 
   const [deviceId, setDeviceId] =
     useState('');
@@ -180,13 +168,11 @@ export default function MPINSetupScreen() {
   const [fingerprint, setFingerprint] =
     useState('');
 
-  const inputRefs =
-    useRef<
-      Array<PaperTextInput | null>
-    >([]);
+  const hiddenInputRef =
+    useRef<RNTextInput | null>(null);
 
   // =======================================================
-  // DEVICE INFORMATION
+  // DEVICE INFORMATION + AUTO FOCUS
   // =======================================================
 
   useEffect(() => {
@@ -211,102 +197,48 @@ export default function MPINSetupScreen() {
     loadDeviceInfo();
 
     const timer = setTimeout(() => {
-      inputRefs.current[0]?.focus();
+      hiddenInputRef.current?.focus();
     }, 350);
 
     return () => clearTimeout(timer);
   }, []);
 
   // =======================================================
-  // MPIN CHANGE
+  // HANDLERS
   // =======================================================
 
-  const handleMpinChange = (
-    text: string,
-    index: number
+  const handleChangeText = (
+    text: string
   ) => {
-    // Only digits
-    const digit = text.replace(
-      /[^0-9]/g,
-      ''
-    );
+    const cleaned = text
+      .replace(/[^0-9]/g, '')
+      .slice(0, 6);
 
-    const newMpin = [...mpin];
+    setMpinCode(cleaned);
 
-    newMpin[index] =
-      digit.slice(-1);
-
-    setMpin(newMpin);
-
-    // Move forward
-    if (
-      digit &&
-      index < 5
-    ) {
-      inputRefs.current[
-        index + 1
-      ]?.focus();
-    }
-
-    // If final digit entered
-    if (
-      digit &&
-      index === 5
-    ) {
+    if (cleaned.length === 6) {
       Keyboard.dismiss();
     }
   };
 
-  // =======================================================
-  // KEYBOARD / BACKSPACE
-  // =======================================================
-
-  const handleKeyPress = (
-    e: any,
-    index: number
-  ) => {
-    if (
-      e.nativeEvent.key !==
-      'Backspace'
-    ) {
-      return;
-    }
-
-    if (mpin[index]) {
-      const newMpin = [...mpin];
-
-      newMpin[index] = '';
-
-      setMpin(newMpin);
-
-      return;
-    }
-
-    if (index > 0) {
-      const newMpin = [...mpin];
-
-      newMpin[index - 1] = '';
-
-      setMpin(newMpin);
-
-      inputRefs.current[
-        index - 1
-      ]?.focus();
-    }
+  const focusHiddenInput = () => {
+    hiddenInputRef.current?.focus();
   };
 
   // =======================================================
   // MPIN STATUS
   // =======================================================
 
-  const mpinCode = mpin.join('');
-
   const isComplete =
     mpinCode.length === 6;
 
   const isWeak =
-    isComplete &&
-    isWeakMPIN(mpinCode);
+    isComplete && isWeakMPIN(mpinCode);
+
+  const activeIndex = Math.min(
+    mpinCode.length,
+    5
+  );
 
   const getStatus = () => {
     if (!isComplete) {
@@ -332,8 +264,7 @@ export default function MPINSetupScreen() {
     };
   };
 
-  const status =
-    getStatus();
+  const status = getStatus();
 
   // =======================================================
   // SETUP MPIN
@@ -518,481 +449,373 @@ export default function MPINSetupScreen() {
             : undefined
         }
       >
-        <TouchableWithoutFeedback
-          onPress={Keyboard.dismiss}
+        <ScrollView
+          contentContainerStyle={
+            styles.scrollContent
+          }
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
         >
-          <ScrollView
-            contentContainerStyle={
-              styles.scrollContent
-            }
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
 
-            {/* =================================================
-                TOP BAR
-            ================================================= */}
+          {/* =================================================
+              TOP BAR
+          ================================================= */}
 
-            <View style={styles.topBar}>
-
-              <TouchableOpacity
-                onPress={handleBack}
-                disabled={loading}
-                activeOpacity={0.7}
-                style={styles.backButton}
-              >
-                <Icon
-                  name="arrow-left"
-                  size={21}
-                  color={TEXT_PRIMARY}
-                />
-              </TouchableOpacity>
-
-              <View
-                style={
-                  styles.secureBadge
-                }
-              >
-                <Icon
-                  name="shield-lock-outline"
-                  size={16}
-                  color={
-                    PRIMARY_COLOR
-                  }
-                />
-
-                <Text
-                  style={
-                    styles.secureBadgeText
-                  }
-                >
-                  SECURE SETUP
-                </Text>
-              </View>
-
-              <View
-                style={
-                  styles.topBarSpacer
-                }
-              />
-
-            </View>
-
-            {/* =================================================
-                HERO
-            ================================================= */}
-
-            <View style={styles.hero}>
-
-              <LinearGradient
-                colors={[
-                  '#00B4DB',
-                  '#7B2FBE',
-                ]}
-                start={{
-                  x: 0,
-                  y: 0,
-                }}
-                end={{
-                  x: 1,
-                  y: 1,
-                }}
-                style={styles.securityIcon}
-              >
-                <Icon
-                  name="lock-outline"
-                  size={34}
-                  color="#FFFFFF"
-                />
-              </LinearGradient>
-
-              <Text
-                style={styles.title}
-              >
-                Create your MPIN
-              </Text>
-
-              <Text
-                style={
-                  styles.subtitle
-                }
-              >
-                Set a secure 6-digit MPIN
-                for faster and safer access
-                to Prayantra.
-              </Text>
-
-            </View>
-
-            {/* =================================================
-                MPIN CARD
-            ================================================= */}
-
-            <View
-              style={styles.mpinCard}
-            >
-
-              <View
-                style={
-                  styles.cardHeader
-                }
-              >
-                <View>
-
-                  <Text
-                    style={
-                      styles.cardTitle
-                    }
-                  >
-                    Choose your MPIN
-                  </Text>
-
-                  <Text
-                    style={
-                      styles.cardSubtitle
-                    }
-                  >
-                    Enter a unique 6-digit code
-                  </Text>
-
-                </View>
-
-                <View
-                  style={
-                    styles.lockSmall
-                  }
-                >
-                  <Icon
-                    name="lock"
-                    size={17}
-                    color={
-                      PRIMARY_COLOR
-                    }
-                  />
-                </View>
-
-              </View>
-
-              {/* =================================================
-                  MPIN INPUTS
-              ================================================= */}
-
-              <View
-                style={
-                  styles.mpinContainer
-                }
-              >
-                {mpin.map(
-                  (
-                    digit,
-                    index
-                  ) => {
-                    const active =
-                      focusedIndex ===
-                      index;
-
-                    const filled =
-                      digit !== '';
-
-                    return (
-                      <View
-                        key={index}
-                        style={[
-                          styles.inputWrapper,
-
-                          active &&
-                            styles.inputWrapperActive,
-
-                          filled &&
-                            styles.inputWrapperFilled,
-
-                          isWeak &&
-                            styles.inputWrapperWeak,
-                        ]}
-                      >
-                        <TextInput
-                          ref={(
-                            ref: PaperTextInput | null
-                          ) => {
-                            inputRefs.current[
-                              index
-                            ] = ref;
-                          }}
-                          mode="flat"
-                          value={
-                            digit
-                          }
-                          onChangeText={(
-                            text
-                          ) =>
-                            handleMpinChange(
-                              text,
-                              index
-                            )
-                          }
-                          onKeyPress={(
-                            e
-                          ) =>
-                            handleKeyPress(
-                              e,
-                              index
-                            )
-                          }
-                          onFocus={() =>
-                            setFocusedIndex(
-                              index
-                            )
-                          }
-                          keyboardType="number-pad"
-                          maxLength={1}
-                          secureTextEntry
-                          editable={
-                            !loading
-                          }
-                          style={
-                            styles.mpinInput
-                          }
-                          contentStyle={
-                            styles.mpinInputContent
-                          }
-                          underlineColor="transparent"
-                          activeUnderlineColor="transparent"
-                          cursorColor={
-                            PRIMARY_COLOR
-                          }
-                          selectionColor={
-                            PRIMARY_COLOR
-                          }
-                          theme={{
-                            colors: {
-                              background:
-                                'transparent',
-
-                              primary:
-                                PRIMARY_COLOR,
-
-                              text:
-                                TEXT_PRIMARY,
-
-                              placeholder:
-                                'transparent',
-                            },
-                          }}
-                        />
-                      </View>
-                    );
-                  }
-                )}
-              </View>
-
-              {/* =================================================
-                  STATUS
-              ================================================= */}
-
-              <View
-                style={[
-                  styles.statusContainer,
-                  {
-                    backgroundColor:
-                      `${status.color}0D`,
-                  },
-                ]}
-              >
-
-                <Icon
-                  name={
-                    status.icon
-                  }
-                  size={17}
-                  color={
-                    status.color
-                  }
-                />
-
-                <Text
-                  style={[
-                    styles.statusText,
-                    {
-                      color:
-                        status.color,
-                    },
-                  ]}
-                >
-                  {status.label}
-                </Text>
-
-              </View>
-
-            </View>
-
-            {/* =================================================
-                SECURITY INFORMATION
-            ================================================= */}
-
-            <View
-              style={
-                styles.securityInfo
-              }
-            >
-
-              <View
-                style={
-                  styles.securityInfoIcon
-                }
-              >
-                <Icon
-                  name="shield-check-outline"
-                  size={20}
-                  color="#10B981"
-                />
-              </View>
-
-              <View
-                style={
-                  styles.securityInfoText
-                }
-              >
-
-                <Text
-                  style={
-                    styles.securityInfoTitle
-                  }
-                >
-                  Keep your MPIN private
-                </Text>
-
-                <Text
-                  style={
-                    styles.securityInfoDescription
-                  }
-                >
-                  Never share your MPIN with
-                  anyone. Avoid birthdays,
-                  repeated digits, or simple
-                  sequences.
-                </Text>
-
-              </View>
-
-            </View>
-
-            {/* =================================================
-                CTA
-            ================================================= */}
+          <View style={styles.topBar}>
 
             <TouchableOpacity
-              onPress={
-                handleSetupMPIN
-              }
-              disabled={
-                loading ||
-                !isComplete
-              }
-              activeOpacity={0.85}
-              style={[
-                styles.buttonWrapper,
-                (!isComplete ||
-                  loading) &&
-                  styles.buttonDisabledWrapper,
-              ]}
+              onPress={handleBack}
+              disabled={loading}
+              activeOpacity={0.7}
+              style={styles.backButton}
             >
-
-              <LinearGradient
-                colors={
-                  !isComplete ||
-                  loading
-                    ? [
-                        '#CBD5E1',
-                        '#94A3B8',
-                      ]
-                    : [
-                        '#00B4DB',
-                        '#7B2FBE',
-                      ]
-                }
-                start={{
-                  x: 0,
-                  y: 0,
-                }}
-                end={{
-                  x: 1,
-                  y: 0,
-                }}
-                style={
-                  styles.buttonGradient
-                }
-              >
-
-                {loading ? (
-                  <>
-                    <ActivityIndicator
-                      color="#FFFFFF"
-                      size="small"
-                    />
-
-                    <Text
-                      style={
-                        styles.buttonText
-                      }
-                    >
-                      Creating MPIN...
-                    </Text>
-                  </>
-                ) : (
-                  <>
-                    <Icon
-                      name="shield-check-outline"
-                      size={20}
-                      color="#FFFFFF"
-                    />
-
-                    <Text
-                      style={
-                        styles.buttonText
-                      }
-                    >
-                      Set MPIN
-                    </Text>
-
-                    <Icon
-                      name="arrow-right"
-                      size={19}
-                      color="#FFFFFF"
-                    />
-                  </>
-                )}
-
-              </LinearGradient>
-
+              <Icon
+                name="arrow-left"
+                size={21}
+                color={TEXT_PRIMARY}
+              />
             </TouchableOpacity>
-
-            {/* =================================================
-                FOOTER
-            ================================================= */}
 
             <View
               style={
-                styles.footer
+                styles.secureBadge
               }
             >
               <Icon
-                name="lock-outline"
-                size={13}
-                color="#94A3B8"
+                name="shield-lock-outline"
+                size={16}
+                color={PRIMARY_COLOR}
               />
 
               <Text
                 style={
-                  styles.footerText
+                  styles.secureBadgeText
                 }
               >
-                Your MPIN is securely associated
-                with this device.
+                SECURE SETUP
               </Text>
             </View>
 
-          </ScrollView>
-        </TouchableWithoutFeedback>
+            <View
+              style={styles.topBarSpacer}
+            />
+
+          </View>
+
+          {/* =================================================
+              HERO
+          ================================================= */}
+
+          <View style={styles.hero}>
+
+            <LinearGradient
+              colors={[
+                '#00B4DB',
+                '#7B2FBE',
+              ]}
+              start={{
+                x: 0,
+                y: 0,
+              }}
+              end={{
+                x: 1,
+                y: 1,
+              }}
+              style={styles.securityIcon}
+            >
+              <Icon
+                name="lock-outline"
+                size={34}
+                color="#FFFFFF"
+              />
+            </LinearGradient>
+
+            <Text style={styles.title}>
+              Create your MPIN
+            </Text>
+
+            <Text
+              style={styles.subtitle}
+            >
+              Set a secure 6-digit MPIN
+              for faster and safer access
+              to Prayantra.
+            </Text>
+
+          </View>
+
+          {/* =================================================
+              MPIN CARD
+          ================================================= */}
+
+          <View style={styles.mpinCard}>
+
+            <View
+              style={styles.cardHeader}
+            >
+              <View>
+                <Text
+                  style={styles.cardTitle}
+                >
+                  Choose your MPIN
+                </Text>
+
+                <Text
+                  style={
+                    styles.cardSubtitle
+                  }
+                >
+                  Enter a unique 6-digit code
+                </Text>
+              </View>
+
+              <View
+                style={styles.lockSmall}
+              >
+                <Icon
+                  name="lock"
+                  size={17}
+                  color={PRIMARY_COLOR}
+                />
+              </View>
+            </View>
+
+            {/* =================================================
+                MPIN VISUAL BOXES (tap target -> hidden input)
+            ================================================= */}
+
+            <Pressable
+              onPress={focusHiddenInput}
+              style={styles.mpinContainer}
+            >
+              {[0, 1, 2, 3, 4, 5].map(
+                (index) => {
+                  const digit =
+                    mpinCode[index] ?? '';
+
+                  const filled =
+                    digit !== '';
+
+                  const active =
+                    isFocused &&
+                    index === activeIndex &&
+                    mpinCode.length < 6;
+
+                  return (
+                    <View
+                      key={index}
+                      style={[
+                        styles.inputWrapper,
+                        active &&
+                          styles.inputWrapperActive,
+                        filled &&
+                          styles.inputWrapperFilled,
+                        isWeak &&
+                          styles.inputWrapperWeak,
+                      ]}
+                    >
+                      {filled && (
+                        <View
+                          style={styles.dot}
+                        />
+                      )}
+                    </View>
+                  );
+                }
+              )}
+            </Pressable>
+
+            {/* =================================================
+                HIDDEN REAL INPUT (single source of truth)
+            ================================================= */}
+
+            <RNTextInput
+              ref={hiddenInputRef}
+              value={mpinCode}
+              onChangeText={handleChangeText}
+              onFocus={() =>
+                setIsFocused(true)
+              }
+              onBlur={() =>
+                setIsFocused(false)
+              }
+              keyboardType="number-pad"
+              maxLength={6}
+              caretHidden
+              autoCorrect={false}
+              autoComplete="off"
+              textContentType="oneTimeCode"
+              editable={!loading}
+              style={styles.hiddenInput}
+            />
+
+            {/* =================================================
+                STATUS
+            ================================================= */}
+
+            <View
+              style={[
+                styles.statusContainer,
+                {
+                  backgroundColor:
+                    `${status.color}0D`,
+                },
+              ]}
+            >
+              <Icon
+                name={status.icon}
+                size={17}
+                color={status.color}
+              />
+
+              <Text
+                style={[
+                  styles.statusText,
+                  {
+                    color: status.color,
+                  },
+                ]}
+              >
+                {status.label}
+              </Text>
+            </View>
+
+          </View>
+
+          {/* =================================================
+              SECURITY INFORMATION
+          ================================================= */}
+
+          <View
+            style={styles.securityInfo}
+          >
+            <View
+              style={
+                styles.securityInfoIcon
+              }
+            >
+              <Icon
+                name="shield-check-outline"
+                size={20}
+                color="#10B981"
+              />
+            </View>
+
+            <View
+              style={
+                styles.securityInfoText
+              }
+            >
+              <Text
+                style={
+                  styles.securityInfoTitle
+                }
+              >
+                Keep your MPIN private
+              </Text>
+
+              <Text
+                style={
+                  styles.securityInfoDescription
+                }
+              >
+                Never share your MPIN with
+                anyone. Avoid birthdays,
+                repeated digits, or simple
+                sequences.
+              </Text>
+            </View>
+          </View>
+
+          {/* =================================================
+              CTA
+          ================================================= */}
+
+          <TouchableOpacity
+            onPress={handleSetupMPIN}
+            disabled={
+              loading || !isComplete
+            }
+            activeOpacity={0.85}
+            style={[
+              styles.buttonWrapper,
+              (!isComplete || loading) &&
+                styles.buttonDisabledWrapper,
+            ]}
+          >
+            <LinearGradient
+              colors={
+                !isComplete || loading
+                  ? ['#CBD5E1', '#94A3B8']
+                  : ['#00B4DB', '#7B2FBE']
+              }
+              start={{
+                x: 0,
+                y: 0,
+              }}
+              end={{
+                x: 1,
+                y: 0,
+              }}
+              style={styles.buttonGradient}
+            >
+              {loading ? (
+                <>
+                  <ActivityIndicator
+                    color="#FFFFFF"
+                    size="small"
+                  />
+
+                  <Text
+                    style={styles.buttonText}
+                  >
+                    Creating MPIN...
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <Icon
+                    name="shield-check-outline"
+                    size={20}
+                    color="#FFFFFF"
+                  />
+
+                  <Text
+                    style={styles.buttonText}
+                  >
+                    Set MPIN
+                  </Text>
+
+                  <Icon
+                    name="arrow-right"
+                    size={19}
+                    color="#FFFFFF"
+                  />
+                </>
+              )}
+            </LinearGradient>
+          </TouchableOpacity>
+
+          {/* =================================================
+              FOOTER
+          ================================================= */}
+
+          <View style={styles.footer}>
+            <Icon
+              name="lock-outline"
+              size={13}
+              color="#94A3B8"
+            />
+
+            <Text
+              style={styles.footerText}
+            >
+              Your MPIN is securely associated
+              with this device.
+            </Text>
+          </View>
+
+        </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -1012,8 +835,7 @@ const styles = StyleSheet.create({
     flex: 1,
 
     backgroundColor:
-      BACKGROUND_COLOR ||
-      '#F7F9FC',
+      BACKGROUND_COLOR || '#F7F9FC',
   },
 
   container: {
@@ -1079,12 +901,10 @@ const styles = StyleSheet.create({
 
     borderRadius: 20,
 
-    backgroundColor:
-      '#FFFFFF',
+    backgroundColor: '#FFFFFF',
 
     borderWidth: 1,
-    borderColor:
-      '#E5EAF0',
+    borderColor: '#E5EAF0',
   },
 
   secureBadgeText: {
@@ -1122,8 +942,7 @@ const styles = StyleSheet.create({
 
     borderRadius: 22,
 
-    shadowColor:
-      '#7B2FBE',
+    shadowColor: '#7B2FBE',
 
     shadowOffset: {
       width: 0,
@@ -1233,8 +1052,7 @@ const styles = StyleSheet.create({
 
     borderRadius: 9,
 
-    backgroundColor:
-      `${PRIMARY_COLOR}10`,
+    backgroundColor: `${PRIMARY_COLOR}10`,
   },
 
   // =======================================================
@@ -1244,10 +1062,11 @@ const styles = StyleSheet.create({
   mpinContainer: {
     flexDirection: 'row',
 
-    justifyContent:
-      'space-between',
+    justifyContent: 'space-between',
 
     marginTop: 24,
+
+    position: 'relative',
   },
 
   inputWrapper: {
@@ -1259,24 +1078,19 @@ const styles = StyleSheet.create({
 
     borderRadius: 12,
 
-    backgroundColor:
-      '#F8FAFC',
+    backgroundColor: '#F8FAFC',
 
     borderWidth: 1.5,
 
-    borderColor:
-      '#E2E8F0',
+    borderColor: '#E2E8F0',
   },
 
   inputWrapperActive: {
-    borderColor:
-      PRIMARY_COLOR,
+    borderColor: PRIMARY_COLOR,
 
-    backgroundColor:
-      '#FFFFFF',
+    backgroundColor: '#FFFFFF',
 
-    shadowColor:
-      PRIMARY_COLOR,
+    shadowColor: PRIMARY_COLOR,
 
     shadowOffset: {
       width: 0,
@@ -1291,41 +1105,36 @@ const styles = StyleSheet.create({
   },
 
   inputWrapperFilled: {
-    backgroundColor:
-      `${PRIMARY_COLOR}08`,
+    backgroundColor: `${PRIMARY_COLOR}08`,
   },
 
   inputWrapperWeak: {
-    borderColor:
-      '#FCA5A5',
+    borderColor: '#FCA5A5',
   },
 
-  mpinInput: {
-    width: 42,
-    height: 50,
+  // dot shown inside a filled box
+  dot: {
+    width: 10,
+    height: 10,
 
-    padding: 0,
+    borderRadius: 5,
 
-    margin: 0,
-
-    backgroundColor:
-      'transparent',
-
-    textAlign: 'center',
-
-    fontSize: 20,
-
-    color: TEXT_PRIMARY,
+    backgroundColor: TEXT_PRIMARY,
   },
 
-  mpinInputContent: {
-    paddingHorizontal: 0,
+  // the invisible real input
+  hiddenInput: {
+    position: 'absolute',
 
-    paddingVertical: 0,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
 
-    textAlign: 'center',
+    height: 1,
+    width: 1,
 
-    fontWeight: '700',
+    opacity: 0,
   },
 
   // =======================================================
@@ -1371,13 +1180,11 @@ const styles = StyleSheet.create({
 
     borderRadius: 14,
 
-    backgroundColor:
-      '#FFFFFF',
+    backgroundColor: '#FFFFFF',
 
     borderWidth: 1,
 
-    borderColor:
-      '#E5EAF0',
+    borderColor: '#E5EAF0',
   },
 
   securityInfoIcon: {
@@ -1389,8 +1196,7 @@ const styles = StyleSheet.create({
 
     borderRadius: 9,
 
-    backgroundColor:
-      '#ECFDF5',
+    backgroundColor: '#ECFDF5',
   },
 
   securityInfoText: {
@@ -1430,8 +1236,7 @@ const styles = StyleSheet.create({
 
     overflow: 'hidden',
 
-    shadowColor:
-      '#7B2FBE',
+    shadowColor: '#7B2FBE',
 
     shadowOffset: {
       width: 0,

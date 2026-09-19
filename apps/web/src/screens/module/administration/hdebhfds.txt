@@ -1,1985 +1,1520 @@
-this worked import React, { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/router';
-import {
-  listWorkCenters,
-  searchWorkCenters,
-  deleteWorkCenter,
-} from '@b2b/api-client';
-import { useUserAuthStore } from '../../../store/userAuthStore';
-
-import {
-  FiPlus,
-  FiEdit2,
-  FiTrash2,
-  FiRefreshCw,
-  FiSearch,
-  FiX,
-  FiArrowLeft,
-  FiChevronRight,
-  FiTool,
-  FiCheckCircle,
-  FiXCircle,
-  FiMoreVertical,
-  FiInbox,
-} from 'react-icons/fi';
-
-type WorkCenter = {
-  work_center_code: string;
-  name: string;
-  description?: string;
-  is_active: boolean;
-};
-
-export default function WorkCentersListScreen() {
-  const router = useRouter();
-
-  const {
-    accessToken,
-    deviceId,
-    companyId,
-  } = useUserAuthStore();
-
-  const [workCenters, setWorkCenters] = useState<WorkCenter[]>([]);
-  const [filteredCenters, setFilteredCenters] = useState<WorkCenter[]>([]);
-
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searching, setSearching] = useState(false);
-
-  const [deletingCode, setDeletingCode] = useState<string | null>(null);
-
-  // =========================================================
-  // FETCH WORK CENTERS
-  // =========================================================
-
-  const fetchWorkCenters = async (
-    showRefresh = false
-  ) => {
-    if (!accessToken || !companyId || !deviceId) {
-      console.warn('Missing authentication information');
-      setLoading(false);
-      return;
-    }
-
-    if (showRefresh) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
-    }
-
-    try {
-      const res = await listWorkCenters(
-        companyId,
-        deviceId,
-        {
-          page: 1,
-          page_size: 100,
-        },
-        accessToken
-      );
-
-      const data = res.data || [];
-
-      setWorkCenters(data);
-      setFilteredCenters(data);
-    } catch (error: any) {
-      console.error('Failed to load work centers:', error);
-
-      alert(
-        error?.message ||
-          'Failed to load work centers'
-      );
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchWorkCenters();
-  }, [accessToken, companyId, deviceId]);
-
-  // =========================================================
-  // SEARCH
-  // =========================================================
-
-  const performSearch = async (query: string) => {
-    setSearchQuery(query);
-
-    if (!query.trim()) {
-      setFilteredCenters(workCenters);
-      return;
-    }
-
-    if (!accessToken || !companyId || !deviceId) {
-      return;
-    }
-
-    setSearching(true);
-
-    try {
-      const res = await searchWorkCenters(
-        companyId,
-        deviceId,
-        {
-          name: query,
-          page: 1,
-          page_size: 100,
-        },
-        accessToken
-      );
-
-      const data = res.data || [];
-
-      setFilteredCenters(data);
-    } catch (error) {
-      // Local fallback
-      const normalizedQuery =
-        query.toLowerCase().trim();
-
-      const filtered = workCenters.filter(
-        (wc) =>
-          wc.name
-            .toLowerCase()
-            .includes(normalizedQuery) ||
-          wc.work_center_code
-            .toLowerCase()
-            .includes(normalizedQuery)
-      );
-
-      setFilteredCenters(filtered);
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  // =========================================================
-  // CLEAR SEARCH
-  // =========================================================
-
-  const clearSearch = () => {
-    setSearchQuery('');
-    setFilteredCenters(workCenters);
-  };
-
-  // =========================================================
-  // DELETE
-  // =========================================================
-
-  const handleDelete = async (code: string) => {
-    const workCenter = workCenters.find(
-      (wc) => wc.work_center_code === code
-    );
-
-    const confirmed = window.confirm(
-      `Are you sure you want to delete "${workCenter?.name || code}"?\n\nThis action cannot be undone.`
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
-    if (!accessToken || !companyId || !deviceId) {
-      alert(
-        'Missing authentication information. Please log in again.'
-      );
-      return;
-    }
-
-    setDeletingCode(code);
-
-    try {
-      await deleteWorkCenter(
-        companyId,
-        deviceId,
-        code,
-        accessToken
-      );
-
-      await fetchWorkCenters();
-    } catch (error: any) {
-      console.error(
-        'Failed to delete work center:',
-        error
-      );
-
-      alert(
-        error?.message ||
-          'Failed to delete work center'
-      );
-    } finally {
-      setDeletingCode(null);
-    }
-  };
-
-  // =========================================================
-  // STATS
-  // =========================================================
-
-  const totalCount = workCenters.length;
-
-  const activeCount = useMemo(
-    () =>
-      workCenters.filter(
-        (wc) => wc.is_active
-      ).length,
-    [workCenters]
-  );
-
-  const inactiveCount =
-    totalCount - activeCount;
-
-  // =========================================================
-  // LOADING
-  // =========================================================
-
-  if (loading) {
-    return (
-      <>
-        <div className="page loadingPage">
-          <div className="loadingCard">
-            <div className="loadingSpinner" />
-
-            <h2>Loading Work Centers</h2>
-
-            <p>
-              Fetching your manufacturing work
-              centers...
-            </p>
-          </div>
-        </div>
-
-        <style jsx>{styles}</style>
-      </>
-    );
-  }
-
-  // =========================================================
-  // MAIN
-  // =========================================================
-
-  return (
-    <>
-      <div className="page">
-
-        {/* ===================================================
-            HEADER
-        =================================================== */}
-
-        <header className="pageHeader">
-          <div className="headerInner">
-
-            <div className="headerLeft">
-
-              <button
-                type="button"
-                className="backButton"
-                onClick={() =>
-                  router.push('/administration')
-                }
-                aria-label="Back to Administration"
-              >
-                <FiArrowLeft />
-              </button>
-
-              <div className="headerIcon">
-                <FiTool />
-              </div>
-
-              <div className="headerTitleArea">
-
-                <div className="breadcrumb">
-                  <span>Administration</span>
-                  <FiChevronRight />
-                  <span>Work Centers</span>
-                </div>
-
-                <h1>Work Centers</h1>
-
-                <p>
-                  Manage production work centers
-                  and their operational status.
-                </p>
-
-              </div>
-            </div>
-
-            <button
-              type="button"
-              className="addButton"
-              onClick={() =>
-                router.push('/administration/work-centers/new')
-              }
-            >
-              <FiPlus />
-              <span>Add Work Center</span>
-            </button>
-
-          </div>
-        </header>
-
-        {/* ===================================================
-            CONTENT
-        =================================================== */}
-
-        <main className="content">
-
-          {/* =================================================
-              STATISTICS
-          ================================================= */}
-
-          <div className="statsGrid">
-
-            <div className="statCard">
-
-              <div className="statIcon totalStat">
-                <FiTool />
-              </div>
-
-              <div className="statInfo">
-                <span>Total Work Centers</span>
-                <strong>{totalCount}</strong>
-              </div>
-
-            </div>
-
-            <div className="statCard">
-
-              <div className="statIcon activeStat">
-                <FiCheckCircle />
-              </div>
-
-              <div className="statInfo">
-                <span>Active</span>
-                <strong>{activeCount}</strong>
-              </div>
-
-            </div>
-
-            <div className="statCard">
-
-              <div className="statIcon inactiveStat">
-                <FiXCircle />
-              </div>
-
-              <div className="statInfo">
-                <span>Inactive</span>
-                <strong>{inactiveCount}</strong>
-              </div>
-
-            </div>
-
-          </div>
-
-          {/* =================================================
-              LIST CONTAINER
-          ================================================= */}
-
-          <section className="listSection">
-
-            {/* List header */}
-
-            <div className="listHeader">
-
-              <div>
-                <h2>All Work Centers</h2>
-
-                <p>
-                  {searchQuery
-                    ? `${filteredCenters.length} result${
-                        filteredCenters.length === 1
-                          ? ''
-                          : 's'
-                      } found`
-                    : `${totalCount} work center${
-                        totalCount === 1
-                          ? ''
-                          : 's'
-                      }`}
-                </p>
-              </div>
-
-              <button
-                type="button"
-                className="refreshButton"
-                onClick={() =>
-                  fetchWorkCenters(true)
-                }
-                disabled={refreshing}
-                title="Refresh"
-              >
-                <FiRefreshCw
-                  className={
-                    refreshing
-                      ? 'spin'
-                      : ''
-                  }
-                />
-
-                <span>Refresh</span>
-              </button>
-
-            </div>
-
-            {/* =================================================
-                SEARCH
-            ================================================= */}
-
-            <div className="searchWrapper">
-
-              <FiSearch className="searchIcon" />
-
-              <input
-                type="text"
-                placeholder="Search by work center name or code..."
-                value={searchQuery}
-                onChange={(e) =>
-                  performSearch(
-                    e.target.value
-                  )
-                }
-              />
-
-              {searching && (
-                <div className="searchSpinner" />
-              )}
-
-              {!searching &&
-                searchQuery && (
-                  <button
-                    type="button"
-                    className="clearSearch"
-                    onClick={clearSearch}
-                    aria-label="Clear search"
-                  >
-                    <FiX />
-                  </button>
-                )}
-
-            </div>
-
-            {/* =================================================
-                EMPTY STATE
-            ================================================= */}
-
-            {filteredCenters.length === 0 ? (
-              <div className="emptyState">
-
-                <div className="emptyIcon">
-                  <FiInbox />
-                </div>
-
-                <h3>
-                  {searchQuery
-                    ? 'No Work Centers Found'
-                    : 'No Work Centers Yet'}
-                </h3>
-
-                <p>
-                  {searchQuery
-                    ? `We couldn't find a work center matching "${searchQuery}".`
-                    : 'Create your first work center to start managing your production operations.'}
-                </p>
-
-                {searchQuery ? (
-                  <button
-                    type="button"
-                    className="emptySecondaryButton"
-                    onClick={clearSearch}
-                  >
-                    Clear Search
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="emptyPrimaryButton"
-                    onClick={() =>
-                      router.push('/administration/work-centers/new')
-                    }
-                  >
-                    <FiPlus />
-                    Create Work Center
-                  </button>
-                )}
-
-              </div>
-            ) : (
-
-              /* =================================================
-                 DESKTOP TABLE
-              ================================================= */
-
-              <div className="tableWrapper">
-
-                <table className="workCenterTable">
-
-                  <thead>
-                    <tr>
-                      <th>Work Center</th>
-                      <th>Code</th>
-                      <th>Description</th>
-                      <th>Status</th>
-                      <th className="actionsHeader">
-                        Actions
-                      </th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-
-                    {filteredCenters.map(
-                      (wc, index) => (
-                        <tr
-                          key={
-                            wc.work_center_code
-                          }
-                        >
-
-                          {/* Work center */}
-
-                          <td>
-                            <div className="workCenterCell">
-
-                              <div className="rowIcon">
-                                <FiTool />
-                              </div>
-
-                              <div className="workCenterName">
-                                <strong>
-                                  {wc.name}
-                                </strong>
-
-                                <span>
-                                  Work Center{' '}
-                                  {String(
-                                    index + 1
-                                  ).padStart(
-                                    2,
-                                    '0'
-                                  )}
-                                </span>
-                              </div>
-
-                            </div>
-                          </td>
-
-                          {/* Code */}
-
-                          <td>
-                            <span className="codeBadge">
-                              {wc.work_center_code}
-                            </span>
-                          </td>
-
-                          {/* Description */}
-
-                          <td>
-                            <span className="description">
-                              {wc.description ||
-                                'No description provided'}
-                            </span>
-                          </td>
-
-                          {/* Status */}
-
-                          <td>
-                            <span
-                              className={`statusBadge ${
-                                wc.is_active
-                                  ? 'statusActive'
-                                  : 'statusInactive'
-                              }`}
-                            >
-                              <span className="statusDot" />
-
-                              {wc.is_active
-                                ? 'Active'
-                                : 'Inactive'}
-                            </span>
-                          </td>
-
-                          {/* Actions */}
-
-                          <td>
-
-                            <div className="rowActions">
-
-                              <button
-                                type="button"
-                                className="editButton"
-                                onClick={() =>
-                                  router.push(
-                                    `/administration/work-centers/edit?code=${encodeURIComponent(
-                                      wc.work_center_code
-                                    )}`
-                                  )
-                                }
-                                title="Edit Work Center"
-                              >
-                                <FiEdit2 />
-                              </button>
-
-                              <button
-                                type="button"
-                                className="deleteButton"
-                                onClick={() =>
-                                  handleDelete(
-                                    wc.work_center_code
-                                  )
-                                }
-                                disabled={
-                                  deletingCode ===
-                                  wc.work_center_code
-                                }
-                                title="Delete Work Center"
-                              >
-                                {deletingCode ===
-                                wc.work_center_code ? (
-                                  <FiRefreshCw className="spin" />
-                                ) : (
-                                  <FiTrash2 />
-                                )}
-                              </button>
-
-                              <button
-                                type="button"
-                                className="moreButton"
-                                title="More options"
-                              >
-                                <FiMoreVertical />
-                              </button>
-
-                            </div>
-
-                          </td>
-
-                        </tr>
-                      )
-                    )}
-
-                  </tbody>
-
-                </table>
-
-              </div>
-            )}
-
-          </section>
-
-        </main>
-
-      </div>
-
-      <style jsx>{styles}</style>
-    </>
-  );
+now lets see our code we are going to set up the hr . we will start with these apis . we will start with these apis 1. Employee Management (/hr/employees)
+Employee Profiles
+Method	Path	Handler
+GET	/hr/employees	ListEmployeeProfiles
+POST	/hr/employees	CreateEmployeeProfile
+GET	/hr/employees/search	SearchEmployeeProfiles
+GET	/hr/employees/stats	GetEmployeeStats
+GET	/hr/employees/export	ExportEmployeeData
+GET	/hr/employees/{employeeID}	GetEmployeeProfile
+PUT	/hr/employees/{employeeID}	UpdateEmployeeProfile
+DELETE	/hr/employees/{employeeID}	DeleteEmployeeProfile
+Employee Documents
+Method	Path	Handler
+GET	/hr/employees/{employeeID}/documents	GetEmployeeDocuments
+POST	/hr/employees/{employeeID}/documents	UploadEmployeeDocument
+GET	/hr/employees/{employeeID}/documents/{documentID}	DownloadEmployeeDocument
+GET	/hr/employees/{employeeID}/documents/{documentID}/url	GenerateDocumentURL
+DELETE	/hr/employees/{employeeID}/documents/{documentID}	DeleteEmployeeDocument
+Employee History & Exit
+Method	Path	Handler
+GET	/hr/employees/{employeeID}/department-history	GetDepartmentHistory
+GET	/hr/employees/{employeeID}/role-history	GetRoleHistory
+GET	/hr/employees/{employeeID}/exit	GetEmployeeExit
+POST	/hr/employees/{employeeID}/exit	CreateEmployeeExit
+POST	/hr/employees/{employeeID}/exit/rehire	RehireEmployee
+By POST {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+Content-Type: {{contentType}}
+
+{
+    "user_id": "{{userId}}",
+    "date_of_birth": "1990-01-01T00:00:00Z",
+    "gender": "male",
+    "marital_status": "single",
+    "nationality": "US",
+    "employment_type": "full_time",
+    "employment_status": "active",
+    "probation_end_date": "2026-06-01T00:00:00Z",
+    "confirmation_date": "2026-07-01T00:00:00Z",
+    "grade": "A1",
+    "cost_center": "CC001",
+    "tax_id": "TAX123",
+    "social_security_id": "SSN456",
+    "email": "employee@company.com"
 }
 
-// =========================================================
-// STYLES
-// =========================================================
-
-const styles = `
-  * {
-    box-sizing: border-box;
-  }
-
-  .page {
-    min-height: 100vh;
-
-    background:
-      radial-gradient(
-        circle at 0% 0%,
-        rgba(37, 99, 235, 0.045),
-        transparent 28%
-      ),
-      #f7f9fc;
-
-    color: #172033;
-
-    font-family:
-      Inter,
-      ui-sans-serif,
-      system-ui,
-      -apple-system,
-      BlinkMacSystemFont,
-      "Segoe UI",
-      sans-serif;
-
-    padding-bottom: 50px;
-  }
-
-  /* =======================================================
-     HEADER
-  ======================================================= */
-
-  .pageHeader {
-    position: sticky;
-    top: 0;
-    z-index: 50;
-
-    background: rgba(255,255,255,0.95);
-
-    border-bottom: 1px solid #e6eaf0;
-
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-
-    box-shadow:
-      0 2px 10px rgba(15,23,42,0.035);
-  }
-
-  .headerInner {
-    width: min(1400px, calc(100% - 48px));
-
-    min-height: 94px;
-
-    margin: 0 auto;
-
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-
-    gap: 25px;
-  }
-
-  .headerLeft {
-    min-width: 0;
-
-    display: flex;
-    align-items: center;
-
-    gap: 13px;
-  }
-
-  /* =======================================================
-     BACK
-  ======================================================= */
-
-  .backButton {
-    all: unset;
-
-    width: 40px;
-    height: 40px;
-
-    flex-shrink: 0;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border: 1px solid #e2e8f0;
-    border-radius: 10px;
-
-    background: #ffffff;
-    color: #64748b;
-
-    cursor: pointer;
-
-    transition:
-      color 0.18s ease,
-      background 0.18s ease,
-      border-color 0.18s ease,
-      transform 0.18s ease;
-  }
-
-  .backButton svg {
-    width: 18px;
-    height: 18px;
-  }
-
-  .backButton:hover {
-    color: #2563eb;
-    background: #eff6ff;
-    border-color: #bfdbfe;
-
-    transform: translateX(-2px);
-  }
-
-  /* =======================================================
-     PAGE ICON
-  ======================================================= */
-
-  .headerIcon {
-    width: 52px;
-    height: 52px;
-
-    flex-shrink: 0;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 14px;
-
-    background: #eff6ff;
-    color: #2563eb;
-
-    border: 1px solid #dbeafe;
-  }
-
-  .headerIcon svg {
-    width: 24px;
-    height: 24px;
-
-    stroke-width: 1.8;
-  }
-
-  /* =======================================================
-     TITLE
-  ======================================================= */
-
-  .headerTitleArea {
-    min-width: 0;
-  }
-
-  .breadcrumb {
-    display: flex;
-    align-items: center;
-
-    gap: 4px;
-
-    margin-bottom: 4px;
-
-    color: #94a3b8;
-
-    font-size: 10px;
-    font-weight: 650;
-  }
-
-  .breadcrumb svg {
-    width: 12px;
-    height: 12px;
-  }
-
-  .headerTitleArea h1 {
-    margin: 0;
-
-    color: #172033;
-
-    font-size: 23px;
-    line-height: 1.2;
-
-    font-weight: 750;
-
-    letter-spacing: -0.45px;
-  }
-
-  .headerTitleArea p {
-    margin: 4px 0 0;
-
-    color: #94a3b8;
-
-    font-size: 11px;
-    font-weight: 500;
-
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  /* =======================================================
-     ADD BUTTON
-  ======================================================= */
-
-  .addButton {
-    all: unset;
-
-    flex-shrink: 0;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    gap: 8px;
-
-    padding: 11px 16px;
-
-    border-radius: 10px;
-
-    background: #2563eb;
-
-    color: #ffffff;
-
-    cursor: pointer;
-
-    font-size: 12px;
-    font-weight: 650;
-
-    box-shadow:
-      0 5px 12px rgba(37,99,235,0.18);
-
-    transition:
-      transform 0.18s ease,
-      box-shadow 0.18s ease,
-      background 0.18s ease;
-  }
-
-  .addButton svg {
-    width: 16px;
-    height: 16px;
-  }
-
-  .addButton:hover {
-    background: #1d4ed8;
-
-    transform: translateY(-1px);
-
-    box-shadow:
-      0 8px 18px rgba(37,99,235,0.24);
-  }
-
-  /* =======================================================
-     CONTENT
-  ======================================================= */
-
-  .content {
-    width: min(1400px, calc(100% - 48px));
-
-    margin: 0 auto;
-
-    padding-top: 30px;
-  }
-
-  /* =======================================================
-     STATS
-  ======================================================= */
-
-  .statsGrid {
-    display: grid;
-
-    grid-template-columns:
-      repeat(3, minmax(0, 1fr));
-
-    gap: 15px;
-
-    margin-bottom: 22px;
-  }
-
-  .statCard {
-    min-height: 92px;
-
-    display: flex;
-    align-items: center;
-
-    gap: 13px;
-
-    padding: 17px;
-
-    border: 1px solid #e5eaf1;
-    border-radius: 14px;
-
-    background: #ffffff;
-
-    box-shadow:
-      0 2px 6px rgba(15,23,42,0.025);
-  }
-
-  .statIcon {
-    width: 46px;
-    height: 46px;
-
-    flex-shrink: 0;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 12px;
-  }
-
-  .statIcon svg {
-    width: 21px;
-    height: 21px;
-  }
-
-  .totalStat {
-    background: #eff6ff;
-    color: #2563eb;
-  }
-
-  .activeStat {
-    background: #ecfdf5;
-    color: #10b981;
-  }
-
-  .inactiveStat {
-    background: #fef2f2;
-    color: #ef4444;
-  }
-
-  .statInfo {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .statInfo span {
-    color: #94a3b8;
-
-    font-size: 11px;
-    font-weight: 600;
-  }
-
-  .statInfo strong {
-    margin-top: 4px;
-
-    color: #1e293b;
-
-    font-size: 23px;
-    line-height: 1;
-
-    font-weight: 750;
-  }
-
-  /* =======================================================
-     LIST SECTION
-  ======================================================= */
-
-  .listSection {
-    overflow: hidden;
-
-    border: 1px solid #e5eaf1;
-    border-radius: 16px;
-
-    background: #ffffff;
-
-    box-shadow:
-      0 3px 12px rgba(15,23,42,0.03);
-  }
-
-  .listHeader {
-    min-height: 72px;
-
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-
-    gap: 20px;
-
-    padding: 17px 20px;
-
-    border-bottom: 1px solid #edf0f4;
-  }
-
-  .listHeader h2 {
-    margin: 0;
-
-    color: #1e293b;
-
-    font-size: 16px;
-    line-height: 1.3;
-
-    font-weight: 700;
-  }
-
-  .listHeader p {
-    margin: 4px 0 0;
-
-    color: #94a3b8;
-
-    font-size: 11px;
-    font-weight: 500;
-  }
-
-  .refreshButton {
-    all: unset;
-
-    display: flex;
-    align-items: center;
-
-    gap: 7px;
-
-    padding: 8px 11px;
-
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-
-    color: #64748b;
-
-    cursor: pointer;
-
-    font-size: 11px;
-    font-weight: 600;
-
-    transition:
-      color 0.18s ease,
-      background 0.18s ease,
-      border-color 0.18s ease;
-  }
-
-  .refreshButton svg {
-    width: 15px;
-    height: 15px;
-  }
-
-  .refreshButton:hover:not(:disabled) {
-    color: #2563eb;
-
-    background: #eff6ff;
-
-    border-color: #bfdbfe;
-  }
-
-  .refreshButton:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  /* =======================================================
-     SEARCH
-  ======================================================= */
-
-  .searchWrapper {
-    position: relative;
-
-    margin: 17px 20px;
-
-    height: 44px;
-
-    display: flex;
-    align-items: center;
-
-    border: 1px solid #e1e6ee;
-    border-radius: 10px;
-
-    background: #f8fafc;
-
-    transition:
-      border-color 0.18s ease,
-      box-shadow 0.18s ease,
-      background 0.18s ease;
-  }
-
-  .searchWrapper:focus-within {
-    background: #ffffff;
-
-    border-color: #93c5fd;
-
-    box-shadow:
-      0 0 0 3px rgba(37,99,235,0.08);
-  }
-
-  .searchIcon {
-    width: 17px;
-    height: 17px;
-
-    margin-left: 13px;
-
-    flex-shrink: 0;
-
-    color: #94a3b8;
-  }
-
-  .searchWrapper input {
-    width: 100%;
-    height: 100%;
-
-    padding: 0 42px 0 10px;
-
-    border: none;
-    outline: none;
-
-    background: transparent;
-
-    color: #1e293b;
-
-    font-family: inherit;
-
-    font-size: 12px;
-  }
-
-  .searchWrapper input::placeholder {
-    color: #a1aaba;
-  }
-
-  .clearSearch {
-    all: unset;
-
-    position: absolute;
-
-    right: 11px;
-
-    width: 25px;
-    height: 25px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 6px;
-
-    color: #94a3b8;
-
-    cursor: pointer;
-  }
-
-  .clearSearch:hover {
-    background: #f1f5f9;
-    color: #475569;
-  }
-
-  .clearSearch svg {
-    width: 15px;
-    height: 15px;
-  }
-
-  .searchSpinner {
-    position: absolute;
-
-    right: 13px;
-
-    width: 16px;
-    height: 16px;
-
-    border: 2px solid #dbeafe;
-    border-top-color: #2563eb;
-
-    border-radius: 50%;
-
-    animation: spin 0.7s linear infinite;
-  }
-
-  /* =======================================================
-     TABLE
-  ======================================================= */
-
-  .tableWrapper {
-    width: 100%;
-
-    overflow-x: auto;
-
-    border-top: 1px solid #edf0f4;
-  }
-
-  .workCenterTable {
-    width: 100%;
-
-    border-collapse: collapse;
-
-    table-layout: fixed;
-  }
-
-  .workCenterTable th {
-    padding: 12px 18px;
-
-    background: #f8fafc;
-
-    border-bottom: 1px solid #e8ecf1;
-
-    color: #64748b;
-
-    font-size: 10px;
-    line-height: 1.2;
-
-    font-weight: 700;
-
-    text-align: left;
-
-    text-transform: uppercase;
-
-    letter-spacing: 0.45px;
-  }
-
-  .workCenterTable th:nth-child(1) {
-    width: 25%;
-  }
-
-  .workCenterTable th:nth-child(2) {
-    width: 16%;
-  }
-
-  .workCenterTable th:nth-child(3) {
-    width: 29%;
-  }
-
-  .workCenterTable th:nth-child(4) {
-    width: 14%;
-  }
-
-  .workCenterTable th:nth-child(5) {
-    width: 16%;
-  }
-
-  .workCenterTable td {
-    padding: 14px 18px;
-
-    border-bottom: 1px solid #eef1f5;
-
-    vertical-align: middle;
-  }
-
-  .workCenterTable tbody tr {
-    transition:
-      background 0.15s ease;
-  }
-
-  .workCenterTable tbody tr:hover {
-    background: #fafcff;
-  }
-
-  .workCenterTable tbody tr:last-child td {
-    border-bottom: none;
-  }
-
-  /* =======================================================
-     WORK CENTER CELL
-  ======================================================= */
-
-  .workCenterCell {
-    min-width: 0;
-
-    display: flex;
-    align-items: center;
-
-    gap: 11px;
-  }
-
-  .rowIcon {
-    width: 38px;
-    height: 38px;
-
-    flex-shrink: 0;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 10px;
-
-    background: #eff6ff;
-    color: #2563eb;
-  }
-
-  .rowIcon svg {
-    width: 17px;
-    height: 17px;
-  }
-
-  .workCenterName {
-    min-width: 0;
-
-    display: flex;
-    flex-direction: column;
-  }
-
-  .workCenterName strong {
-    overflow: hidden;
-
-    color: #1e293b;
-
-    font-size: 12px;
-    line-height: 1.35;
-
-    font-weight: 700;
-
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .workCenterName span {
-    margin-top: 3px;
-
-    color: #a1aaba;
-
-    font-size: 9px;
-    font-weight: 500;
-  }
-
-  /* =======================================================
-     CODE
-  ======================================================= */
-
-  .codeBadge {
-    display: inline-flex;
-
-    padding: 5px 8px;
-
-    border: 1px solid #e2e8f0;
-    border-radius: 6px;
-
-    background: #f8fafc;
-
-    color: #475569;
-
-    font-family:
-      ui-monospace,
-      SFMono-Regular,
-      Menlo,
-      Monaco,
-      Consolas,
-      monospace;
-
-    font-size: 10px;
-
-    font-weight: 600;
-
-    letter-spacing: 0.1px;
-  }
-
-  /* =======================================================
-     DESCRIPTION
-  ======================================================= */
-
-  .description {
-    display: block;
-
-    overflow: hidden;
-
-    color: #64748b;
-
-    font-size: 11px;
-    line-height: 1.45;
-
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /* =======================================================
-     STATUS
-  ======================================================= */
-
-  .statusBadge {
-    display: inline-flex;
-    align-items: center;
-
-    gap: 6px;
-
-    padding: 5px 8px;
-
-    border-radius: 7px;
-
-    font-size: 10px;
-    font-weight: 650;
-  }
-
-  .statusActive {
-    background: #ecfdf5;
-    color: #059669;
-  }
-
-  .statusInactive {
-    background: #fef2f2;
-    color: #dc2626;
-  }
-
-  .statusDot {
-    width: 6px;
-    height: 6px;
-
-    border-radius: 50%;
-
-    background: currentColor;
-  }
-
-  /* =======================================================
-     ACTIONS
-  ======================================================= */
-
-  .actionsHeader {
-    text-align: right !important;
-  }
-
-  .rowActions {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-
-    gap: 5px;
-  }
-
-  .editButton,
-  .deleteButton,
-  .moreButton {
-    all: unset;
-
-    width: 32px;
-    height: 32px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 8px;
-
-    cursor: pointer;
-
-    transition:
-      background 0.16s ease,
-      color 0.16s ease;
-  }
-
-  .editButton {
-    color: #2563eb;
-  }
-
-  .editButton:hover {
-    background: #eff6ff;
-  }
-
-  .deleteButton {
-    color: #ef4444;
-  }
-
-  .deleteButton:hover:not(:disabled) {
-    background: #fef2f2;
-  }
-
-  .moreButton {
-    color: #94a3b8;
-  }
-
-  .moreButton:hover {
-    background: #f1f5f9;
-    color: #475569;
-  }
-
-  .editButton svg,
-  .deleteButton svg,
-  .moreButton svg {
-    width: 15px;
-    height: 15px;
-  }
-
-  .deleteButton:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  /* =======================================================
-     EMPTY
-  ======================================================= */
-
-  .emptyState {
-    padding: 65px 30px;
-
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-
-    text-align: center;
-
-    border-top: 1px solid #edf0f4;
-  }
-
-  .emptyIcon {
-    width: 66px;
-    height: 66px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 17px;
-
-    background: #eff6ff;
-    color: #2563eb;
-  }
-
-  .emptyIcon svg {
-    width: 28px;
-    height: 28px;
-  }
-
-  .emptyState h3 {
-    margin: 19px 0 0;
-
-    color: #1e293b;
-
-    font-size: 18px;
-    font-weight: 700;
-  }
-
-  .emptyState p {
-    max-width: 440px;
-
-    margin: 7px 0 0;
-
-    color: #94a3b8;
-
-    font-size: 12px;
-    line-height: 1.65;
-  }
-
-  .emptyPrimaryButton,
-  .emptySecondaryButton {
-    all: unset;
-
-    margin-top: 22px;
-
-    display: flex;
-    align-items: center;
-
-    gap: 7px;
-
-    padding: 10px 14px;
-
-    border-radius: 9px;
-
-    cursor: pointer;
-
-    font-size: 11px;
-    font-weight: 650;
-  }
-
-  .emptyPrimaryButton {
-    background: #2563eb;
-    color: #ffffff;
-
-    box-shadow:
-      0 5px 12px rgba(37,99,235,0.18);
-  }
-
-  .emptySecondaryButton {
-    border: 1px solid #e2e8f0;
-    color: #475569;
-    background: #ffffff;
-  }
-
-  .emptyPrimaryButton svg {
-    width: 15px;
-    height: 15px;
-  }
-
-  /* =======================================================
-     LOADING
-  ======================================================= */
-
-  .loadingPage {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .loadingCard {
-    width: min(380px, calc(100% - 40px));
-
-    padding: 40px 30px;
-
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-
-    border: 1px solid #e5eaf1;
-    border-radius: 17px;
-
-    background: #ffffff;
-
-    box-shadow:
-      0 12px 35px rgba(15,23,42,0.06);
-
-    text-align: center;
-  }
-
-  .loadingSpinner {
-    width: 40px;
-    height: 40px;
-
-    border: 3px solid #dbeafe;
-    border-top-color: #2563eb;
-
-    border-radius: 50%;
-
-    animation: spin 0.8s linear infinite;
-  }
-
-  .loadingCard h2 {
-    margin: 20px 0 0;
-
-    color: #1e293b;
-
-    font-size: 18px;
-    font-weight: 700;
-  }
-
-  .loadingCard p {
-    margin: 7px 0 0;
-
-    color: #94a3b8;
-
-    font-size: 12px;
-  }
-
-  /* =======================================================
-     ANIMATION
-  ======================================================= */
-
-  .spin {
-    animation: spin 0.7s linear infinite;
-  }
-
-  @keyframes spin {
-    from {
-      transform: rotate(0deg);
+### List Employee Profiles
+GET {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees?page=1&page_size=50
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+
+### Get Employee Profile by ID
+GET {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees/{{employeeId}}
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+
+### Update Employee Profile
+PUT {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees/{{employeeId}}
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+Content-Type: {{contentType}}
+
+{
+    "job_title": "Senior Software Engineer",
+    "grade": "A2",
+    "employment_status": "active"
+}
+
+### Delete Employee Profile
+DELETE {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees/{{employeeId}}
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+
+### Search Employee Profiles
+GET {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees/search?employment_type=full_time&page=1&page_size=50
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+
+### Get Employee Stats
+GET {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees/stats
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+
+### Export Employee Data
+GET {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees/export?format=json
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+
+### Health Check for Employee Services
+GET {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/health
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+### Upload Employee Document
+POST {{baseUrl}}{{apiVer### Create Employee Profile
+sion}}/companies/{{companyId}}/hr/employees/{{employeeId}}/documents
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="resume.pdf"
+Content-Type: application/pdf
+
+< ./sample.pdf
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="document_type"
+
+resume
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="document_name"
+
+John_Doe_Resume_2026.pdf
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="is_confidential"
+
+false
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+### Get Employee Documents
+GET {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees/{{employeeId}}/documents?include_confidential=false
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+
+### Download Employee Document
+GET {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees/{{employeeId}}/documents/{{documentId}}
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+
+### Generate Document Signed URL
+GET {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees/{{employeeId}}/documents/{{documentId}}/url?expiry=1h
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+
+### Delete Employee Document
+DELETE {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees/{{employeeId}}/documents/{{documentId}}
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+
+### Create Employee Exit
+POST {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees/{{employeeId}}/exit
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+Content-Type: {{contentType}}
+
+{
+    "exit_date": "2026-12-31T00:00:00Z",
+    "exit_reason": "resignation",
+    "eligible_for_rehire": true
+}
+
+### Get Employee Exit
+GET {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees/{{employeeId}}/exit
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+
+### Rehire Employee
+POST {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees/{{employeeId}}/rehire
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+
+### ==================== ROLE HISTORY ====================
+
+### Get Role History
+GET {{baseUrl}}{{apiVersion}}/companies/{{companyId}}/hr/employees/{{employeeId}}/role-history
+Authorization: Bearer {{token}}
+X-Device-ID: {{deviceId}}
+X-Company-ID: {{companyId}}
+
+ now we will start these apis in hr moduile in the frontend setup bhavikachhabra@MacBook-Pro b2b-suite % tree -a -I 'node_modules|dist|.turbo|.next|objects' -L 4   
+.
+├── .env
+├── .git
+│   ├── COMMIT_EDITMSG
+│   ├── HEAD
+│   ├── config
+│   ├── description
+│   ├── hooks
+│   │   ├── applypatch-msg.sample
+│   │   ├── commit-msg.sample
+│   │   ├── fsmonitor-watchman.sample
+│   │   ├── post-update.sample
+│   │   ├── pre-applypatch.sample
+│   │   ├── pre-commit.sample
+│   │   ├── pre-merge-commit.sample
+│   │   ├── pre-push.sample
+│   │   ├── pre-rebase.sample
+│   │   ├── pre-receive.sample
+│   │   ├── prepare-commit-msg.sample
+│   │   ├── push-to-checkout.sample
+│   │   ├── sendemail-validate.sample
+│   │   └── update.sample
+│   ├── index
+│   ├── info
+│   │   └── exclude
+│   ├── logs
+│   │   ├── HEAD
+│   │   └── refs
+│   │       ├── heads
+│   │       └── remotes
+│   └── refs
+│       ├── heads
+│       │   └── main
+│       ├── remotes
+│       │   └── origin
+│       └── tags
+├── .gitignore
+├── apps
+│   ├── mobile
+│   │   ├── .claude
+│   │   │   └── settings.json
+│   │   ├── .env
+│   │   ├── .expo
+│   │   │   ├── README.md
+│   │   │   ├── dev
+│   │   │   ├── devices.json
+│   │   │   ├── settings.json
+│   │   │   └── web
+│   │   ├── .gitignore
+│   │   ├── AGENTS.md
+│   │   ├── App.tsx
+│   │   ├── CLAUDE.md
+│   │   ├── LICENSE
+│   │   ├── android
+│   │   │   ├── .gitignore
+│   │   │   ├── app
+│   │   │   ├── build.gradle
+│   │   │   ├── gradle
+│   │   │   ├── gradle.properties
+│   │   │   ├── gradlew
+│   │   │   ├── gradlew.bat
+│   │   │   └── settings.gradle
+│   │   ├── app.json
+│   │   ├── assets
+│   │   │   ├── icon.png
+│   │   │   └── splash-icon.png
+│   │   ├── babel.config.js
+│   │   ├── eas.json
+│   │   ├── index.ts
+│   │   ├── metro.config.js
+│   │   ├── package.json
+│   │   ├── src
+│   │   │   ├── components
+│   │   │   ├── constants
+│   │   │   ├── hooks
+│   │   │   ├── navigation
+│   │   │   ├── screens
+│   │   │   ├── services
+│   │   │   ├── shared-types
+│   │   │   ├── splash
+│   │   │   ├── store
+│   │   │   └── utils
+│   │   └── tsconfig.json
+│   ├── prayantra-b2b
+│   │   ├── .claude
+│   │   │   └── settings.json
+│   │   ├── .env
+│   │   ├── .expo
+│   │   │   ├── README.md
+│   │   │   ├── dev
+│   │   │   ├── devices.json
+│   │   │   ├── settings.json
+│   │   │   └── web
+│   │   ├── .gitignore
+│   │   ├── AGENTS.md
+│   │   ├── App.tsx
+│   │   ├── CLAUDE.md
+│   │   ├── LICENSE
+│   │   ├── android
+│   │   │   ├── .gitignore
+│   │   │   ├── .gradle
+│   │   │   ├── .kotlin
+│   │   │   ├── app
+│   │   │   ├── build
+│   │   │   ├── build.gradle
+│   │   │   ├── gradle
+│   │   │   ├── gradle.properties
+│   │   │   ├── gradlew
+│   │   │   ├── gradlew.bat
+│   │   │   └── settings.gradle
+│   │   ├── app.json
+│   │   ├── assets
+│   │   │   ├── icon.png
+│   │   │   └── splash-icon.png
+│   │   ├── babel.config.js
+│   │   ├── clean_c.py
+│   │   ├── combined_code.md
+│   │   ├── eas.json
+│   │   ├── index.ts
+│   │   ├── metro.config.js
+│   │   ├── package-lock.json
+│   │   ├── package.json
+│   │   ├── src
+│   │   │   ├── components
+│   │   │   ├── constants
+│   │   │   ├── hooks
+│   │   │   ├── navigation
+│   │   │   ├── screens
+│   │   │   ├── services
+│   │   │   ├── splash
+│   │   │   ├── store
+│   │   │   ├── types
+│   │   │   └── utils
+│   │   └── tsconfig.json
+│   └── web
+│       ├── .env
+│       ├── clean.py
+│       ├── combined_code.md
+│       ├── next-env.d.ts
+│       ├── next.config.js
+│       ├── package.json
+│       ├── postcss.config.js
+│       ├── public
+│       ├── src
+│       │   ├── components
+│       │   ├── config
+│       │   ├── hooks
+│       │   ├── pages
+│       │   ├── screens
+│       │   ├── services
+│       │   ├── store
+│       │   └── styles
+│       ├── tailwind.config.js
+│       └── tsconfig.json
+├── combine_code.py
+├── combined_code.md
+├── gfdd.txt 
+├── package.json
+├── packages
+│   ├── api-client
+│   │   ├── orval.config.ts
+│   │   ├── package.json
+│   │   ├── src
+│   │   │   ├── avatars.ts
+│   │   │   ├── axios-instance.ts
+│   │   │   ├── chat.ts
+│   │   │   ├── departments.ts
+│   │   │   ├── employees.ts
+│   │   │   ├── generated
+│   │   │   ├── idempotency.ts
+│   │   │   ├── index.ts
+│   │   │   ├── positions.ts
+│   │   │   ├── roles.ts
+│   │   │   ├── user
+│   │   │   ├── users.ts
+│   │   │   └── workCenters.ts
+│   │   └── tsconfig.json
+│   └── shared-types
+│       ├── package.json
+│       ├── src
+│       │   ├── avatar.ts
+│       │   ├── chat.ts
+│       │   ├── department.ts
+│       │   ├── employee.ts
+│       │   ├── index.ts
+│       │   ├── position.ts
+│       │   ├── role.ts
+│       │   └── workCenter.ts
+│       └── tsconfig.json
+├── pnpm-lock.yaml
+├── pnpm-workspace.yaml
+└── turbo.json.  now first we will add apsi the packages then in prayantra . lets started with packages . this is my shared types employee .ts // packages/shared-types/src/employee.ts
+
+// If you want to use the full Avatar type, uncomment the import below:
+// import { Avatar } from './avatar';
+
+export interface CompanyEmployee {
+    user_id: string;
+    company_id: string;
+    employee_id: string;
+    role_id: string;
+    hire_date?: string;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+    // additional fields from user (optional, but may be returned)
+    phone?: string;
+    username?: string;
+    full_name?: string;
+    email?: string;
+    // Fields from joined data (returned by search endpoints)
+    role_name?: string;
+    department_name?: string;
+    department_id?: string;
+    reports_to?: string;
+    reports_to_name?: string;
+    // 👇 New: avatar URL (primary avatar, usually a small or medium variant)
+    avatar_url?: string | null;
+    // Alternatively, if your backend returns the full avatar object:
+    // avatar?: Avatar | null;
+}
+
+export interface AddEmployeePayload {
+    phone: string;
+    username?: string;
+    full_name?: string;
+    employee_id?: string;
+    role_id: string;
+    reports_to?: string;
+    position_id?: string;
+}
+
+export interface AddManagerPayload {
+    phone: string;
+    username?: string;
+    full_name?: string;
+    role_id: string;
+    employee_id?: string;
+    reports_to?: string;
+    position_id?: string;
+}
+
+export interface SearchEmployeesPayload {
+    query: string;           // The search text (required)
+    search_type?: string;    // 'fulltext' or 'autocomplete' (default: 'fulltext')
+    limit?: number;
+    offset?: number;
+}
+
+export interface AdvancedSearchEmployeesParams {
+    role_id?: string;
+    department_id?: string;
+    limit?: number;
+    offset?: number;
+    // Some backends might also accept a query param for advanced search
+    query?: string;
+    search_type?: string;
+}and index.ts import { z } from 'zod';
+export * from './workCenter';
+export * from './department';
+export * from './role';
+export * from './position';
+export * from './employee';
+export * from './avatar';     // 👈 Export avatar types (Avatar, AvatarSummary)
+export * from './chat';
+
+// ---------- User ----------
+export const UserSchema = z.object({
+  id: z.string().uuid(),
+  email: z.string().email(),
+  name: z.string(),
+});
+
+export type User = z.infer<typeof UserSchema>;
+
+// ---------- UserTokens (for JWT responses) ----------
+export interface UserTokens {
+  access_token: string;
+  refresh_token: string;
+  token_type?: string;
+  expires_in?: number;
+}
+
+// ---------- Company ----------
+export interface Company {
+  company_id: string;
+  company_name: string;
+  owner_user_id: string;
+  is_active: boolean;
+  subscription_tier: 'basic' | 'premium' | 'enterprise';
+  subscription_status: string;
+  max_employees: number;
+  max_departments?: number;
+  data_region: string;
+  created_at: string;
+  updated_at?: string;
+}
+
+// ---------- Generic API Response Wrapper ----------
+export interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+  message?: string;
+  meta?: any;
+}
+
+// You can also export the Zod schemas if needed later. this is dist index.ts import { z } from 'zod';
+export * from './workCenter';
+export * from './department';
+export * from './role';
+export * from './position';
+export * from './employee';
+export * from './avatar';
+export * from './chat';
+export declare const UserSchema: z.ZodObject<{
+    id: z.ZodString;
+    email: z.ZodString;
+    name: z.ZodString;
+}, "strip", z.ZodTypeAny, {
+    id: string;
+    name: string;
+    email: string;
+}, {
+    id: string;
+    name: string;
+    email: string;
+}>;
+export type User = z.infer<typeof UserSchema>;
+export interface UserTokens {
+    access_token: string;
+    refresh_token: string;
+    token_type?: string;
+    expires_in?: number;
+}
+export interface Company {
+    company_id: string;
+    company_name: string;
+    owner_user_id: string;
+    is_active: boolean;
+    subscription_tier: 'basic' | 'premium' | 'enterprise';
+    subscription_status: string;
+    max_employees: number;
+    max_departments?: number;
+    data_region: string;
+    created_at: string;
+    updated_at?: string;
+}
+export interface ApiResponse<T> {
+    success: boolean;
+    data: T;
+    message?: string;
+    meta?: any;
+}
+this is api client employee .ts import {
+    CompanyEmployee,
+    AddEmployeePayload,
+    AddManagerPayload,
+    SearchEmployeesPayload,
+    AdvancedSearchEmployeesParams,
+    ApiResponse,
+} from '@b2b/shared-types';
+import { axiosInstance } from './axios-instance';
+import { idempotentPost } from './idempotency';
+
+const getBaseHeaders = (companyId: string, deviceId: string, accessToken: string) => ({
+    'X-Company-ID': companyId,
+    'X-Device-ID': deviceId,
+    'Authorization': `Bearer ${accessToken}`,
+    'Content-Type': 'application/json',
+});
+
+// ---- Get company employees ----
+export const getCompanyEmployees = async (
+    companyId: string,
+    deviceId: string,
+    accessToken: string,
+): Promise<ApiResponse<{ employees: CompanyEmployee[]; meta: any }>> => {
+    const url = `/companies/${companyId}/getemployees`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers });
+    return response.data;
+};
+
+// ---- Get company hierarchy ----
+export const getCompanyHierarchy = async (
+    companyId: string,
+    deviceId: string,
+    accessToken: string,
+): Promise<ApiResponse<{ hierarchy: any[]; meta: any }>> => {
+    const url = `/companies/${companyId}/hierarchy`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers });
+    return response.data;
+};
+
+// ---- Search employees (extended to support filters) ----
+export const searchEmployees = async (
+    companyId: string,
+    deviceId: string,
+    payload: SearchEmployeesPayload & { role_id?: string; department_id?: string },
+    accessToken: string,
+): Promise<ApiResponse<{ employees: CompanyEmployee[]; meta: any }>> => {
+    const url = `/companies/${companyId}/employees/search`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const body: any = {
+        query: payload.query || '',
+        search_type: payload.search_type || 'fulltext',
+        limit: payload.limit || 20,
+        offset: payload.offset || 0,
+    };
+    // Add optional filters if present
+    if (payload.role_id) body.role_id = payload.role_id;
+    if (payload.department_id) body.department_id = payload.department_id;
+    const response = await axiosInstance.post(url, body, { headers });
+    return response.data;
+};
+
+// ---- Advanced search ----
+export const advancedSearchEmployees = async (
+    companyId: string,
+    deviceId: string,
+    params: AdvancedSearchEmployeesParams,
+    accessToken: string,
+): Promise<ApiResponse<{ employees: CompanyEmployee[]; meta: any }>> => {
+    const url = `/companies/${companyId}/employees/search/advanced`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers, params });
+    return response.data;
+};
+
+// ---- Get employee suggestions ----
+export const getEmployeeSuggestions = async (
+    companyId: string,
+    deviceId: string,
+    prefix: string,
+    limit: number,
+    accessToken: string,
+): Promise<ApiResponse<CompanyEmployee[]>> => {
+    const url = `/companies/${companyId}/employees/suggestions`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers, params: { prefix, limit } });
+    return response.data;
+};
+
+// ---- Find employee by username ----
+export const findEmployeeByUsername = async (
+    companyId: string,
+    deviceId: string,
+    username: string,
+    accessToken: string,
+): Promise<ApiResponse<CompanyEmployee>> => {
+    const url = `/companies/${companyId}/employees/username/${encodeURIComponent(username)}`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get<ApiResponse<CompanyEmployee>>(url, { headers });
+    return response.data;
+};
+
+// ---- Add employee (idempotent) ----
+export const addEmployee = async (
+    companyId: string,
+    deviceId: string,
+    payload: AddEmployeePayload,
+    accessToken: string,
+): Promise<ApiResponse<CompanyEmployee>> => {
+    const url = `/companies/${companyId}/rbac/employees`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    return idempotentPost<ApiResponse<CompanyEmployee>>(url, payload, 'addEmployee', { headers });
+};
+
+// ---- Add manager (idempotent) ----
+export const addManager = async (
+    companyId: string,
+    deviceId: string,
+    payload: AddManagerPayload,
+    accessToken: string,
+): Promise<ApiResponse<CompanyEmployee>> => {
+    const url = `/companies/${companyId}/rbac/managers`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    return idempotentPost<ApiResponse<CompanyEmployee>>(url, payload, 'addManager', { headers });
+};
+
+// ================================================================
+// NEW / UPDATED APIs for Employee Details and Update
+// ================================================================
+
+/**
+ * Get full employee details including role, position, department, work center.
+ * Uses the RBAC GET endpoint: /companies/{companyId}/rbac/employees/{userId}
+ * Returns the employee data object inside `data`.
+ */
+export const getEmployeeDetails = async (
+    companyId: string,
+    userId: string,
+    deviceId: string,
+    accessToken: string,
+): Promise<CompanyEmployee & {
+    role_name?: string;
+    position_title?: string;
+    department_name?: string;
+    work_center_code?: string;
+    hire_date?: string;
+    created_at?: string;
+    updated_at?: string;
+}> => {
+    const url = `/companies/${companyId}/rbac/employees/${userId}`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get<ApiResponse<any>>(url, { headers });
+    // The API returns { success, data: { ...employee }, message, timestamp }
+    return response.data.data;
+};
+
+/**
+ * Update employee fields using PATCH.
+ * Supports partial updates; only provided fields will be updated.
+ * Endpoint: PATCH /companies/{companyId}/rbac/employees/{userId}
+ */
+export const updateEmployee = async (
+    companyId: string,
+    userId: string,
+    deviceId: string,
+    accessToken: string,
+    payload: {
+        employee_id?: string;
+        role_id?: string;
+        position_id?: string;
+        reports_to?: string | null;
+        is_active?: boolean;
+        phone?: string;
+        username?: string;
+        full_name?: string;
+        hire_date?: string;
     }
+): Promise<ApiResponse<{ message: string }>> => {
+    const url = `/companies/${companyId}/rbac/employees/${userId}`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.patch(url, payload, { headers });
+    return response.data;
+};
 
-    to {
-      transform: rotate(360deg);
+// ---- Get departments for a user ----
+export const getUserDepartments = async (
+    companyId: string,
+    userId: string,
+    deviceId: string,
+    accessToken: string,
+): Promise<ApiResponse<Array<{
+    department_id: string;
+    department_name: string;
+    system_department_id: string;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+}>>> => {
+    const url = `/companies/${companyId}/rbac/companies/${companyId}/users/${userId}/departments`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers });
+    return response.data;
+}; and index.ts// packages/api-client/src/index.ts
+
+// ✅ Generated (from OpenAPI)
+export * from './generated/api';
+export * from './generated/models';
+
+// ✅ Manual clients (idempotent + typesafe)
+export * from './workCenters';
+export * from './departments';
+export * from './employees';
+export * from './positions';
+export * from './roles';
+export * from './users';      // 👈 New: phone endpoint
+export * from './avatars';    // 👈 New: avatar management
+export * from './chat';
+
+// ✅ Idempotency helpers (optional, but useful to expose)
+export * from './idempotency';
+
+// ✅ Axios instance + auth setters
+export {
+  default as axiosInstance,
+  customAxiosInstance,
+  setAuthToken,
+  setDeviceId,
+  setRefreshTokenFunction,
+  setUnauthorizedCallback,
+} from './axios-instance'; WE ADDED import {
+    CompanyEmployee,
+    AddEmployeePayload,
+    AddManagerPayload,
+    SearchEmployeesPayload,
+    AdvancedSearchEmployeesParams,
+    ApiResponse,
+} from '@b2b/shared-types';
+import { axiosInstance } from './axios-instance';
+import { idempotentPost, idempotentPatch } from './idempotency'; // ← added idempotentPatch
+
+const getBaseHeaders = (companyId: string, deviceId: string, accessToken: string) => ({
+    'X-Company-ID': companyId,
+    'X-Device-ID': deviceId,
+    'Authorization': `Bearer ${accessToken}`,
+    'Content-Type': 'application/json',
+});
+
+// ---- Get company employees ----
+export const getCompanyEmployees = async (
+    companyId: string,
+    deviceId: string,
+    accessToken: string,
+): Promise<ApiResponse<{ employees: CompanyEmployee[]; meta: any }>> => {
+    const url = `/companies/${companyId}/getemployees`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers });
+    return response.data;
+};
+
+// ---- Get company hierarchy ----
+export const getCompanyHierarchy = async (
+    companyId: string,
+    deviceId: string,
+    accessToken: string,
+): Promise<ApiResponse<{ hierarchy: any[]; meta: any }>> => {
+    const url = `/companies/${companyId}/hierarchy`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers });
+    return response.data;
+};
+
+// ---- Search employees (extended to support filters) ----
+export const searchEmployees = async (
+    companyId: string,
+    deviceId: string,
+    payload: SearchEmployeesPayload & { role_id?: string; department_id?: string },
+    accessToken: string,
+): Promise<ApiResponse<{ employees: CompanyEmployee[]; meta: any }>> => {
+    const url = `/companies/${companyId}/employees/search`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const body: any = {
+        query: payload.query || '',
+        search_type: payload.search_type || 'fulltext',
+        limit: payload.limit || 20,
+        offset: payload.offset || 0,
+    };
+    // Add optional filters if present
+    if (payload.role_id) body.role_id = payload.role_id;
+    if (payload.department_id) body.department_id = payload.department_id;
+    const response = await axiosInstance.post(url, body, { headers });
+    return response.data;
+};
+
+// ---- Advanced search ----
+export const advancedSearchEmployees = async (
+    companyId: string,
+    deviceId: string,
+    params: AdvancedSearchEmployeesParams,
+    accessToken: string,
+): Promise<ApiResponse<{ employees: CompanyEmployee[]; meta: any }>> => {
+    const url = `/companies/${companyId}/employees/search/advanced`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers, params });
+    return response.data;
+};
+
+// ---- Get employee suggestions ----
+export const getEmployeeSuggestions = async (
+    companyId: string,
+    deviceId: string,
+    prefix: string,
+    limit: number,
+    accessToken: string,
+): Promise<ApiResponse<CompanyEmployee[]>> => {
+    const url = `/companies/${companyId}/employees/suggestions`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers, params: { prefix, limit } });
+    return response.data;
+};
+
+// ---- Find employee by username ----
+export const findEmployeeByUsername = async (
+    companyId: string,
+    deviceId: string,
+    username: string,
+    accessToken: string,
+): Promise<ApiResponse<CompanyEmployee>> => {
+    const url = `/companies/${companyId}/employees/username/${encodeURIComponent(username)}`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get<ApiResponse<CompanyEmployee>>(url, { headers });
+    return response.data;
+};
+
+// ---- Add employee (idempotent) ----
+export const addEmployee = async (
+    companyId: string,
+    deviceId: string,
+    payload: AddEmployeePayload,
+    accessToken: string,
+): Promise<ApiResponse<CompanyEmployee>> => {
+    const url = `/companies/${companyId}/rbac/employees`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    return idempotentPost<ApiResponse<CompanyEmployee>>(url, payload, 'addEmployee', { headers });
+};
+
+// ---- Add manager (idempotent) ----
+export const addManager = async (
+    companyId: string,
+    deviceId: string,
+    payload: AddManagerPayload,
+    accessToken: string,
+): Promise<ApiResponse<CompanyEmployee>> => {
+    const url = `/companies/${companyId}/rbac/managers`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    return idempotentPost<ApiResponse<CompanyEmployee>>(url, payload, 'addManager', { headers });
+};
+
+// ================================================================
+// NEW / UPDATED APIs for Employee Details and Update
+// ================================================================
+
+/**
+ * Get full employee details including role, position, department, work center.
+ * Uses the RBAC GET endpoint: /companies/{companyId}/rbac/employees/{userId}
+ * Returns the employee data object inside `data`.
+ */
+export const getEmployeeDetails = async (
+    companyId: string,
+    userId: string,
+    deviceId: string,
+    accessToken: string,
+): Promise<CompanyEmployee & {
+    role_name?: string;
+    position_title?: string;
+    department_name?: string;
+    work_center_code?: string;
+    hire_date?: string;
+    created_at?: string;
+    updated_at?: string;
+}> => {
+    const url = `/companies/${companyId}/rbac/employees/${userId}`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get<ApiResponse<any>>(url, { headers });
+    // The API returns { success, data: { ...employee }, message, timestamp }
+    return response.data.data;
+};
+
+/**
+ * Update employee fields using PATCH.
+ * Supports partial updates; only provided fields will be updated.
+ * Endpoint: PATCH /companies/{companyId}/rbac/employees/{userId}
+ * Now uses idempotentPatch to add Idempotency-Key header.
+ */
+export const updateEmployee = async (
+    companyId: string,
+    userId: string,
+    deviceId: string,
+    accessToken: string,
+    payload: {
+        employee_id?: string;
+        role_id?: string;
+        position_id?: string;
+        reports_to?: string | null;
+        is_active?: boolean;
+        phone?: string;
+        username?: string;
+        full_name?: string;
+        hire_date?: string;
     }
+): Promise<ApiResponse<{ message: string }>> => {
+    const url = `/companies/${companyId}/rbac/employees/${userId}`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    return idempotentPatch<ApiResponse<{ message: string }>>(
+        url,
+        payload,
+        'updateEmployee',          // unique operation name for key caching
+        { headers }
+    );
+};
+
+// ---- Get departments for a user ----
+export const getUserDepartments = async (
+    companyId: string,
+    userId: string,
+    deviceId: string,
+    accessToken: string,
+): Promise<ApiResponse<Array<{
+    department_id: string;
+    department_name: string;
+    system_department_id: string;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+}>>> => {
+    const url = `/companies/${companyId}/rbac/companies/${companyId}/users/${userId}/departments`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers });
+    return response.data;
+};// packages/shared-types/src/employee.ts
+
+// If you want to use the full Avatar type, uncomment the import below:
+// import { Avatar } from './avatar';
+
+export interface CompanyEmployee {
+    user_id: string;
+    company_id: string;
+    employee_id: string;
+    role_id: string;
+    hire_date?: string;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+    // additional fields from user (optional, but may be returned)
+    phone?: string;
+    username?: string;
+    full_name?: string;
+    email?: string;
+    // Fields from joined data (returned by search endpoints)
+    role_name?: string;
+    department_name?: string;
+    department_id?: string;
+    reports_to?: string;
+    reports_to_name?: string;
+    // 👇 New: avatar URL (primary avatar, usually a small or medium variant)
+    avatar_url?: string | null;
+    // Alternatively, if your backend returns the full avatar object:
+    // avatar?: Avatar | null;
+}
+
+export interface AddEmployeePayload {
+    phone: string;
+    username?: string;
+    full_name?: string;
+    employee_id?: string;
+    role_id: string;
+    reports_to?: string;
+    position_id?: string;
+}
+
+export interface AddManagerPayload {
+    phone: string;
+    username?: string;
+    full_name?: string;
+    role_id: string;
+    employee_id?: string;
+    reports_to?: string;
+    position_id?: string;
+}
+
+export interface SearchEmployeesPayload {
+    query: string;           // The search text (required)
+    search_type?: string;    // 'fulltext' or 'autocomplete' (default: 'fulltext')
+    limit?: number;
+    offset?: number;
+}
+
+export interface AdvancedSearchEmployeesParams {
+    role_id?: string;
+    department_id?: string;
+    limit?: number;
+    offset?: number;
+    // Some backends might also accept a query param for advanced search
+    query?: string;
+    search_type?: string;
+}
+
+// ============================================================
+// HR Employee Profile (matches the new HR endpoints)
+// ============================================================
+
+export interface HREmployeeProfile {
+    id: string;                    // employee ID (UUID)
+    user_id: string;               // user ID
+    company_id: string;
+    date_of_birth?: string;        // ISO date
+    gender?: 'male' | 'female' | 'other';
+    marital_status?: 'single' | 'married' | 'divorced' | 'widowed';
+    nationality?: string;          // country code
+    employment_type?: 'full_time' | 'part_time' | 'contract' | 'internship';
+    employment_status?: 'active' | 'inactive' | 'probation' | 'terminated';
+    probation_end_date?: string;
+    confirmation_date?: string;
+    grade?: string;
+    cost_center?: string;
+    tax_id?: string;
+    social_security_id?: string;
+    email?: string;                // could be same as user email
+    job_title?: string;            // may come from position/role
+    department_id?: string;
+    department_name?: string;
+    role_id?: string;
+    role_name?: string;
+    created_at: string;
+    updated_at: string;
   }
-
-  /* =======================================================
-     TABLET
-  ======================================================= */
-
-  @media (max-width: 900px) {
-
-    .statsGrid {
-      grid-template-columns:
-        repeat(3, minmax(0, 1fr));
-    }
-
-    .workCenterTable th:nth-child(3),
-    .workCenterTable td:nth-child(3) {
-      display: none;
-    }
-
-    .workCenterTable th:nth-child(1) {
-      width: 34%;
-    }
-
-    .workCenterTable th:nth-child(2) {
-      width: 23%;
-    }
-
-    .workCenterTable th:nth-child(4) {
-      width: 20%;
-    }
-
-    .workCenterTable th:nth-child(5) {
-      width: 23%;
-    }
+  
+  // ============================================================
+  // Employee Documents
+  // ============================================================
+  
+  export interface EmployeeDocument {
+    id: string;
+    employee_id: string;
+    document_name: string;
+    document_type: string;          // e.g. 'resume', 'offer_letter'
+    file_size?: number;
+    mime_type?: string;
+    is_confidential: boolean;
+    uploaded_by?: string;
+    uploaded_at: string;
+    updated_at: string;
   }
-
-  /* =======================================================
-     MOBILE
-  ======================================================= */
-
-  @media (max-width: 650px) {
-
-    .headerInner,
-    .content {
-      width: calc(100% - 28px);
-    }
-
-    .headerInner {
-      min-height: 82px;
-    }
-
-    .headerIcon {
-      width: 44px;
-      height: 44px;
-      border-radius: 12px;
-    }
-
-    .headerIcon svg {
-      width: 20px;
-      height: 20px;
-    }
-
-    .headerTitleArea h1 {
-      font-size: 19px;
-    }
-
-    .headerTitleArea p {
-      display: none;
-    }
-
-    .breadcrumb {
-      display: none;
-    }
-
-    .addButton {
-      padding: 10px;
-
-      width: 40px;
-      height: 40px;
-    }
-
-    .addButton span {
-      display: none;
-    }
-
-    .addButton svg {
-      width: 19px;
-      height: 19px;
-    }
-
-    .content {
-      padding-top: 20px;
-    }
-
-    .statsGrid {
-      grid-template-columns: 1fr;
-
-      gap: 10px;
-
-      margin-bottom: 15px;
-    }
-
-    .statCard {
-      min-height: 70px;
-    }
-
-    .statIcon {
-      width: 40px;
-      height: 40px;
-    }
-
-    .statInfo strong {
-      font-size: 20px;
-    }
-
-    .listHeader {
-      padding: 15px;
-    }
-
-    .listHeader h2 {
-      font-size: 15px;
-    }
-
-    .refreshButton span {
-      display: none;
-    }
-
-    .refreshButton {
-      width: 34px;
-      height: 34px;
-
-      padding: 0;
-
-      justify-content: center;
-    }
-
-    .searchWrapper {
-      margin: 13px 15px;
-    }
-
-    /*
-      Turn table into a mobile-friendly
-      stacked list.
-    */
-
-    .tableWrapper {
-      overflow: visible;
-    }
-
-    .workCenterTable,
-    .workCenterTable tbody {
-      display: block;
-      width: 100%;
-    }
-
-    .workCenterTable thead {
-      display: none;
-    }
-
-    .workCenterTable tr {
-      display: grid;
-
-      grid-template-columns:
-        1fr auto;
-
-      gap: 8px;
-
-      padding: 16px;
-
-      border-bottom: 1px solid #edf0f4;
-    }
-
-    .workCenterTable tr:last-child {
-      border-bottom: none;
-    }
-
-    .workCenterTable td {
-      display: block;
-
-      padding: 0;
-
-      border: none;
-    }
-
-    .workCenterTable td:nth-child(1) {
-      grid-column: 1 / 2;
-    }
-
-    .workCenterTable td:nth-child(2) {
-      grid-column: 1 / 2;
-    }
-
-    .workCenterTable td:nth-child(3) {
-      display: block;
-
-      grid-column: 1 / 3;
-    }
-
-    .workCenterTable td:nth-child(4) {
-      grid-column: 1 / 2;
-    }
-
-    .workCenterTable td:nth-child(5) {
-      grid-column: 2 / 3;
-      grid-row: 1 / 5;
-
-      align-self: center;
-    }
-
-    .workCenterCell {
-      padding-right: 10px;
-    }
-
-    .description {
-      margin-top: 2px;
-
-      max-width: 100%;
-    }
-
-    .rowActions {
-      flex-direction: column;
-    }
-
-    .moreButton {
-      display: none;
-    }
+  
+  export interface UploadDocumentPayload {
+    file: File | Blob;
+    document_type: string;
+    document_name: string;
+    is_confidential?: boolean;
   }
-
-  @media (max-width: 420px) {
-
-    .backButton {
-      width: 36px;
-      height: 36px;
-    }
-
-    .headerIcon {
-      width: 40px;
-      height: 40px;
-    }
-
-    .headerLeft {
-      gap: 9px;
-    }
-
-    .headerTitleArea h1 {
-      font-size: 17px;
-    }
+  
+  // ============================================================
+  // Employee Exit
+  // ============================================================
+  
+  export interface EmployeeExit {
+    id: string;
+    employee_id: string;
+    exit_date: string;
+    exit_reason: string;           // e.g. 'resignation', 'termination', 'retirement'
+    eligible_for_rehire: boolean;
+    notes?: string;
+    created_at: string;
+    updated_at: string;
   }
-`; this worked as well // apps/web/src/pages/dashboard.tsx
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/router';
-import { getUserDepartments } from '@b2b/api-client';
-import { useUserAuthStore } from '../store/userAuthStore';
+  
+  export interface CreateExitPayload {
+    exit_date: string;
+    exit_reason: string;
+    eligible_for_rehire: boolean;
+    notes?: string;
+  }
+  
+  // ============================================================
+  // Employee History
+  // ============================================================
+  
+  export interface DepartmentHistoryEntry {
+    department_id: string;
+    department_name: string;
+    start_date: string;
+    end_date?: string;
+    is_current: boolean;
+  }
+  
+  export interface RoleHistoryEntry {
+    role_id: string;
+    role_name: string;
+    start_date: string;
+    end_date?: string;
+    is_current: boolean;
+  }import {
+    HREmployeeProfile,
+    EmployeeDocument,
+    EmployeeExit,
+    DepartmentHistoryEntry,
+    RoleHistoryEntry,
+    CreateExitPayload,
+    UploadDocumentPayload,
+    ApiResponse,
+  } from '@b2b/shared-types';
+  import { axiosInstance } from './axios-instance';
+  import { idempotentPost, idempotentPut, idempotentDelete } from './idempotency';
+  
+  // ---------- helper: base headers ----------
+  const getBaseHeaders = (companyId: string, deviceId: string, accessToken: string) => ({
+    'X-Company-ID': companyId,
+    'X-Device-ID': deviceId,
+    Authorization: `Bearer ${accessToken}`,
+    'Content-Type': 'application/json',
+  });
+  
+  // -------------------- Employee Profiles --------------------
+  
+  // GET – no idempotency
+  export const listEmployees = async (
+    companyId: string,
+    deviceId: string,
+    accessToken: string,
+    page = 1,
+    pageSize = 50
+  ): Promise<ApiResponse<{ employees: HREmployeeProfile[]; total: number }>> => {
+    const url = `/companies/${companyId}/hr/employees`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, {
+      headers,
+      params: { page, page_size: pageSize },
+    });
+    return response.data;
+  };
+  
+  // POST – uses idempotentPost
+  export const createEmployeeProfile = async (
+    companyId: string,
+    deviceId: string,
+    accessToken: string,
+    payload: Omit<HREmployeeProfile, 'id' | 'company_id' | 'created_at' | 'updated_at'>
+  ): Promise<ApiResponse<HREmployeeProfile>> => {
+    const url = `/companies/${companyId}/hr/employees`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    return idempotentPost<ApiResponse<HREmployeeProfile>>(
+      url,
+      payload,
+      'createEmployeeProfile',
+      { headers }
+    );
+  };
+  
+  // GET – no idempotency
+  export const getEmployeeProfile = async (
+    companyId: string,
+    employeeId: string,
+    deviceId: string,
+    accessToken: string
+  ): Promise<ApiResponse<HREmployeeProfile>> => {
+    const url = `/companies/${companyId}/hr/employees/${employeeId}`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers });
+    return response.data;
+  };
+  
+  // PUT – uses idempotentPut
+  export const updateEmployeeProfile = async (
+    companyId: string,
+    employeeId: string,
+    deviceId: string,
+    accessToken: string,
+    payload: Partial<Omit<HREmployeeProfile, 'id' | 'company_id' | 'created_at' | 'updated_at'>>
+  ): Promise<ApiResponse<HREmployeeProfile>> => {
+    const url = `/companies/${companyId}/hr/employees/${employeeId}`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    return idempotentPut<ApiResponse<HREmployeeProfile>>(
+      url,
+      payload,
+      'updateEmployeeProfile',
+      { headers }
+    );
+  };
+  
+  // DELETE – uses idempotentDelete
+  export const deleteEmployeeProfile = async (
+    companyId: string,
+    employeeId: string,
+    deviceId: string,
+    accessToken: string
+  ): Promise<ApiResponse<{ message: string }>> => {
+    const url = `/companies/${companyId}/hr/employees/${employeeId}`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    return idempotentDelete<ApiResponse<{ message: string }>>(
+      url,
+      {}, // data can be empty for DELETE
+      'deleteEmployeeProfile',
+      { headers }
+    );
+  };
+  
+  // GET – no idempotency
+  export const searchEmployeeProfiles = async (
+    companyId: string,
+    deviceId: string,
+    accessToken: string,
+    queryParams: {
+      employment_type?: string;
+      employment_status?: string;
+      department_id?: string;
+      grade?: string;
+      page?: number;
+      page_size?: number;
+    }
+  ): Promise<ApiResponse<{ employees: HREmployeeProfile[]; total: number }>> => {
+    const url = `/companies/${companyId}/hr/employees/search`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers, params: queryParams });
+    return response.data;
+  };
+  
+  // GET – no idempotency
+  export const getEmployeeStats = async (
+    companyId: string,
+    deviceId: string,
+    accessToken: string
+  ): Promise<ApiResponse<any>> => {
+    const url = `/companies/${companyId}/hr/employees/stats`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers });
+    return response.data;
+  };
+  
+  // GET – no idempotency
+  export const exportEmployeeData = async (
+    companyId: string,
+    deviceId: string,
+    accessToken: string,
+    format: 'json' | 'csv' = 'json'
+  ): Promise<Blob> => {
+    const url = `/companies/${companyId}/hr/employees/export`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, {
+      headers,
+      params: { format },
+      responseType: 'blob',
+    });
+    return response.data;
+  };
+  
+  // -------------------- Employee Documents --------------------
+  
+  // GET – no idempotency
+  export const getEmployeeDocuments = async (
+    companyId: string,
+    employeeId: string,
+    deviceId: string,
+    accessToken: string,
+    includeConfidential = false
+  ): Promise<ApiResponse<EmployeeDocument[]>> => {
+    const url = `/companies/${companyId}/hr/employees/${employeeId}/documents`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, {
+      headers,
+      params: { include_confidential: includeConfidential },
+    });
+    return response.data;
+  };
+  
+  // POST with FormData – still use idempotentPost (it will add the key)
+  export const uploadEmployeeDocument = async (
+    companyId: string,
+    employeeId: string,
+    deviceId: string,
+    accessToken: string,
+    payload: UploadDocumentPayload
+  ): Promise<ApiResponse<EmployeeDocument>> => {
+    const url = `/companies/${companyId}/hr/employees/${employeeId}/documents`;
+    const formData = new FormData();
+    formData.append('file', payload.file);
+    formData.append('document_type', payload.document_type);
+    formData.append('document_name', payload.document_name);
+    formData.append('is_confidential', String(payload.is_confidential ?? false));
+  
+    const headers = {
+      'X-Company-ID': companyId,
+      'X-Device-ID': deviceId,
+      Authorization: `Bearer ${accessToken}`,
+      // no Content-Type – axios will set it automatically for FormData
+    };
+    // idempotentPost will merge headers and add Idempotency-Key
+    return idempotentPost<ApiResponse<EmployeeDocument>>(
+      url,
+      formData,
+      'uploadEmployeeDocument',
+      { headers }
+    );
+  };
+  
+  // GET – no idempotency
+  export const downloadEmployeeDocument = async (
+    companyId: string,
+    employeeId: string,
+    documentId: string,
+    deviceId: string,
+    accessToken: string
+  ): Promise<Blob> => {
+    const url = `/companies/${companyId}/hr/employees/${employeeId}/documents/${documentId}`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, {
+      headers,
+      responseType: 'blob',
+    });
+    return response.data;
+  };
+  
+  // GET – no idempotency
+  export const generateDocumentUrl = async (
+    companyId: string,
+    employeeId: string,
+    documentId: string,
+    deviceId: string,
+    accessToken: string,
+    expiry = '1h'
+  ): Promise<ApiResponse<{ url: string }>> => {
+    const url = `/companies/${companyId}/hr/employees/${employeeId}/documents/${documentId}/url`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, {
+      headers,
+      params: { expiry },
+    });
+    return response.data;
+  };
+  
+  // DELETE – uses idempotentDelete
+  export const deleteEmployeeDocument = async (
+    companyId: string,
+    employeeId: string,
+    documentId: string,
+    deviceId: string,
+    accessToken: string
+  ): Promise<ApiResponse<{ message: string }>> => {
+    const url = `/companies/${companyId}/hr/employees/${employeeId}/documents/${documentId}`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    return idempotentDelete<ApiResponse<{ message: string }>>(
+      url,
+      {},
+      'deleteEmployeeDocument',
+      { headers }
+    );
+  };
+  
+  // -------------------- Employee History & Exit --------------------
+  
+  // GET – no idempotency
+  export const getDepartmentHistory = async (
+    companyId: string,
+    employeeId: string,
+    deviceId: string,
+    accessToken: string
+  ): Promise<ApiResponse<DepartmentHistoryEntry[]>> => {
+    const url = `/companies/${companyId}/hr/employees/${employeeId}/department-history`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers });
+    return response.data;
+  };
+  
+  // GET – no idempotency
+  export const getRoleHistory = async (
+    companyId: string,
+    employeeId: string,
+    deviceId: string,
+    accessToken: string
+  ): Promise<ApiResponse<RoleHistoryEntry[]>> => {
+    const url = `/companies/${companyId}/hr/employees/${employeeId}/role-history`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers });
+    return response.data;
+  };
+  
+  // GET – no idempotency
+  export const getEmployeeExit = async (
+    companyId: string,
+    employeeId: string,
+    deviceId: string,
+    accessToken: string
+  ): Promise<ApiResponse<EmployeeExit>> => {
+    const url = `/companies/${companyId}/hr/employees/${employeeId}/exit`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    const response = await axiosInstance.get(url, { headers });
+    return response.data;
+  };
+  
+  // POST – uses idempotentPost
+  export const createEmployeeExit = async (
+    companyId: string,
+    employeeId: string,
+    deviceId: string,
+    accessToken: string,
+    payload: CreateExitPayload
+  ): Promise<ApiResponse<EmployeeExit>> => {
+    const url = `/companies/${companyId}/hr/employees/${employeeId}/exit`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    return idempotentPost<ApiResponse<EmployeeExit>>(
+      url,
+      payload,
+      'createEmployeeExit',
+      { headers }
+    );
+  };
+  
+  // POST – uses idempotentPost (empty payload)
+  export const rehireEmployee = async (
+    companyId: string,
+    employeeId: string,
+    deviceId: string,
+    accessToken: string
+  ): Promise<ApiResponse<{ message: string }>> => {
+    const url = `/companies/${companyId}/hr/employees/${employeeId}/exit/rehire`;
+    const headers = getBaseHeaders(companyId, deviceId, accessToken);
+    return idempotentPost<ApiResponse<{ message: string }>>(
+      url,
+      {},
+      'rehireEmployee',
+      { headers }
+    );
+  };tell me th hr screens required and tell me changes herre import React, { useMemo } from 'react';
+import {
+  View,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  useWindowDimensions,
+} from 'react-native';
 
 import {
-  FiArrowRight,
-  FiCamera,
-  FiChevronRight,
-  FiLogOut,
-  FiMessageCircle,
-  FiRefreshCw,
-  FiGrid,
-  FiAlertCircle,
-} from 'react-icons/fi';
+  SafeAreaView,
+} from 'react-native-safe-area-context';
+
+import {
+  Text,
+} from 'react-native-paper';
+
+import {
+  useNavigation,
+  useRoute,
+  RouteProp,
+} from '@react-navigation/native';
+
+import {
+  StackNavigationProp,
+} from '@react-navigation/stack';
+
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+
+import {
+  LinearGradient,
+} from 'expo-linear-gradient';
+
+import {
+  BACKGROUND_COLOR,
+  CARD_BACKGROUND,
+  PRIMARY_COLOR,
+  SECONDARY_COLOR,
+  TEXT_PRIMARY,
+  TEXT_SECONDARY,
+  BORDER_COLOR,
+  GRADIENT_COLORS,
+  GRADIENT_START,
+  GRADIENT_END,
+} from '../../constants/colors';
 
 // =========================================================
 // MODULE CONFIGURATION
@@ -1994,2438 +1529,626 @@ const MODULE_CONFIG: Record<
   }
 > = {
   administration: {
-    icon: '⚙️',
+    icon: 'account-cog',
     label: 'Administration',
-    color: '#2563EB',
+    color: PRIMARY_COLOR,
   },
+
   hr: {
-    icon: '👥',
+    icon: 'account-group',
     label: 'HR',
-    color: '#7C3AED',
+    color: SECONDARY_COLOR,
   },
+
   attendance: {
-    icon: '📅',
+    icon: 'calendar-clock',
     label: 'Attendance',
     color: '#F59E0B',
   },
+
   inventory: {
-    icon: '📦',
+    icon: 'package-variant',
     label: 'Inventory',
     color: '#10B981',
   },
+
   payroll: {
-    icon: '💰',
+    icon: 'cash-multiple',
     label: 'Payroll',
     color: '#EF4444',
   },
+
   sales: {
-    icon: '🏷️',
+    icon: 'sale',
     label: 'Sales',
     color: '#8B5CF6',
   },
+
   procurement: {
-    icon: '🚚',
+    icon: 'truck-delivery',
     label: 'Procurement',
     color: '#F97316',
   },
+
   production: {
-    icon: '🏭',
+    icon: 'factory',
     label: 'Production',
     color: '#14B8A6',
   },
+
   logistics: {
-    icon: '📍',
+    icon: 'map-marker-path',
     label: 'Logistics',
     color: '#3B82F6',
   },
+
   accounting: {
-    icon: '🧮',
+    icon: 'calculator',
     label: 'Accounting',
     color: '#6366F1',
   },
+
   finance: {
-    icon: '🏦',
+    icon: 'bank',
     label: 'Finance',
     color: '#8B5CF6',
   },
+
   it: {
-    icon: '💻',
+    icon: 'laptop',
     label: 'IT',
     color: '#6B7280',
   },
+
   academics: {
-    icon: '🎓',
+    icon: 'school',
     label: 'Academics',
     color: '#EC4899',
   },
+
   marketing: {
-    icon: '📣',
+    icon: 'bullhorn',
     label: 'Marketing',
     color: '#F59E0B',
   },
+
   transport: {
-    icon: '🚌',
+    icon: 'bus',
     label: 'Transport',
     color: '#14B8A6',
   },
+
   operations: {
-    icon: '📋',
+    icon: 'clipboard-list',
     label: 'Operations',
     color: '#0EA5E9',
   },
 };
 
 // =========================================================
-// DEPARTMENT → MODULE
+// FEATURE CONFIGURATION
 // =========================================================
 
-const DEPARTMENT_TO_MODULE_KEY: Record<string, string> = {
-  Academics: 'academics',
-  Accounting: 'accounting',
-  Administration: 'administration',
-  Attendance: 'attendance',
-  Finance: 'finance',
-  HR: 'hr',
-  IT: 'it',
-  Inventory: 'inventory',
-  Logistics: 'logistics',
-  Marketing: 'marketing',
-  Operations: 'operations',
-  Payroll: 'payroll',
-  Procurement: 'procurement',
-  Production: 'production',
-  Sales: 'sales',
+const FEATURES_CONFIG: Record<
+  string,
+  Array<{
+    key: string;
+    label: string;
+    icon: string;
+    screen: string;
+  }>
+> = {
+  administration: [
+    {
+      key: 'workCenters',
+      label: 'Work Centers',
+      icon: 'factory',
+      screen: 'WorkCentersList',
+    },
 
-  'Company Management': 'administration',
-  'Employee Management': 'hr',
-  'Manager Management': 'hr',
-  'Quality Assurance': 'operations',
-  'Quality Control': 'operations',
-  'R&D': 'administration',
-  'Customer Support': 'administration',
+    {
+      key: 'departments',
+      label: 'Departments',
+      icon: 'office-building',
+      screen: 'DepartmentsList',
+    },
+
+    {
+      key: 'roles',
+      label: 'Roles',
+      icon: 'account-key',
+      screen: 'RolesList',
+    },
+
+    {
+      key: 'positions',
+      label: 'Positions',
+      icon: 'badge-account',
+      screen: 'PositionsList',
+    },
+
+    {
+      key: 'employees',
+      label: 'Employees',
+      icon: 'account-multiple',
+      screen: 'EmployeesList',
+    },
+
+    {
+      key: 'employeeSearch',
+      label: 'Employee Search',
+      icon: 'account-search',
+      screen: 'EmployeeSearch',
+    },
+
+    {
+      key: 'avatars',
+      label: 'My Avatars',
+      icon: 'account-circle',
+      screen: 'AvatarManagement',
+    },
+
+    {
+      key: 'userPhone',
+      label: 'User Phone',
+      icon: 'phone',
+      screen: 'UserPhone',
+    },
+  ],
+
+  // Add other modules here
+  //
+  // hr: [
+  //   ...
+  // ],
 };
 
 // =========================================================
-// DASHBOARD
+// NAVIGATION
 // =========================================================
 
-export default function Dashboard() {
-  const router = useRouter();
-
-  const {
-    accessToken,
-    deviceId,
-    companyId,
-    user,
-    logout,
-  } = useUserAuthStore();
-
-  // ----- LOG: render state -----
-  console.log('[Dashboard] Render – auth data:', {
-    accessToken: accessToken ? `${accessToken.slice(0, 20)}…` : null,
-    deviceId,
-    companyId,
-    user: user ? { id: user.user_id, name: user.full_name } : null,
-    hasAccessToken: !!accessToken,
-    hasDeviceId: !!deviceId,
-    hasCompanyId: !!companyId,
-    hasUser: !!user,
-    userId: user?.user_id,
-  });
-
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [moduleKeys, setModuleKeys] = useState<string[]>([]);
-
-  // =======================================================
-  // FETCH DEPARTMENTS
-  // =======================================================
-
-  useEffect(() => {
-    console.log('[Dashboard] Effect running – checking auth data');
-    if (!accessToken || !companyId || !user?.user_id || !deviceId) {
-      console.warn('[Dashboard] Missing required auth data:', {
-        accessToken: !!accessToken,
-        companyId: !!companyId,
-        userId: user?.user_id,
-        deviceId: !!deviceId,
-        // Also log actual values (mask token)
-        accessTokenValue: accessToken ? `${accessToken.slice(0, 20)}…` : null,
-        deviceIdValue: deviceId,
-        companyIdValue: companyId,
-        userValue: user,
-      });
-
-      setLoading(false);
-      setError(
-        'Missing authentication information. Please log out and log in again.'
-      );
-
-      return;
-    }
-
-    console.log('[Dashboard] All auth data present – fetching departments');
-
-    const fetchDepartments = async () => {
-      try {
-        setLoading(true);
-        setError(null);
-
-        console.log('[Dashboard] Calling getUserDepartments with:', {
-          companyId,
-          userId: user.user_id,
-          deviceId,
-          accessToken: accessToken ? `${accessToken.slice(0, 20)}…` : null,
-        });
-
-        const response = await getUserDepartments(
-          companyId,
-          user.user_id,
-          deviceId,
-          accessToken
-        );
-
-        console.log('[Dashboard] Departments response:', response);
-
-        const depts = response.data || [];
-
-        const keys: string[] = depts
-          .map(
-            (dept: any) =>
-              DEPARTMENT_TO_MODULE_KEY[dept.department_name]
-          )
-          .filter(
-            (key: string | undefined): key is string =>
-              key !== undefined
-          );
-
-        const uniqueKeys = Array.from(new Set(keys));
-        console.log('[Dashboard] Mapped module keys:', uniqueKeys);
-        setModuleKeys(uniqueKeys);
-      } catch (err) {
-        console.error('[Dashboard] Failed to fetch departments:', err);
-        setError(
-          'Unable to load your modules. Please try again.'
-        );
-      } finally {
-        setLoading(false);
-      }
+type ModuleDetailRouteProp = RouteProp<
+  {
+    params: {
+      moduleName: string;
     };
-
-    fetchDepartments();
-  }, [accessToken, companyId, user?.user_id, deviceId]);
-
-  // =======================================================
-  // LOGOUT
-  // =======================================================
-
-  const handleLogout = async () => {
-    if (
-      !window.confirm(
-        'Are you sure you want to log out from all devices?'
-      )
-    ) {
-      return;
-    }
-
-    await logout();
-    router.push('/web/login');
-  };
-
-  // =======================================================
-  // MODULE NAVIGATION
-  // =======================================================
-
-  const handleModulePress = (moduleName: string) => {
-    router.push(`/module/${moduleName}`);
-  };
-
-  // =======================================================
-  // USER NAME
-  // =======================================================
-
-  const userName =
-    user?.full_name ||
-    user?.username ||
-    user?.phone ||
-    'User';
-
-  const firstName = userName.split(' ')[0];
-
-  // =======================================================
-  // LOADING
-  // =======================================================
-
-  if (loading) {
-    return (
-      <>
-        <div className="dashboardPage loadingPage">
-          <div className="loadingCard">
-            <div className="loadingSpinner" />
-
-            <h2>Loading your workspace</h2>
-
-            <p>
-              Preparing your modules and permissions...
-            </p>
-          </div>
-        </div>
-
-        <style jsx>{styles}</style>
-      </>
-    );
-  }
-
-  // =======================================================
-  // ERROR
-  // =======================================================
-
-  if (error) {
-    return (
-      <>
-        <div className="dashboardPage">
-          <div className="stateCard">
-            <div className="stateIcon errorIcon">
-              <FiAlertCircle />
-            </div>
-
-            <h2>Something went wrong</h2>
-
-            <p>{error}</p>
-
-            <div className="stateActions">
-              <button
-                type="button"
-                className="secondaryAction"
-                onClick={() => window.location.reload()}
-              >
-                <FiRefreshCw />
-                Try Again
-              </button>
-
-              <button
-                type="button"
-                className="primaryAction"
-                onClick={handleLogout}
-              >
-                <FiLogOut />
-                Logout
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <style jsx>{styles}</style>
-      </>
-    );
-  }
-
-  // =======================================================
-  // NO MODULES
-  // =======================================================
-
-  if (moduleKeys.length === 0) {
-    return (
-      <>
-        <div className="dashboardPage">
-          <div className="stateCard">
-            <div className="stateIcon emptyIcon">
-              <FiGrid />
-            </div>
-
-            <h2>No Modules Available</h2>
-
-            <p>
-              You don't currently have access to any modules
-              through your departments.
-              <br />
-              Please contact your administrator.
-            </p>
-
-            <button
-              type="button"
-              className="primaryAction"
-              onClick={handleLogout}
-            >
-              <FiLogOut />
-              Logout
-            </button>
-          </div>
-        </div>
-
-        <style jsx>{styles}</style>
-      </>
-    );
-  }
-
-  // =======================================================
-  // MAIN DASHBOARD
-  // =======================================================
-
-  return (
-    <>
-      <div className="dashboardPage">
-
-        {/* =================================================
-            TOP HEADER
-        ================================================= */}
-
-        <header className="topHeader">
-          <div className="headerInner">
-
-            {/* Brand */}
-            <div className="brand">
-              <div className="brandMark">
-                P
-              </div>
-
-              <div className="brandText">
-                <span className="brandName">
-                  Prayantra
-                </span>
-
-                <span className="brandSubtitle">
-                  Business Management
-                </span>
-              </div>
-            </div>
-
-            {/* Header actions */}
-            <div className="headerActions">
-
-              <button
-                type="button"
-                className="headerIconButton"
-                onClick={() =>
-                  router.push('/web/qr-scanner')
-                }
-                title="QR Scanner"
-                aria-label="QR Scanner"
-              >
-                <FiCamera />
-              </button>
-
-              <div className="headerDivider" />
-
-              <div className="userMiniProfile">
-                <div className="userAvatar">
-                  {firstName.charAt(0).toUpperCase()}
-                </div>
-
-                <div className="userMiniInfo">
-                  <span className="userMiniName">
-                    {userName}
-                  </span>
-
-                  <span className="userMiniRole">
-                    Employee
-                  </span>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                className="logoutIconButton"
-                onClick={handleLogout}
-                title="Logout"
-                aria-label="Logout"
-              >
-                <FiLogOut />
-              </button>
-            </div>
-          </div>
-        </header>
-
-        {/* =================================================
-            MAIN CONTENT
-        ================================================= */}
-
-        <main className="mainContent">
-
-          {/* =================================================
-              WELCOME SECTION
-          ================================================= */}
-
-          <section className="welcomeSection">
-
-            <div className="welcomeLeft">
-
-              <div className="breadcrumb">
-                <span>Workspace</span>
-                <FiChevronRight />
-                <span>Modules</span>
-              </div>
-
-              <h1>
-                Welcome back,{' '}
-                <span>{firstName}</span>
-              </h1>
-
-              <p>
-                Everything you need to manage your work,
-                all in one place.
-              </p>
-            </div>
-
-            <div className="moduleSummary">
-              <div className="summaryIcon">
-                <FiGrid />
-              </div>
-
-              <div>
-                <strong>{moduleKeys.length}</strong>
-
-                <span>
-                  {moduleKeys.length === 1
-                    ? 'Module available'
-                    : 'Modules available'}
-                </span>
-              </div>
-            </div>
-
-          </section>
-
-          {/* =================================================
-              MODULE SECTION
-          ================================================= */}
-
-          <section className="modulesSection">
-
-            <div className="sectionHeading">
-
-              <div>
-                <h2>Your Modules</h2>
-
-                <p>
-                  Select a module to access its features
-                </p>
-              </div>
-
-              <div className="availableBadge">
-                {moduleKeys.length} available
-              </div>
-
-            </div>
-
-            {/* =================================================
-                MODULE GRID
-            ================================================= */}
-
-            <div className="moduleGrid">
-
-              {moduleKeys.map((key, index) => {
-                const config = MODULE_CONFIG[key];
-
-                if (!config) return null;
-
-                return (
-                  <button
-                    type="button"
-                    key={key}
-                    className="moduleCard"
-                    onClick={() =>
-                      handleModulePress(key)
-                    }
-                    style={
-                      {
-                        '--module-color': config.color,
-                        '--module-soft': `${config.color}12`,
-                        '--module-border': `${config.color}28`,
-                      } as React.CSSProperties
-                    }
-                  >
-
-                    {/* Card number */}
-                    <span className="cardNumber">
-                      {String(index + 1).padStart(2, '0')}
-                    </span>
-
-                    {/* Module icon */}
-                    <div className="moduleCardIcon">
-                      {config.icon}
-                    </div>
-
-                    {/* Module information */}
-                    <div className="moduleCardInfo">
-
-                      <span className="moduleCardTitle">
-                        {config.label}
-                      </span>
-
-                      <span className="moduleCardDescription">
-                        Open {config.label.toLowerCase()}
-                      </span>
-
-                    </div>
-
-                    {/* Arrow */}
-                    <div className="moduleCardArrow">
-                      <FiArrowRight />
-                    </div>
-
-                  </button>
-                );
-              })}
-
-            </div>
-          </section>
-
-        </main>
-
-        {/* =================================================
-            AI CHAT BUTTON
-        ================================================= */}
-
-        <button
-          type="button"
-          className="aiButton"
-          onClick={() => router.push('/chat')}
-        >
-
-          <div className="aiButtonIcon">
-            <FiMessageCircle />
-          </div>
-
-          <div className="aiButtonText">
-            <span className="aiButtonTitle">
-              Prayantra Assistant
-            </span>
-
-            <span className="aiButtonSubtitle">
-              How can I help you?
-            </span>
-          </div>
-
-          <FiArrowRight className="aiButtonArrow" />
-
-        </button>
-
-      </div>
-
-      <style jsx>{styles}</style>
-    </>
-  );
-}
-
-// =========================================================
-// STYLES
-// =========================================================
-
-const styles = `
-  * {
-    box-sizing: border-box;
-  }
-
-  .dashboardPage {
-    min-height: 100vh;
-
-    background:
-      radial-gradient(
-        circle at 0% 0%,
-        rgba(123, 47, 190, 0.055),
-        transparent 28%
-      ),
-      radial-gradient(
-        circle at 100% 10%,
-        rgba(0, 180, 219, 0.045),
-        transparent 25%
-      ),
-      #f7f9fc;
-
-    color: #172033;
-
-    font-family:
-      Inter,
-      ui-sans-serif,
-      system-ui,
-      -apple-system,
-      BlinkMacSystemFont,
-      "Segoe UI",
-      sans-serif;
-
-    padding-bottom: 115px;
-  }
-
-  /* =======================================================
-     HEADER
-  ======================================================= */
-
-  .topHeader {
-    position: sticky;
-    top: 0;
-    z-index: 50;
-
-    background: rgba(255, 255, 255, 0.94);
-
-    border-bottom: 1px solid #e7ebf1;
-
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-
-    box-shadow:
-      0 2px 10px rgba(15, 23, 42, 0.035);
-  }
-
-  .headerInner {
-    width: min(1400px, calc(100% - 48px));
-
-    min-height: 76px;
-
-    margin: 0 auto;
-
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-
-    gap: 20px;
-  }
-
-  /* =======================================================
-     BRAND
-  ======================================================= */
-
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: 11px;
-  }
-
-  .brandMark {
-    width: 40px;
-    height: 40px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 11px;
-
-    background:
-      linear-gradient(
-        135deg,
-        #00b4db,
-        #7b2fbe
-      );
-
-    color: #ffffff;
-
-    font-size: 20px;
-    font-weight: 800;
-
-    box-shadow:
-      0 5px 13px rgba(123, 47, 190, 0.22);
-  }
-
-  .brandText {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .brandName {
-    color: #172033;
-
-    font-size: 17px;
-    line-height: 1.1;
-    font-weight: 750;
-    letter-spacing: -0.25px;
-  }
-
-  .brandSubtitle {
-    margin-top: 3px;
-
-    color: #94a3b8;
-
-    font-size: 10px;
-    line-height: 1;
-
-    font-weight: 600;
-
-    letter-spacing: 0.15px;
-  }
-
-  /* =======================================================
-     HEADER ACTIONS
-  ======================================================= */
-
-  .headerActions {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .headerIconButton,
-  .logoutIconButton {
-    all: unset;
-
-    width: 39px;
-    height: 39px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border: 1px solid #e2e8f0;
-    border-radius: 10px;
-
-    background: #ffffff;
-    color: #64748b;
-
-    cursor: pointer;
-
-    transition:
-      background 0.18s ease,
-      color 0.18s ease,
-      border-color 0.18s ease,
-      transform 0.18s ease;
-  }
-
-  .headerIconButton svg,
-  .logoutIconButton svg {
-    width: 18px;
-    height: 18px;
-  }
-
-  .headerIconButton:hover {
-    color: #2563eb;
-
-    border-color: #bfdbfe;
-    background: #eff6ff;
-
-    transform: translateY(-1px);
-  }
-
-  .logoutIconButton:hover {
-    color: #ef4444;
-
-    border-color: #fecaca;
-    background: #fef2f2;
-
-    transform: translateY(-1px);
-  }
-
-  .headerDivider {
-    width: 1px;
-    height: 30px;
-
-    background: #e5eaf1;
-
-    margin: 0 3px;
-  }
-
-  /* =======================================================
-     MINI PROFILE
-  ======================================================= */
-
-  .userMiniProfile {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-  }
-
-  .userAvatar {
-    width: 38px;
-    height: 38px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 11px;
-
-    background: #f1eafe;
-
-    color: #7b2fbe;
-
-    font-size: 14px;
-    font-weight: 750;
-  }
-
-  .userMiniInfo {
-    display: flex;
-    flex-direction: column;
-
-    min-width: 0;
-  }
-
-  .userMiniName {
-    max-width: 150px;
-
-    overflow: hidden;
-
-    color: #334155;
-
-    font-size: 12px;
-    line-height: 1.2;
-    font-weight: 650;
-
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .userMiniRole {
-    margin-top: 3px;
-
-    color: #94a3b8;
-
-    font-size: 10px;
-    line-height: 1;
-    font-weight: 500;
-  }
-
-  /* =======================================================
-     MAIN CONTENT
-  ======================================================= */
-
-  .mainContent {
-    width: min(1400px, calc(100% - 48px));
-
-    margin: 0 auto;
-  }
-
-  /* =======================================================
-     WELCOME
-  ======================================================= */
-
-  .welcomeSection {
-    min-height: 205px;
-
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-
-    gap: 30px;
-
-    padding: 42px 0 34px;
-  }
-
-  .welcomeLeft {
-    min-width: 0;
-  }
-
-  .breadcrumb {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-
-    margin-bottom: 11px;
-
-    color: #94a3b8;
-
-    font-size: 11px;
-    font-weight: 650;
-  }
-
-  .breadcrumb svg {
-    width: 13px;
-    height: 13px;
-  }
-
-  .welcomeLeft h1 {
-    margin: 0;
-
-    color: #172033;
-
-    font-size: 34px;
-    line-height: 1.15;
-
-    font-weight: 750;
-
-    letter-spacing: -0.8px;
-  }
-
-  .welcomeLeft h1 span {
-    color: #7b2fbe;
-  }
-
-  .welcomeLeft p {
-    margin: 9px 0 0;
-
-    color: #64748b;
-
-    font-size: 14px;
-    line-height: 1.5;
-
-    font-weight: 500;
-  }
-
-  /* =======================================================
-     MODULE SUMMARY
-  ======================================================= */
-
-  .moduleSummary {
-    min-width: 180px;
-
-    display: flex;
-    align-items: center;
-    gap: 13px;
-
-    padding: 15px 18px;
-
-    border: 1px solid #e5eaf1;
-    border-radius: 14px;
-
-    background: rgba(255,255,255,0.8);
-
-    box-shadow:
-      0 3px 10px rgba(15, 23, 42, 0.025);
-  }
-
-  .summaryIcon {
-    width: 42px;
-    height: 42px;
-
-    flex-shrink: 0;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 11px;
-
-    background: #f1eafe;
-    color: #7b2fbe;
-  }
-
-  .summaryIcon svg {
-    width: 19px;
-    height: 19px;
-  }
-
-  .moduleSummary > div:last-child {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .moduleSummary strong {
-    color: #1e293b;
-
-    font-size: 22px;
-    line-height: 1;
-
-    font-weight: 750;
-  }
-
-  .moduleSummary span {
-    margin-top: 5px;
-
-    color: #94a3b8;
-
-    font-size: 10px;
-    font-weight: 600;
-  }
-
-  /* =======================================================
-     MODULE SECTION
-  ======================================================= */
-
-  .modulesSection {
-    padding-bottom: 40px;
-  }
-
-  .sectionHeading {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-
-    gap: 20px;
-
-    margin-bottom: 19px;
-  }
-
-  .sectionHeading h2 {
-    margin: 0;
-
-    color: #1e293b;
-
-    font-size: 19px;
-    line-height: 1.3;
-
-    font-weight: 700;
-
-    letter-spacing: -0.2px;
-  }
-
-  .sectionHeading p {
-    margin: 5px 0 0;
-
-    color: #94a3b8;
-
-    font-size: 12px;
-    font-weight: 500;
-  }
-
-  .availableBadge {
-    padding: 7px 11px;
-
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-
-    background: #ffffff;
-
-    color: #64748b;
-
-    font-size: 11px;
-    font-weight: 650;
-
-    white-space: nowrap;
-  }
-
-  /* =======================================================
-     MODULE GRID
-  ======================================================= */
-
-  .moduleGrid {
-    display: grid;
-
-    grid-template-columns:
-      repeat(
-        4,
-        minmax(0, 1fr)
-      );
-
-    gap: 17px;
-  }
-
-  /* =======================================================
-     MODULE CARD
-  ======================================================= */
-
-  .moduleCard {
-    all: unset;
-
-    position: relative;
-
-    min-width: 0;
-    min-height: 172px;
-
-    padding: 22px;
-
-    display: flex;
-    flex-direction: column;
-
-    border: 1px solid #e5eaf1;
-    border-radius: 16px;
-
-    background: #ffffff;
-
-    cursor: pointer;
-
-    overflow: hidden;
-
-    box-shadow:
-      0 2px 5px rgba(15, 23, 42, 0.025);
-
-    transition:
-      transform 0.2s ease,
-      box-shadow 0.2s ease,
-      border-color 0.2s ease;
-  }
-
-  .moduleCard::before {
-    content: '';
-
-    position: absolute;
-
-    top: 0;
-    left: 0;
-
-    width: 100%;
-    height: 3px;
-
-    background: var(--module-color);
-
-    opacity: 0;
-
-    transition: opacity 0.2s ease;
-  }
-
-  .moduleCard:hover {
-    transform: translateY(-4px);
-
-    border-color: var(--module-border);
-
-    box-shadow:
-      0 12px 28px rgba(15, 23, 42, 0.085);
-  }
-
-  .moduleCard:hover::before {
-    opacity: 1;
-  }
-
-  .moduleCard:focus-visible {
-    outline: 3px solid var(--module-soft);
-    outline-offset: 2px;
-  }
-
-  /* =======================================================
-     CARD NUMBER
-  ======================================================= */
-
-  .cardNumber {
-    position: absolute;
-
-    top: 18px;
-    right: 19px;
-
-    color: #cbd5e1;
-
-    font-size: 10px;
-    font-weight: 750;
-
-    letter-spacing: 0.6px;
-  }
-
-  /* =======================================================
-     CARD ICON
-  ======================================================= */
-
-  .moduleCardIcon {
-    width: 52px;
-    height: 52px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 14px;
-
-    background: var(--module-soft);
-
-    font-size: 27px;
-    line-height: 1;
-
-    transition:
-      transform 0.2s ease;
-  }
-
-  .moduleCard:hover .moduleCardIcon {
-    transform: scale(1.06);
-  }
-
-  /* =======================================================
-     CARD CONTENT
-  ======================================================= */
-
-  .moduleCardInfo {
-    min-width: 0;
-
-    display: flex;
-    flex-direction: column;
-
-    margin-top: 18px;
-
-    padding-right: 35px;
-  }
-
-  .moduleCardTitle {
-    overflow: hidden;
-
-    color: #1e293b;
-
-    font-size: 16px;
-    line-height: 1.3;
-
-    font-weight: 700;
-
-    text-align: left;
-
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .moduleCardDescription {
-    margin-top: 5px;
-
-    overflow: hidden;
-
-    color: #94a3b8;
-
-    font-size: 11px;
-    line-height: 1.4;
-
-    font-weight: 500;
-
-    text-align: left;
-
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /* =======================================================
-     CARD ARROW
-  ======================================================= */
-
-  .moduleCardArrow {
-    position: absolute;
-
-    right: 18px;
-    bottom: 18px;
-
-    width: 31px;
-    height: 31px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 9px;
-
-    background: var(--module-soft);
-
-    color: var(--module-color);
-
-    transition:
-      transform 0.2s ease;
-  }
-
-  .moduleCardArrow svg {
-    width: 15px;
-    height: 15px;
-  }
-
-  .moduleCard:hover .moduleCardArrow {
-    transform: translateX(3px);
-  }
-
-  /* =======================================================
-     AI ASSISTANT
-  ======================================================= */
-
-  .aiButton {
-    position: fixed;
-
-    right: 28px;
-    bottom: 27px;
-
-    z-index: 40;
-
-    min-width: 260px;
-
-    display: flex;
-    align-items: center;
-
-    gap: 11px;
-
-    padding: 10px 12px;
-
-    border: 1px solid rgba(255,255,255,0.22);
-    border-radius: 15px;
-
-    background:
-      linear-gradient(
-        135deg,
-        #7b2fbe,
-        #6230a5
-      );
-
-    color: #ffffff;
-
-    cursor: pointer;
-
-    box-shadow:
-      0 10px 28px rgba(91, 42, 151, 0.28);
-
-    transition:
-      transform 0.2s ease,
-      box-shadow 0.2s ease;
-  }
-
-  .aiButton:hover {
-    transform: translateY(-3px);
-
-    box-shadow:
-      0 15px 34px rgba(91, 42, 151, 0.34);
-  }
-
-  .aiButtonIcon {
-    width: 39px;
-    height: 39px;
-
-    flex-shrink: 0;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 11px;
-
-    background: rgba(255,255,255,0.15);
-  }
-
-  .aiButtonIcon svg {
-    width: 19px;
-    height: 19px;
-  }
-
-  .aiButtonText {
-    min-width: 0;
-
-    flex: 1;
-
-    display: flex;
-    flex-direction: column;
-
-    text-align: left;
-  }
-
-  .aiButtonTitle {
-    font-size: 12px;
-    line-height: 1.3;
-
-    font-weight: 700;
-  }
-
-  .aiButtonSubtitle {
-    margin-top: 2px;
-
-    color: rgba(255,255,255,0.72);
-
-    font-size: 10px;
-    line-height: 1.3;
-
-    font-weight: 500;
-  }
-
-  .aiButtonArrow {
-    width: 16px;
-    height: 16px;
-
-    flex-shrink: 0;
-
-    opacity: 0.75;
-  }
-
-  /* =======================================================
-     LOADING
-  ======================================================= */
-
-  .loadingPage {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .loadingCard {
-    width: min(380px, calc(100% - 40px));
-
-    padding: 38px 30px;
-
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-
-    border: 1px solid #e5eaf1;
-    border-radius: 17px;
-
-    background: #ffffff;
-
-    box-shadow:
-      0 12px 35px rgba(15,23,42,0.06);
-
-    text-align: center;
-  }
-
-  .loadingSpinner {
-    width: 40px;
-    height: 40px;
-
-    border: 3px solid #e8eaf0;
-    border-top-color: #7b2fbe;
-
-    border-radius: 50%;
-
-    animation: spin 0.8s linear infinite;
-  }
-
-  .loadingCard h2 {
-    margin: 20px 0 0;
-
-    color: #1e293b;
-
-    font-size: 18px;
-    font-weight: 700;
-  }
-
-  .loadingCard p {
-    margin: 7px 0 0;
-
-    color: #94a3b8;
-
-    font-size: 12px;
-  }
-
-  /* =======================================================
-     ERROR / EMPTY STATE
-  ======================================================= */
-
-  .stateCard {
-    width: min(460px, calc(100% - 40px));
-
-    margin: 100px auto;
-
-    padding: 42px 30px;
-
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-
-    border: 1px solid #e5eaf1;
-    border-radius: 18px;
-
-    background: #ffffff;
-
-    box-shadow:
-      0 12px 35px rgba(15,23,42,0.06);
-
-    text-align: center;
-  }
-
-  .stateIcon {
-    width: 68px;
-    height: 68px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 18px;
-  }
-
-  .stateIcon svg {
-    width: 30px;
-    height: 30px;
-  }
-
-  .errorIcon {
-    background: #fef2f2;
-    color: #ef4444;
-  }
-
-  .emptyIcon {
-    background: #f1eafe;
-    color: #7b2fbe;
-  }
-
-  .stateCard h2 {
-    margin: 20px 0 0;
-
-    color: #1e293b;
-
-    font-size: 21px;
-    font-weight: 700;
-  }
-
-  .stateCard p {
-    margin: 8px 0 0;
-
-    color: #64748b;
-
-    font-size: 13px;
-    line-height: 1.65;
-  }
-
-  .stateActions {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-
-    margin-top: 25px;
-  }
-
-  .primaryAction,
-  .secondaryAction {
-    all: unset;
-
-    padding: 10px 15px;
-
-    display: flex;
-    align-items: center;
-    gap: 7px;
-
-    border-radius: 9px;
-
-    cursor: pointer;
-
-    font-size: 12px;
-    font-weight: 650;
-
-    transition:
-      transform 0.18s ease,
-      box-shadow 0.18s ease;
-  }
-
-  .primaryAction {
-    background: #7b2fbe;
-    color: #ffffff;
-  }
-
-  .secondaryAction {
-    border: 1px solid #e2e8f0;
-    background: #ffffff;
-    color: #475569;
-  }
-
-  .primaryAction:hover,
-  .secondaryAction:hover {
-    transform: translateY(-1px);
-  }
-
-  .primaryAction svg,
-  .secondaryAction svg {
-    width: 15px;
-    height: 15px;
-  }
-
-  /* =======================================================
-     RESPONSIVE
-  ======================================================= */
-
-  @media (max-width: 1150px) {
-    .moduleGrid {
-      grid-template-columns:
-        repeat(
-          3,
-          minmax(0, 1fr)
-        );
-    }
-  }
-
-  @media (max-width: 850px) {
-    .moduleGrid {
-      grid-template-columns:
-        repeat(
-          2,
-          minmax(0, 1fr)
-        );
-    }
-
-    .userMiniInfo {
-      display: none;
-    }
-
-    .welcomeSection {
-      min-height: auto;
-    }
-  }
-
-  @media (max-width: 650px) {
-    .headerInner,
-    .mainContent {
-      width: calc(100% - 28px);
-    }
-
-    .headerInner {
-      min-height: 68px;
-    }
-
-    .brandSubtitle {
-      display: none;
-    }
-
-    .headerDivider {
-      display: none;
-    }
-
-    .welcomeSection {
-      padding: 30px 0 25px;
-
-      align-items: flex-start;
-
-      flex-direction: column;
-    }
-
-    .welcomeLeft h1 {
-      font-size: 28px;
-    }
-
-    .moduleSummary {
-      width: 100%;
-    }
-
-    .sectionHeading {
-      align-items: flex-start;
-    }
-
-    .availableBadge {
-      display: none;
-    }
-
-    .moduleGrid {
-      grid-template-columns: 1fr;
-      gap: 13px;
-    }
-
-    .moduleCard {
-      min-height: 135px;
-    }
-
-    .aiButton {
-      right: 14px;
-      bottom: 14px;
-      left: 14px;
-
-      min-width: 0;
-
-      width: auto;
-    }
-  }
-
-  @media (max-width: 420px) {
-    .brandText {
-      display: none;
-    }
-
-    .userAvatar {
-      width: 36px;
-      height: 36px;
-    }
-
-    .headerIconButton,
-    .logoutIconButton {
-      width: 36px;
-      height: 36px;
-    }
-  }
-
-  @keyframes spin {
-    from {
-      transform: rotate(0deg);
-    }
-
-    to {
-      transform: rotate(360deg);
-    }
-  }
-`; this failed import React, { useState } from 'react';
-import { useRouter } from 'next/router';
-import { useForm, Controller } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
-
-import {
-  FiArrowLeft,
-  FiCheck,
-  FiChevronDown,
-  FiClock,
-  FiCode,
-  FiFileText,
-  FiInfo,
-  FiMapPin,
-  FiSettings,
-  FiX,
-  FiSave,
-  FiLoader,
-} from 'react-icons/fi';
-
-import { createWorkCenter } from '@b2b/api-client';
-import { useUserAuthStore } from '../../../store/userAuthStore';
-
-// =========================================================
-// TIMEZONES
-// =========================================================
-
-const TIMEZONES = [
-  'Asia/Kolkata',
-  'America/New_York',
-  'America/Los_Angeles',
-  'Europe/London',
-  'Europe/Paris',
-  'Australia/Sydney',
-  'Asia/Singapore',
-  'Asia/Dubai',
-];
-
-// =========================================================
-// VALIDATION
-// =========================================================
-
-const schema = z.object({
-  work_center_code: z
-    .string()
-    .trim()
-    .min(1, 'Work center code is required'),
-
-  name: z
-    .string()
-    .trim()
-    .min(1, 'Work center name is required'),
-
-  description: z.string().optional(),
-
-  timezone: z
-    .string()
-    .min(1, 'Timezone is required'),
-
-  is_active: z.boolean(),
-});
-
-type FormData = z.infer<typeof schema>;
-
-// =========================================================
-// SWITCH
-// =========================================================
-
-const Switch: React.FC<{
-  value: boolean;
-  onChange: (value: boolean) => void;
-}> = ({ value, onChange }) => {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={value}
-      onClick={() => onChange(!value)}
-      className={`statusSwitch ${value ? 'active' : ''}`}
-    >
-      <span className="switchThumb" />
-    </button>
-  );
-};
-
-// =========================================================
-// INPUT FIELD
-// =========================================================
-
-interface FieldProps {
-  label: string;
-  required?: boolean;
-  error?: string;
-  hint?: string;
-  icon?: React.ReactNode;
-  children: React.ReactNode;
-}
-
-const Field: React.FC<FieldProps> = ({
-  label,
-  required,
-  error,
-  hint,
-  icon,
-  children,
-}) => {
-  return (
-    <div className="field">
-
-      <div className="fieldLabelRow">
-        <label className="fieldLabel">
-          {icon && (
-            <span className="fieldLabelIcon">
-              {icon}
-            </span>
-          )}
-
-          {label}
-
-          {required && (
-            <span className="requiredMark">*</span>
-          )}
-        </label>
-
-        {hint && (
-          <span className="fieldHint">
-            {hint}
-          </span>
-        )}
-      </div>
-
-      {children}
-
-      {error && (
-        <div className="fieldError">
-          <FiInfo />
-          {error}
-        </div>
-      )}
-    </div>
-  );
-};
+  },
+  'params'
+>;
+
+type NavigationProp =
+  StackNavigationProp<any>;
 
 // =========================================================
 // SCREEN
 // =========================================================
 
-export default function CreateWorkCenterScreen() {
-  const router = useRouter();
+export default function ModuleDetailScreen() {
+  const route =
+    useRoute<ModuleDetailRouteProp>();
+
+  const navigation =
+    useNavigation<NavigationProp>();
+
+  const { width } =
+    useWindowDimensions();
 
   const {
-    accessToken,
-    deviceId,
-    companyId,
-  } = useUserAuthStore();
-
-  const [modalOpen, setModalOpen] = useState(false);
-
-  const {
-    control,
-    handleSubmit,
-    setValue,
-    watch,
-    formState: {
-      errors,
-      isSubmitting,
-    },
-  } = useForm<FormData>({
-    resolver: zodResolver(schema),
-
-    defaultValues: {
-      work_center_code: '',
-      name: '',
-      description: '',
-      timezone: 'Asia/Kolkata',
-      is_active: true,
-    },
-  });
-
-  const selectedTimezone = watch('timezone');
-  const isActive = watch('is_active');
-
-  // =======================================================
-  // SUBMIT
-  // =======================================================
-
-  const onSubmit = async (data: FormData) => {
-    if (!accessToken || !companyId || !deviceId) {
-      alert('Missing authentication details');
-      return;
-    }
-
-    try {
-      await createWorkCenter(
-        companyId,
-        deviceId,
-        data,
-        accessToken
-      );
-
-      alert('Work center created successfully');
-
-      router.back();
-    } catch (error: any) {
-      const msg =
-        error?.response?.data?.message ||
-        error?.message ||
-        'Creation failed';
-
-      alert(msg);
-    }
+    moduleName,
+  } = route.params as {
+    moduleName: string;
   };
 
   // =======================================================
-  // RENDER
+  // MODULE DATA
+  // =======================================================
+
+  const features =
+    FEATURES_CONFIG[moduleName] || [];
+
+  const moduleConfig =
+    MODULE_CONFIG[moduleName];
+
+  const accentColor =
+    moduleConfig?.color ||
+    PRIMARY_COLOR;
+
+  const moduleLabel =
+    moduleConfig?.label ||
+    moduleName
+      .charAt(0)
+      .toUpperCase() +
+      moduleName.slice(1);
+
+  // =======================================================
+  // RESPONSIVE CARD WIDTH
+  // =======================================================
+
+  const cardWidth = useMemo(() => {
+    const horizontalPadding = 20;
+
+    const gap = 12;
+
+    return (
+      (width -
+        horizontalPadding * 2 -
+        gap) /
+      2
+    );
+  }, [width]);
+
+  // =======================================================
+  // EMPTY MODULE
+  // =======================================================
+
+  if (features.length === 0) {
+    return (
+      <SafeAreaView
+        edges={['top', 'bottom']}
+        style={styles.container}
+      >
+        <View style={styles.emptyScreen}>
+
+          <View
+            style={[
+              styles.emptyIcon,
+              {
+                backgroundColor:
+                  `${accentColor}12`,
+              },
+            ]}
+          >
+            <Icon
+              name="view-grid-off-outline"
+              size={32}
+              color={accentColor}
+            />
+          </View>
+
+          <Text style={styles.emptyTitle}>
+            No Features Yet
+          </Text>
+
+          <Text style={styles.emptyDescription}>
+            There are currently no features available
+            inside the {moduleLabel} module.
+          </Text>
+
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() =>
+              navigation.goBack()
+            }
+            style={[
+              styles.backButton,
+              {
+                backgroundColor:
+                  accentColor,
+              },
+            ]}
+          >
+            <Icon
+              name="arrow-left"
+              size={17}
+              color="#FFFFFF"
+            />
+
+            <Text style={styles.backButtonText}>
+              Back to Modules
+            </Text>
+          </TouchableOpacity>
+
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // =======================================================
+  // FEATURE CARD
+  // =======================================================
+
+  const renderFeature = ({
+    item,
+    index,
+  }: {
+    item: (typeof features)[number];
+    index: number;
+  }) => {
+    return (
+      <TouchableOpacity
+        activeOpacity={0.88}
+        onPress={() =>
+          navigation.navigate(
+            item.screen
+          )
+        }
+        style={[
+          styles.featureCard,
+          {
+            width: cardWidth,
+          },
+        ]}
+      >
+
+        {/* Accent */}
+
+        <View
+          style={[
+            styles.cardAccent,
+            {
+              backgroundColor:
+                accentColor,
+            },
+          ]}
+        />
+
+        {/* Number */}
+
+        <Text style={styles.cardNumber}>
+          {String(index + 1).padStart(
+            2,
+            '0'
+          )}
+        </Text>
+
+        {/* Icon */}
+
+        <View
+          style={[
+            styles.featureIcon,
+            {
+              backgroundColor:
+                `${accentColor}12`,
+            },
+          ]}
+        >
+          <Icon
+            name={item.icon}
+            size={26}
+            color={accentColor}
+          />
+        </View>
+
+        {/* Text */}
+
+        <View style={styles.featureContent}>
+
+          <Text
+            numberOfLines={1}
+            style={styles.featureLabel}
+          >
+            {item.label}
+          </Text>
+
+          <Text
+            numberOfLines={1}
+            style={styles.featureDescription}
+          >
+            Open {item.label.toLowerCase()}
+          </Text>
+
+        </View>
+
+        {/* Arrow */}
+
+        <View
+          style={[
+            styles.featureArrow,
+            {
+              backgroundColor:
+                `${accentColor}10`,
+            },
+          ]}
+        >
+          <Icon
+            name="arrow-right"
+            size={15}
+            color={accentColor}
+          />
+        </View>
+
+      </TouchableOpacity>
+    );
+  };
+
+  // =======================================================
+  // HEADER
+  // =======================================================
+
+  const ListHeader = () => (
+    <>
+      {/* =================================================
+          TOP HEADER
+      ================================================= */}
+
+      <LinearGradient
+        colors={GRADIENT_COLORS}
+        start={GRADIENT_START}
+        end={GRADIENT_END}
+        style={styles.header}
+      >
+
+        {/* Navigation row */}
+
+        <View style={styles.headerTop}>
+
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() =>
+              navigation.goBack()
+            }
+            style={styles.backIconButton}
+          >
+            <Icon
+              name="arrow-left"
+              size={21}
+              color="#FFFFFF"
+            />
+          </TouchableOpacity>
+
+          <View style={styles.headerBreadcrumb}>
+
+            <Text style={styles.headerSmallText}>
+              MODULE
+            </Text>
+
+            <Text
+              numberOfLines={1}
+              style={styles.headerBreadcrumbTitle}
+            >
+              {moduleLabel}
+            </Text>
+
+          </View>
+
+          <View style={styles.headerGridButton}>
+            <Icon
+              name="view-grid-outline"
+              size={20}
+              color="#FFFFFF"
+            />
+          </View>
+
+        </View>
+
+        {/* Module identity */}
+
+        <View style={styles.moduleHero}>
+
+          <View
+            style={[
+              styles.moduleHeroIcon,
+              {
+                backgroundColor:
+                  'rgba(255,255,255,0.16)',
+              },
+            ]}
+          >
+            <Text style={styles.moduleEmoji}>
+              {moduleConfig?.icon
+                ? ''
+                : '📦'}
+            </Text>
+
+            <Icon
+              name={
+                moduleConfig?.icon ||
+                'view-grid'
+              }
+              size={30}
+              color="#FFFFFF"
+            />
+          </View>
+
+          <View style={styles.moduleHeroText}>
+
+            <Text style={styles.moduleHeroTitle}>
+              {moduleLabel}
+            </Text>
+
+            <Text style={styles.moduleHeroSubtitle}>
+              Manage your {moduleLabel.toLowerCase()}{' '}
+              workspace
+            </Text>
+
+          </View>
+
+        </View>
+
+      </LinearGradient>
+
+      {/* =================================================
+          FEATURE SUMMARY
+      ================================================= */}
+
+      <View style={styles.summaryRow}>
+
+        <View style={styles.summaryText}>
+
+          <Text style={styles.summaryTitle}>
+            Features
+          </Text>
+
+          <Text style={styles.summarySubtitle}>
+            Select a feature to continue
+          </Text>
+
+        </View>
+
+        <View
+          style={[
+            styles.countBadge,
+            {
+              backgroundColor:
+                `${accentColor}10`,
+              borderColor:
+                `${accentColor}25`,
+            },
+          ]}
+        >
+          <Text
+            style={[
+              styles.countNumber,
+              {
+                color:
+                  accentColor,
+              },
+            ]}
+          >
+            {features.length}
+          </Text>
+
+          <Text
+            style={[
+              styles.countLabel,
+              {
+                color:
+                  accentColor,
+              },
+            ]}
+          >
+            {features.length === 1
+              ? 'available'
+              : 'available'}
+          </Text>
+
+        </View>
+
+      </View>
+
+    </>
+  );
+
+  // =======================================================
+  // MAIN
   // =======================================================
 
   return (
-    <>
-      <div className="page">
-
-        {/* =================================================
-            HEADER
-        ================================================= */}
-
-        <header className="pageHeader">
-
-          <div className="headerInner">
-
-            <button
-              type="button"
-              className="backButton"
-              onClick={() => router.back()}
-              aria-label="Go back"
-            >
-              <FiArrowLeft />
-            </button>
-
-            <div className="headerIcon">
-              <FiSettings />
-            </div>
-
-            <div className="headerText">
-
-              <div className="breadcrumb">
-                <span>Administration</span>
-                <FiChevronDown />
-                <span>Work Centers</span>
-              </div>
-
-              <h1>
-                Create Work Center
-              </h1>
-
-              <p>
-                Add a new work center to your organization
-              </p>
-
-            </div>
-
-          </div>
-
-          <div className="headerAccent" />
-
-        </header>
-
-        {/* =================================================
-            MAIN
-        ================================================= */}
-
-        <main className="main">
-
-          {/* Page intro */}
-
-          <div className="pageIntro">
-
-            <div>
-              <h2>
-                Work Center Details
-              </h2>
-
-              <p>
-                Enter the basic information and operating
-                settings for this work center.
-              </p>
-            </div>
-
-            <div className="requiredLegend">
-              <span>*</span>
-              Required fields
-            </div>
-
-          </div>
-
-          {/* =================================================
-              FORM
-          ================================================= */}
-
-          <form
-            onSubmit={handleSubmit(onSubmit)}
-            className="form"
-          >
-
-            {/* =================================================
-                BASIC INFORMATION
-            ================================================= */}
-
-            <section className="formSection">
-
-              <div className="sectionHeader">
-
-                <div className="sectionIcon blue">
-                  <FiFileText />
-                </div>
-
-                <div>
-                  <h3>
-                    Basic Information
-                  </h3>
-
-                  <p>
-                    Identify your work center
-                  </p>
-                </div>
-
-              </div>
-
-              <div className="sectionBody">
-
-                <div className="twoColumn">
-
-                  {/* Work center code */}
-
-                  <Controller
-                    control={control}
-                    name="work_center_code"
-                    render={({ field }) => (
-                      <Field
-                        label="Work Center Code"
-                        required
-                        error={
-                          errors.work_center_code?.message
-                        }
-                        hint="Unique identifier"
-                        icon={<FiCode />}
-                      >
-                        <input
-                          {...field}
-                          type="text"
-                          placeholder="e.g. WC-001"
-                          autoComplete="off"
-                          className={`input ${
-                            errors.work_center_code
-                              ? 'inputError'
-                              : ''
-                          }`}
-                          onChange={(e) =>
-                            field.onChange(
-                              e.target.value.toUpperCase()
-                            )
-                          }
-                        />
-                      </Field>
-                    )}
-                  />
-
-                  {/* Name */}
-
-                  <Controller
-                    control={control}
-                    name="name"
-                    render={({ field }) => (
-                      <Field
-                        label="Work Center Name"
-                        required
-                        error={
-                          errors.name?.message
-                        }
-                        hint="Display name"
-                        icon={<FiSettings />}
-                      >
-                        <input
-                          {...field}
-                          type="text"
-                          placeholder="e.g. Assembly Line 1"
-                          className={`input ${
-                            errors.name
-                              ? 'inputError'
-                              : ''
-                          }`}
-                        />
-                      </Field>
-                    )}
-                  />
-
-                </div>
-
-                {/* Description */}
-
-                <Controller
-                  control={control}
-                  name="description"
-                  render={({ field }) => (
-                    <Field
-                      label="Description"
-                      hint="Optional"
-                      icon={<FiFileText />}
-                    >
-                      <textarea
-                        {...field}
-                        rows={4}
-                        placeholder="Describe the purpose, function or responsibilities of this work center..."
-                        className="textarea"
-                      />
-                    </Field>
-                  )}
-                />
-
-              </div>
-
-            </section>
-
-            {/* =================================================
-                OPERATING SETTINGS
-            ================================================= */}
-
-            <section className="formSection">
-
-              <div className="sectionHeader">
-
-                <div className="sectionIcon purple">
-                  <FiClock />
-                </div>
-
-                <div>
-                  <h3>
-                    Operating Settings
-                  </h3>
-
-                  <p>
-                    Configure location and availability
-                  </p>
-                </div>
-
-              </div>
-
-              <div className="sectionBody">
-
-                {/* Timezone */}
-
-                <Field
-                  label="Timezone"
-                  required
-                  error={
-                    errors.timezone?.message
-                  }
-                  hint="Used for schedules and operations"
-                  icon={<FiMapPin />}
-                >
-                  <button
-                    type="button"
-                    className={`selectButton ${
-                      errors.timezone
-                        ? 'inputError'
-                        : ''
-                    }`}
-                    onClick={() =>
-                      setModalOpen(true)
-                    }
-                  >
-                    <span>
-                      {selectedTimezone ||
-                        'Select timezone'}
-                    </span>
-
-                    <FiChevronDown />
-                  </button>
-                </Field>
-
-                {/* Active status */}
-
-                <Controller
-                  control={control}
-                  name="is_active"
-                  render={({
-                    field: {
-                      value,
-                      onChange,
-                    },
-                  }) => (
-                    <div className="statusCard">
-
-                      <div className="statusLeft">
-
-                        <div
-                          className={`statusIcon ${
-                            value
-                              ? 'statusActive'
-                              : 'statusInactive'
-                          }`}
-                        >
-                          {value ? (
-                            <FiCheck />
-                          ) : (
-                            <FiX />
-                          )}
-                        </div>
-
-                        <div>
-                          <span className="statusTitle">
-                            Work Center Status
-                          </span>
-
-                          <span className="statusDescription">
-                            {value
-                              ? 'This work center is active and available for use.'
-                              : 'This work center is inactive and unavailable.'}
-                          </span>
-                        </div>
-
-                      </div>
-
-                      <div className="statusRight">
-
-                        <span
-                          className={`statusLabel ${
-                            value
-                              ? 'activeLabel'
-                              : 'inactiveLabel'
-                          }`}
-                        >
-                          {value
-                            ? 'Active'
-                            : 'Inactive'}
-                        </span>
-
-                        <Switch
-                          value={value}
-                          onChange={onChange}
-                        />
-
-                      </div>
-
-                    </div>
-                  )}
-                />
-
-              </div>
-
-            </section>
-
-            {/* =================================================
-                ACTIONS
-            ================================================= */}
-
-            <div className="formActions">
-
-              <button
-                type="button"
-                className="cancelButton"
-                onClick={() => router.back()}
-                disabled={isSubmitting}
-              >
-                Cancel
-              </button>
-
-              <button
-                type="submit"
-                className="createButton"
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? (
-                  <>
-                    <FiLoader className="buttonSpinner" />
-                    Creating...
-                  </>
-                ) : (
-                  <>
-                    <FiSave />
-                    Create Work Center
-                  </>
-                )}
-              </button>
-
-            </div>
-
-          </form>
-
-        </main>
-
-      </div>
-
-      {/* =====================================================
-          TIMEZONE MODAL
-      ===================================================== */}
-
-      {modalOpen && (
-        <div
-          className="modalOverlay"
-          onClick={() =>
-            setModalOpen(false)
-          }
-        >
-
-          <div
-            className="timezoneModal"
-            onClick={(e) =>
-              e.stopPropagation()
-            }
-          >
-
-            {/* Modal header */}
-
-            <div className="modalHeader">
-
-              <div className="modalTitleGroup">
-
-                <div className="modalIcon">
-                  <FiClock />
-                </div>
-
-                <div>
-                  <h3>
-                    Select Timezone
-                  </h3>
-
-                  <p>
-                    Choose the timezone used by this
-                    work center
-                  </p>
-                </div>
-
-              </div>
-
-              <button
-                type="button"
-                className="modalClose"
-                onClick={() =>
-                  setModalOpen(false)
-                }
-              >
-                <FiX />
-              </button>
-
-            </div>
-
-            {/* Current selection */}
-
-            <div className="currentTimezone">
-
-              <span>
-                Current timezone
-              </span>
-
-              <strong>
-                {selectedTimezone}
-              </strong>
-
-            </div>
-
-            {/* Timezone list */}
-
-            <div className="timezoneList">
-
-              {TIMEZONES.map((tz) => {
-                const selected =
-                  selectedTimezone === tz;
-
-                return (
-                  <button
-                    type="button"
-                    key={tz}
-                    className={`timezoneOption ${
-                      selected
-                        ? 'selected'
-                        : ''
-                    }`}
-                    onClick={() => {
-                      setValue(
-                        'timezone',
-                        tz,
-                        {
-                          shouldValidate: true,
-                        }
-                      );
-
-                      setModalOpen(false);
-                    }}
-                  >
-
-                    <div className="timezoneOptionLeft">
-
-                      <div
-                        className={`timezoneRadio ${
-                          selected
-                            ? 'radioSelected'
-                            : ''
-                        }`}
-                      >
-                        {selected && (
-                          <FiCheck />
-                        )}
-                      </div>
-
-                      <span>
-                        {tz}
-                      </span>
-
-                    </div>
-
-                    {selected && (
-                      <span className="selectedText">
-                        Selected
-                      </span>
-                    )}
-
-                  </button>
-                );
-              })}
-
-            </div>
-
-          </div>
-
-        </div>
-      )}
-
-      <style jsx>{styles}</style>
-    </>
+    <SafeAreaView
+      edges={['top', 'bottom']}
+      style={styles.container}
+    >
+
+      <FlatList
+        data={features}
+        keyExtractor={(item) =>
+          item.key
+        }
+        renderItem={renderFeature}
+        numColumns={2}
+        ListHeaderComponent={
+          <ListHeader />
+        }
+        columnWrapperStyle={
+          styles.columnWrapper
+        }
+        contentContainerStyle={
+          styles.listContent
+        }
+        showsVerticalScrollIndicator={false}
+      />
+
+    </SafeAreaView>
   );
 }
 
@@ -4433,1192 +2156,513 @@ export default function CreateWorkCenterScreen() {
 // STYLES
 // =========================================================
 
-const styles = `
-  * {
-    box-sizing: border-box;
-  }
-
-  .page {
-    min-height: 100vh;
-
-    background:
-      radial-gradient(
-        circle at 0% 0%,
-        rgba(37, 99, 235, 0.045),
-        transparent 28%
-      ),
-      #f7f9fc;
-
-    color: #172033;
-
-    font-family:
-      Inter,
-      ui-sans-serif,
-      system-ui,
-      -apple-system,
-      BlinkMacSystemFont,
-      "Segoe UI",
-      sans-serif;
-
-    padding-bottom: 50px;
-  }
-
-  /* =======================================================
-     HEADER
-  ======================================================= */
-
-  .pageHeader {
-    position: relative;
-
-    background: rgba(255,255,255,0.96);
-
-    border-bottom: 1px solid #e5eaf1;
-
-    box-shadow:
-      0 2px 12px rgba(15,23,42,0.035);
-  }
-
-  .headerInner {
-    width: min(1050px, calc(100% - 48px));
-
-    min-height: 118px;
-
-    margin: 0 auto;
-
-    display: flex;
-    align-items: center;
-
-    gap: 15px;
-  }
-
-  .headerAccent {
-    position: absolute;
-
-    left: 0;
-    bottom: 0;
-
-    width: 100%;
-    height: 3px;
-
-    background: #2563eb;
-  }
-
-  .backButton {
-    all: unset;
-
-    width: 41px;
-    height: 41px;
-
-    flex-shrink: 0;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border: 1px solid #e1e6ee;
-    border-radius: 11px;
-
-    background: #ffffff;
-
-    color: #64748b;
-
-    cursor: pointer;
-
-    transition:
-      background 0.18s ease,
-      color 0.18s ease,
-      transform 0.18s ease;
-  }
-
-  .backButton svg {
-    width: 19px;
-    height: 19px;
-  }
-
-  .backButton:hover {
-    color: #2563eb;
-    background: #eff6ff;
-
-    transform: translateX(-2px);
-  }
-
-  .headerIcon {
-    width: 56px;
-    height: 56px;
-
-    flex-shrink: 0;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 15px;
-
-    background: #eff6ff;
-    border: 1px solid #dbeafe;
-
-    color: #2563eb;
-  }
-
-  .headerIcon svg {
-    width: 26px;
-    height: 26px;
-  }
-
-  .headerText {
-    min-width: 0;
-  }
-
-  .breadcrumb {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-
-    margin-bottom: 5px;
-
-    color: #94a3b8;
-
-    font-size: 11px;
-    font-weight: 600;
-  }
-
-  .breadcrumb svg {
-    width: 12px;
-    height: 12px;
-
-    transform: rotate(-90deg);
-  }
-
-  .headerText h1 {
-    margin: 0;
-
-    color: #172033;
-
-    font-size: 27px;
-    line-height: 1.2;
-
-    font-weight: 750;
-
-    letter-spacing: -0.5px;
-  }
-
-  .headerText p {
-    margin: 5px 0 0;
-
-    color: #64748b;
-
-    font-size: 12px;
-    font-weight: 500;
-  }
-
-  /* =======================================================
-     MAIN
-  ======================================================= */
-
-  .main {
-    width: min(1050px, calc(100% - 48px));
-
-    margin: 0 auto;
-
-    padding: 35px 0 50px;
-  }
-
-  /* =======================================================
-     PAGE INTRO
-  ======================================================= */
-
-  .pageIntro {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-
-    gap: 20px;
-
-    margin-bottom: 20px;
-  }
-
-  .pageIntro h2 {
-    margin: 0;
-
-    color: #1e293b;
-
-    font-size: 19px;
-    line-height: 1.3;
-
-    font-weight: 700;
-  }
-
-  .pageIntro p {
-    margin: 5px 0 0;
-
-    color: #94a3b8;
-
-    font-size: 12px;
-    line-height: 1.5;
-
-    font-weight: 500;
-  }
-
-  .requiredLegend {
-    color: #94a3b8;
-
-    font-size: 11px;
-    font-weight: 500;
-  }
-
-  .requiredLegend span {
-    margin-right: 3px;
-
-    color: #ef4444;
-    font-weight: 700;
-  }
-
-  /* =======================================================
-     FORM SECTION
-  ======================================================= */
-
-  .form {
-    display: flex;
-    flex-direction: column;
-    gap: 17px;
-  }
-
-  .formSection {
-    overflow: hidden;
-
-    border: 1px solid #e5eaf1;
-    border-radius: 16px;
-
-    background: #ffffff;
-
-    box-shadow:
-      0 2px 5px rgba(15,23,42,0.025);
-  }
-
-  .sectionHeader {
-    display: flex;
-    align-items: center;
-
-    gap: 12px;
-
-    padding: 20px 23px;
-
-    border-bottom: 1px solid #edf0f4;
-
-    background:
-      linear-gradient(
-        to right,
-        #ffffff,
-        #fbfcfe
-      );
-  }
-
-  .sectionIcon {
-    width: 40px;
-    height: 40px;
-
-    flex-shrink: 0;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    border-radius: 11px;
-  }
-
-  .sectionIcon svg {
-    width: 18px;
-    height: 18px;
-  }
-
-  .sectionIcon.blue {
-    background: #eff6ff;
-    color: #2563eb;
-  }
-
-  .sectionIcon.purple {
-    background: #f5f3ff;
-    color: #7c3aed;
-  }
-
-  .sectionHeader h3 {
-    margin: 0;
-
-    color: #1e293b;
-
-    font-size: 15px;
-    line-height: 1.3;
-
-    font-weight: 700;
-  }
-
-  .sectionHeader p {
-    margin: 3px 0 0;
-
-    color: #94a3b8;
-
-    font-size: 11px;
-    font-weight: 500;
-  }
+const styles = StyleSheet.create({
 
-  .sectionBody {
-    padding: 24px;
-  }
-
-  /* =======================================================
-     FIELDS
-  ======================================================= */
-
-  .twoColumn {
-    display: grid;
-
-    grid-template-columns:
-      repeat(
-        2,
-        minmax(0, 1fr)
-      );
-
-    gap: 20px;
-  }
-
-  .field {
-    min-width: 0;
-  }
-
-  .field + .field {
-    margin-top: 0;
-  }
-
-  .twoColumn + .field {
-    margin-top: 20px;
-  }
-
-  .fieldLabelRow {
-    min-height: 18px;
-
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-
-    gap: 10px;
-
-    margin-bottom: 7px;
-  }
-
-  .fieldLabel {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-
-    color: #334155;
-
-    font-size: 12px;
-    line-height: 1.3;
-
-    font-weight: 650;
-  }
-
-  .fieldLabelIcon {
-    display: flex;
-
-    color: #94a3b8;
-  }
-
-  .fieldLabelIcon svg {
-    width: 13px;
-    height: 13px;
-  }
-
-  .requiredMark {
-    color: #ef4444;
-    font-weight: 700;
-  }
-
-  .fieldHint {
-    color: #a0aabd;
-
-    font-size: 10px;
-    font-weight: 500;
-  }
-
-  .input,
-  .textarea,
-  .selectButton {
-    width: 100%;
-
-    border: 1px solid #dfe5ed;
-    border-radius: 10px;
-
-    background: #ffffff;
-
-    color: #172033;
-
-    font-family: inherit;
-
-    transition:
-      border-color 0.18s ease,
-      box-shadow 0.18s ease,
-      background 0.18s ease;
-  }
-
-  .input {
-    height: 45px;
-
-    padding: 0 13px;
-
-    font-size: 13px;
-    font-weight: 500;
-  }
-
-  .textarea {
-    min-height: 100px;
-
-    padding: 12px 13px;
-
-    resize: vertical;
-
-    font-size: 13px;
-    line-height: 1.5;
-    font-weight: 500;
-  }
-
-  .input::placeholder,
-  .textarea::placeholder {
-    color: #b0b9c7;
-  }
-
-  .input:hover,
-  .textarea:hover,
-  .selectButton:hover {
-    border-color: #cbd5e1;
-  }
-
-  .input:focus,
-  .textarea:focus,
-  .selectButton:focus {
-    outline: none;
-
-    border-color: #2563eb;
-
-    box-shadow:
-      0 0 0 3px rgba(37,99,235,0.09);
-  }
-
-  .inputError {
-    border-color: #ef4444 !important;
-  }
-
-  .inputError:focus {
-    box-shadow:
-      0 0 0 3px rgba(239,68,68,0.09) !important;
-  }
-
-  .fieldError {
-    display: flex;
-    align-items: center;
-    gap: 4px;
+  // =======================================================
+  // PAGE
+  // =======================================================
 
-    margin-top: 6px;
+  container: {
+    flex: 1,
 
-    color: #dc2626;
+    backgroundColor:
+      BACKGROUND_COLOR,
+  },
 
-    font-size: 10px;
-    font-weight: 500;
-  }
-
-  .fieldError svg {
-    width: 12px;
-    height: 12px;
-  }
+  listContent: {
+    paddingBottom: 35,
+  },
 
-  /* =======================================================
-     SELECT
-  ======================================================= */
+  columnWrapper: {
+    paddingHorizontal: 20,
 
-  .selectButton {
-    height: 45px;
+    justifyContent:
+      'space-between',
 
-    padding: 0 13px;
+    marginBottom: 12,
+  },
 
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-
-    text-align: left;
-
-    cursor: pointer;
-
-    font-size: 13px;
-    font-weight: 500;
-  }
+  // =======================================================
+  // HEADER
+  // =======================================================
 
-  .selectButton svg {
-    width: 16px;
-    height: 16px;
+  header: {
+    paddingHorizontal: 20,
 
-    color: #64748b;
-  }
+    paddingTop: 10,
+    paddingBottom: 24,
 
-  /* =======================================================
-     STATUS
-  ======================================================= */
+    borderBottomLeftRadius: 25,
+    borderBottomRightRadius: 25,
 
-  .statusCard {
-    margin-top: 23px;
+    shadowColor: '#000',
 
-    padding: 15px 16px;
+    shadowOffset: {
+      width: 0,
+      height: 5,
+    },
 
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+    shadowOpacity: 0.12,
 
-    gap: 20px;
+    shadowRadius: 12,
 
-    border: 1px solid #e5eaf1;
-    border-radius: 12px;
+    elevation: 5,
+  },
 
-    background: #f9fafc;
-  }
+  headerTop: {
+    flexDirection: 'row',
 
-  .statusLeft {
-    min-width: 0;
+    alignItems: 'center',
+  },
 
-    display: flex;
-    align-items: center;
+  backIconButton: {
+    width: 39,
+    height: 39,
 
-    gap: 11px;
-  }
+    alignItems: 'center',
+    justifyContent:
+      'center',
 
-  .statusIcon {
-    width: 38px;
-    height: 38px;
+    borderRadius: 11,
 
-    flex-shrink: 0;
+    backgroundColor:
+      'rgba(255,255,255,0.13)',
 
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    borderWidth: 1,
 
-    border-radius: 10px;
-  }
+    borderColor:
+      'rgba(255,255,255,0.18)',
+  },
 
-  .statusIcon svg {
-    width: 17px;
-    height: 17px;
-  }
+  headerBreadcrumb: {
+    flex: 1,
 
-  .statusActive {
-    background: #ecfdf5;
-    color: #10b981;
-  }
+    marginLeft: 11,
+  },
 
-  .statusInactive {
-    background: #f1f5f9;
-    color: #64748b;
-  }
+  headerSmallText: {
+    color:
+      'rgba(255,255,255,0.60)',
 
-  .statusLeft > div:last-child {
-    min-width: 0;
+    fontSize: 8,
 
-    display: flex;
-    flex-direction: column;
-  }
+    fontWeight: '700',
 
-  .statusTitle {
-    color: #334155;
+    letterSpacing: 1,
+  },
 
-    font-size: 12px;
-    font-weight: 700;
-  }
+  headerBreadcrumbTitle: {
+    marginTop: 2,
 
-  .statusDescription {
-    margin-top: 3px;
+    color: '#FFFFFF',
 
-    color: #94a3b8;
+    fontSize: 12,
 
-    font-size: 10px;
-    line-height: 1.4;
+    fontWeight: '600',
+  },
 
-    font-weight: 500;
-  }
+  headerGridButton: {
+    width: 39,
+    height: 39,
 
-  .statusRight {
-    flex-shrink: 0;
+    alignItems: 'center',
+    justifyContent:
+      'center',
 
-    display: flex;
-    align-items: center;
+    borderRadius: 11,
 
-    gap: 10px;
-  }
+    backgroundColor:
+      'rgba(255,255,255,0.13)',
 
-  .statusLabel {
-    min-width: 48px;
+    borderWidth: 1,
 
-    text-align: right;
+    borderColor:
+      'rgba(255,255,255,0.18)',
+  },
 
-    font-size: 11px;
-    font-weight: 700;
-  }
+  // =======================================================
+  // MODULE HERO
+  // =======================================================
 
-  .activeLabel {
-    color: #059669;
-  }
+  moduleHero: {
+    marginTop: 23,
 
-  .inactiveLabel {
-    color: #64748b;
-  }
+    flexDirection: 'row',
 
-  /* =======================================================
-     SWITCH
-  ======================================================= */
+    alignItems: 'center',
+  },
 
-  .statusSwitch {
-    all: unset;
+  moduleHeroIcon: {
+    width: 66,
+    height: 66,
 
-    position: relative;
+    alignItems: 'center',
+    justifyContent:
+      'center',
 
-    width: 43px;
-    height: 24px;
+    borderRadius: 18,
 
-    flex-shrink: 0;
+    borderWidth: 1,
 
-    border-radius: 999px;
+    borderColor:
+      'rgba(255,255,255,0.20)',
+  },
 
-    background: #cbd5e1;
+  moduleEmoji: {
+    position: 'absolute',
 
-    cursor: pointer;
+    fontSize: 0,
+  },
 
-    transition:
-      background 0.2s ease;
-  }
+  moduleHeroText: {
+    flex: 1,
 
-  .statusSwitch.active {
-    background: #2563eb;
-  }
+    marginLeft: 15,
+  },
 
-  .switchThumb {
-    position: absolute;
+  moduleHeroTitle: {
+    color: '#FFFFFF',
 
-    top: 4px;
-    left: 4px;
+    fontSize: 25,
 
-    width: 16px;
-    height: 16px;
+    lineHeight: 30,
 
-    border-radius: 50%;
+    fontWeight: '700',
 
-    background: #ffffff;
+    letterSpacing: -0.3,
+  },
 
-    box-shadow:
-      0 1px 3px rgba(15,23,42,0.2);
+  moduleHeroSubtitle: {
+    marginTop: 5,
 
-    transition:
-      transform 0.2s ease;
-  }
+    color:
+      'rgba(255,255,255,0.70)',
 
-  .statusSwitch.active .switchThumb {
-    transform: translateX(19px);
-  }
+    fontSize: 10,
 
-  /* =======================================================
-     ACTIONS
-  ======================================================= */
+    lineHeight: 15,
 
-  .formActions {
-    display: flex;
-    justify-content: flex-end;
-    align-items: center;
+    fontWeight: '500',
+  },
 
-    gap: 10px;
+  // =======================================================
+  // SUMMARY
+  // =======================================================
 
-    padding-top: 4px;
-  }
+  summaryRow: {
+    marginHorizontal: 20,
 
-  .cancelButton,
-  .createButton {
-    min-height: 43px;
+    marginTop: 22,
 
-    padding: 0 17px;
+    marginBottom: 14,
 
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    flexDirection: 'row',
 
-    gap: 7px;
+    alignItems: 'center',
 
-    border-radius: 10px;
+    justifyContent:
+      'space-between',
+  },
 
-    font-family: inherit;
+  summaryText: {
+    flex: 1,
+  },
 
-    font-size: 12px;
-    font-weight: 650;
+  summaryTitle: {
+    color: TEXT_PRIMARY,
 
-    cursor: pointer;
+    fontSize: 18,
 
-    transition:
-      transform 0.18s ease,
-      box-shadow 0.18s ease,
-      background 0.18s ease;
-  }
+    fontWeight: '700',
+  },
 
-  .cancelButton {
-    border: 1px solid #dfe5ed;
+  summarySubtitle: {
+    marginTop: 3,
 
-    background: #ffffff;
+    color: TEXT_SECONDARY,
 
-    color: #475569;
-  }
+    fontSize: 10,
 
-  .cancelButton:hover:not(:disabled) {
-    background: #f8fafc;
-    transform: translateY(-1px);
-  }
+    fontWeight: '500',
+  },
 
-  .createButton {
-    min-width: 170px;
+  countBadge: {
+    flexDirection: 'row',
 
-    border: none;
+    alignItems: 'center',
 
-    background:
-      linear-gradient(
-        135deg,
-        #2563eb,
-        #1d4ed8
-      );
+    paddingHorizontal: 10,
 
-    color: #ffffff;
+    paddingVertical: 7,
 
-    box-shadow:
-      0 5px 13px rgba(37,99,235,0.18);
-  }
+    borderRadius: 9,
 
-  .createButton:hover:not(:disabled) {
-    transform: translateY(-1px);
+    borderWidth: 1,
+  },
 
-    box-shadow:
-      0 8px 18px rgba(37,99,235,0.23);
-  }
+  countNumber: {
+    fontSize: 14,
 
-  .cancelButton:disabled,
-  .createButton:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-  }
+    fontWeight: '700',
+  },
 
-  .createButton svg,
-  .cancelButton svg {
-    width: 15px;
-    height: 15px;
-  }
+  countLabel: {
+    marginLeft: 4,
 
-  .buttonSpinner {
-    animation: spin 0.8s linear infinite;
-  }
+    fontSize: 9,
 
-  /* =======================================================
-     MODAL
-  ======================================================= */
+    fontWeight: '600',
+  },
 
-  .modalOverlay {
-    position: fixed;
+  // =======================================================
+  // FEATURE CARD
+  // =======================================================
 
-    inset: 0;
+  featureCard: {
+    minHeight: 157,
 
-    z-index: 100;
+    padding: 17,
 
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    position: 'relative',
 
-    padding: 20px;
+    overflow: 'hidden',
 
-    background: rgba(15,23,42,0.42);
+    borderRadius: 16,
 
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
-  }
+    backgroundColor:
+      CARD_BACKGROUND,
 
-  .timezoneModal {
-    width: min(480px, 100%);
+    borderWidth: 1,
 
-    max-height: min(650px, calc(100vh - 40px));
+    borderColor:
+      BORDER_COLOR,
 
-    display: flex;
-    flex-direction: column;
+    shadowColor: '#000',
 
-    overflow: hidden;
+    shadowOffset: {
+      width: 0,
+      height: 3,
+    },
 
-    border: 1px solid rgba(255,255,255,0.8);
-    border-radius: 18px;
+    shadowOpacity: 0.045,
 
-    background: #ffffff;
+    shadowRadius: 8,
 
-    box-shadow:
-      0 25px 60px rgba(15,23,42,0.22);
-  }
+    elevation: 2,
+  },
 
-  .modalHeader {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+  cardAccent: {
+    position: 'absolute',
 
-    gap: 15px;
+    top: 0,
 
-    padding: 18px 20px;
+    left: 0,
 
-    border-bottom: 1px solid #edf0f4;
-  }
+    right: 0,
 
-  .modalTitleGroup {
-    display: flex;
-    align-items: center;
-    gap: 11px;
+    height: 3,
+  },
 
-    min-width: 0;
-  }
+  // =======================================================
+  // NUMBER
+  // =======================================================
 
-  .modalIcon {
-    width: 40px;
-    height: 40px;
+  cardNumber: {
+    position: 'absolute',
 
-    flex-shrink: 0;
+    top: 15,
 
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    right: 15,
 
-    border-radius: 11px;
+    color: '#CBD5E1',
 
-    background: #eff6ff;
-    color: #2563eb;
-  }
+    fontSize: 9,
 
-  .modalIcon svg {
-    width: 18px;
-    height: 18px;
-  }
+    fontWeight: '800',
 
-  .modalHeader h3 {
-    margin: 0;
+    letterSpacing: 0.5,
+  },
 
-    color: #1e293b;
+  // =======================================================
+  // ICON
+  // =======================================================
 
-    font-size: 15px;
-    font-weight: 700;
-  }
+  featureIcon: {
+    width: 48,
+    height: 48,
 
-  .modalHeader p {
-    margin: 3px 0 0;
+    alignItems: 'center',
+    justifyContent:
+      'center',
 
-    color: #94a3b8;
+    borderRadius: 13,
+  },
 
-    font-size: 10px;
-    font-weight: 500;
-  }
+  // =======================================================
+  // CONTENT
+  // =======================================================
 
-  .modalClose {
-    all: unset;
+  featureContent: {
+    marginTop: 15,
 
-    width: 34px;
-    height: 34px;
+    paddingRight: 28,
+  },
 
-    flex-shrink: 0;
+  featureLabel: {
+    color: TEXT_PRIMARY,
 
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    fontSize: 14,
 
-    border-radius: 9px;
+    lineHeight: 18,
 
-    color: #64748b;
+    fontWeight: '700',
+  },
 
-    cursor: pointer;
+  featureDescription: {
+    marginTop: 4,
 
-    transition:
-      background 0.18s ease,
-      color 0.18s ease;
-  }
+    color: TEXT_SECONDARY,
 
-  .modalClose:hover {
-    background: #f1f5f9;
-    color: #1e293b;
-  }
+    fontSize: 9,
 
-  .modalClose svg {
-    width: 18px;
-    height: 18px;
-  }
+    lineHeight: 13,
 
-  /* =======================================================
-     CURRENT TIMEZONE
-  ======================================================= */
+    fontWeight: '500',
+  },
 
-  .currentTimezone {
-    margin: 15px 18px 8px;
+  // =======================================================
+  // ARROW
+  // =======================================================
 
-    padding: 12px 13px;
+  featureArrow: {
+    position: 'absolute',
 
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+    right: 14,
 
-    border-radius: 10px;
+    bottom: 14,
 
-    background: #f8fafc;
-  }
+    width: 28,
+    height: 28,
 
-  .currentTimezone span {
-    color: #94a3b8;
+    alignItems: 'center',
+    justifyContent:
+      'center',
 
-    font-size: 9px;
-    font-weight: 600;
-  }
+    borderRadius: 8,
+  },
 
-  .currentTimezone strong {
-    color: #2563eb;
+  // =======================================================
+  // EMPTY STATE
+  // =======================================================
 
-    font-size: 12px;
-    font-weight: 700;
-  }
+  emptyScreen: {
+    flex: 1,
 
-  /* =======================================================
-     TIMEZONE LIST
-  ======================================================= */
+    alignItems: 'center',
 
-  .timezoneList {
-    overflow-y: auto;
+    justifyContent:
+      'center',
 
-    padding: 7px 10px 12px;
-  }
+    paddingHorizontal: 30,
+  },
 
-  .timezoneOption {
-    width: 100%;
+  emptyIcon: {
+    width: 72,
+    height: 72,
 
-    min-height: 48px;
+    alignItems: 'center',
+    justifyContent:
+      'center',
 
-    padding: 8px 9px;
+    borderRadius: 20,
+  },
 
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+  emptyTitle: {
+    marginTop: 20,
 
-    border: 1px solid transparent;
-    border-radius: 9px;
+    color: TEXT_PRIMARY,
 
-    background: transparent;
+    fontSize: 21,
 
-    color: #334155;
+    fontWeight: '700',
+  },
 
-    cursor: pointer;
+  emptyDescription: {
+    maxWidth: 330,
 
-    font-family: inherit;
+    marginTop: 8,
 
-    text-align: left;
+    color: TEXT_SECONDARY,
 
-    transition:
-      background 0.16s ease,
-      border-color 0.16s ease;
-  }
+    fontSize: 12,
 
-  .timezoneOption:hover {
-    background: #f8fafc;
-  }
+    lineHeight: 19,
 
-  .timezoneOption.selected {
-    border-color: #dbeafe;
+    textAlign: 'center',
+  },
 
-    background: #eff6ff;
-  }
+  backButton: {
+    marginTop: 23,
 
-  .timezoneOptionLeft {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    minHeight: 42,
 
-    min-width: 0;
-  }
+    paddingHorizontal: 17,
 
-  .timezoneOptionLeft > span {
-    overflow: hidden;
+    flexDirection: 'row',
 
-    color: #334155;
+    alignItems: 'center',
 
-    font-size: 12px;
-    font-weight: 550;
+    justifyContent:
+      'center',
 
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+    borderRadius: 10,
 
-  .timezoneOption.selected
-    .timezoneOptionLeft > span {
-    color: #2563eb;
-    font-weight: 700;
-  }
+    gap: 7,
+  },
 
-  .timezoneRadio {
-    width: 20px;
-    height: 20px;
+  backButtonText: {
+    color: '#FFFFFF',
 
-    flex-shrink: 0;
+    fontSize: 12,
 
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    fontWeight: '700',
+  },
+});// apps/prayantra-b2b/src/navigation/navigationService.ts
+import { CommonActions, createNavigationContainerRef } from '@react-navigation/native';
+import { RootStackParamList } from './index';
+import { useUserAuthStore } from '../store/userAuthStore';
 
-    border: 1.5px solid #cbd5e1;
-    border-radius: 50%;
+export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
-    background: #ffffff;
-  }
+let pendingReset = false;
 
-  .timezoneRadio svg {
-    width: 12px;
-    height: 12px;
+export function onNavigationReady() {
+  if (pendingReset && navigationRef.isReady()) {
+    pendingReset = false;
+    resetToAuthScreen();
   }
-
-  .radioSelected {
-    border-color: #2563eb;
-
-    background: #2563eb;
+}
 
-    color: #ffffff;
+export function resetToAuthScreen() {
+  if (!navigationRef.isReady()) {
+    pendingReset = true;
+    return;
   }
 
-  .selectedText {
-    color: #2563eb;
+  const { savedUserId, savedPhone, savedHasMpin } = useUserAuthStore.getState();
 
-    font-size: 9px;
-    font-weight: 700;
-  }
-
-  /* =======================================================
-     RESPONSIVE
-  ======================================================= */
-
-  @media (max-width: 700px) {
-    .headerInner,
-    .main {
-      width: calc(100% - 28px);
-    }
-
-    .headerInner {
-      min-height: 100px;
-    }
-
-    .headerIcon {
-      width: 48px;
-      height: 48px;
-    }
-
-    .headerText h1 {
-      font-size: 23px;
-    }
-
-    .pageIntro {
-      align-items: flex-start;
-      flex-direction: column;
-    }
-
-    .twoColumn {
-      grid-template-columns: 1fr;
-      gap: 20px;
-    }
-
-    .twoColumn + .field {
-      margin-top: 20px;
-    }
-  }
+  let routeName: keyof RootStackParamList = 'PhoneInput';
+  let params: any = undefined;
 
-  @media (max-width: 520px) {
-    .headerInner,
-    .main {
-      width: calc(100% - 24px);
-    }
-
-    .headerInner {
-      gap: 10px;
-    }
-
-    .backButton {
-      width: 37px;
-      height: 37px;
-    }
-
-    .headerIcon {
-      width: 44px;
-      height: 44px;
-      border-radius: 12px;
-    }
-
-    .headerIcon svg {
-      width: 21px;
-      height: 21px;
-    }
-
-    .breadcrumb {
-      display: none;
-    }
-
-    .headerText h1 {
-      font-size: 20px;
-    }
-
-    .headerText p {
-      font-size: 10px;
-    }
-
-    .main {
-      padding-top: 25px;
-    }
-
-    .sectionHeader {
-      padding: 17px;
-    }
-
-    .sectionBody {
-      padding: 18px;
-    }
-
-    .statusCard {
-      align-items: flex-start;
-      flex-direction: column;
-    }
-
-    .statusRight {
-      width: 100%;
-      justify-content: space-between;
-    }
-
-    .formActions {
-      flex-direction: column-reverse;
-    }
-
-    .cancelButton,
-    .createButton {
-      width: 100%;
-    }
-
-    .modalOverlay {
-      align-items: flex-end;
-      padding: 0;
-    }
-
-    .timezoneModal {
-      width: 100%;
-      max-height: 78vh;
-
-      border-radius: 18px 18px 0 0;
-    }
+  if (savedUserId && savedPhone && savedHasMpin === true) {
+    routeName = 'MPINVerification';
+    params = { phone: savedPhone, userId: savedUserId };
   }
 
-  @keyframes spin {
-    from {
-      transform: rotate(0deg);
-    }
-
-    to {
-      transform: rotate(360deg);
-    }
-  }
-`;
+  navigationRef.dispatch(
+    CommonActions.reset({
+      index: 0,
+      routes: [{ name: routeName, params }],
+    })
+  );
+}

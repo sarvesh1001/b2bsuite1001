@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "prayantra-biometrics",
+    "slug": "prayantra-biometrics",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.savi1001.prayantrabiometrics",
+      "deploymentTarget": "16.4" 
+
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.savi1001.prayantrabiometrics"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}

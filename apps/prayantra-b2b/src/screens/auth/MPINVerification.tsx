@@ -146,6 +146,7 @@ export default function MPINVerificationScreen() {
     clearSavedUserId,
     login,
     companyId: storeCompanyId,
+    bootstrapLocations,
   } = useUserAuthStore();
 
   // =======================================================
@@ -529,6 +530,9 @@ export default function MPINVerificationScreen() {
 
         clearPendingMpinLogin();
 
+        // -------------------------------------------------
+        // 1. Store tokens + user + company
+        // -------------------------------------------------
         login(
           tokens.access_token,
           tokens.refresh_token,
@@ -538,17 +542,57 @@ export default function MPINVerificationScreen() {
           permissions
         );
 
-        navigation.dispatch(
-          CommonActions.reset({
-            index: 0,
+        // -------------------------------------------------
+        // 2. Bootstrap accessible locations from /me/locations
+        //    (GET is exempt from X-Location-ID)
+        // -------------------------------------------------
+        let needsSelection = false;
 
-            routes: [
-              {
-                name: 'Main',
-              },
-            ],
-          })
-        );
+        try {
+          const { needsSelection: flag } =
+            await bootstrapLocations(company_id);
+
+          needsSelection = flag;
+
+          console.log(
+            '📍 [MPINVerification] bootstrapLocations ->',
+            { needsSelection }
+          );
+        } catch (locErr) {
+          // Never block login on a location bootstrap failure.
+          console.warn(
+            '⚠️ [MPINVerification] bootstrapLocations failed:',
+            locErr
+          );
+        }
+
+        // -------------------------------------------------
+        // 3. Route: picker when multiple locations & non-primary scope
+        // -------------------------------------------------
+        if (needsSelection) {
+          navigation.dispatch(
+            CommonActions.reset({
+              index: 0,
+              routes: [
+                {
+                  name: 'LocationSelection',
+                  params: { nextRoute: 'Main' },
+                },
+              ],
+            })
+          );
+        } else {
+          navigation.dispatch(
+            CommonActions.reset({
+              index: 0,
+              routes: [
+                {
+                  name: 'Main',
+                },
+              ],
+            })
+          );
+        }
 
         return;
       }
@@ -1623,13 +1667,10 @@ const styles = StyleSheet.create({
   },
 
   changePhoneText: {
-    color: TEXT_SECONDARY,
-
-    fontSize: 11,
-
-    fontWeight: '600',
+    color: PRIMARY_COLOR,        // was: TEXT_SECONDARY
+    fontSize: 12,                // was: 11
+    fontWeight: '700',           // was: '600'
   },
-
   // =======================================================
   // FOOTER
   // =======================================================
