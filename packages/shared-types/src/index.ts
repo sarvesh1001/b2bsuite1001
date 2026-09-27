@@ -12,6 +12,9 @@ export * from './device'
 export * from './chat'
 export * from './location';
 export * from './costCenter';
+export * from './user';
+export * from './hr';
+export * from './job';       // 👈 NEW
 
 // ---------- User ----------
 export const UserSchema = z.object({

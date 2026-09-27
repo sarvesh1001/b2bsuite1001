@@ -55,7 +55,15 @@ import {
   createPosition,
   getRootDepartments,
   listWorkCenters,
+  listLocations,
 } from '@b2b/api-client';
+
+import {
+  Job,
+} from '@b2b/shared-types';
+
+// 👇 Reusable job selector
+import JobPicker from '../../../components/JobPicker';
 
 import {
   useUserAuthStore,
@@ -84,13 +92,23 @@ import {
 // =========================================================
 
 const schema = z.object({
-  title: z
+  job_id: z
     .string()
-    .min(1, 'Position title is required'),
+    .min(1, 'Job is required'),
+
+  title_override: z
+    .string()
+    .nullable()
+    .optional(),
 
   department_id: z
     .string()
     .min(1, 'Department is required'),
+
+  location_id: z
+    .string()
+    .nullable()
+    .optional(),
 
   work_center_code: z
     .string()
@@ -98,12 +116,6 @@ const schema = z.object({
     .optional(),
 
   is_open: z.boolean(),
-
-  is_schedulable: z.boolean(),
-
-  attendance_required: z.boolean(),
-
-  overtime_allowed: z.boolean(),
 });
 
 type FormData = z.infer<typeof schema>;
@@ -120,6 +132,12 @@ type DepartmentItem = {
 type WorkCenterItem = {
   work_center_code: string;
   name: string;
+};
+
+type LocationItem = {
+  location_id: string;
+  location_code: string;
+  location_name: string;
 };
 
 type NavigationProp =
@@ -168,6 +186,16 @@ export default function CreatePositionScreen() {
   ] = useState<WorkCenterItem[]>([]);
 
   const [
+    locations,
+    setLocations,
+  ] = useState<LocationItem[]>([]);
+
+  const [
+    selectedJob,
+    setSelectedJob,
+  ] = useState<Job | null>(null);
+
+  const [
     modalVisible,
     setModalVisible,
   ] = useState(false);
@@ -176,7 +204,7 @@ export default function CreatePositionScreen() {
     modalType,
     setModalType,
   ] = useState<
-    'department' | 'workCenter'
+    'department' | 'workCenter' | 'location'
   >('department');
 
   // =======================================================
@@ -196,19 +224,17 @@ export default function CreatePositionScreen() {
       zodResolver(schema),
 
     defaultValues: {
-      title: '',
+      job_id: '',
+
+      title_override: null,
 
       department_id: '',
+
+      location_id: null,
 
       work_center_code: null,
 
       is_open: true,
-
-      is_schedulable: true,
-
-      attendance_required: true,
-
-      overtime_allowed: false,
     },
   });
 
@@ -217,6 +243,9 @@ export default function CreatePositionScreen() {
 
   const selectedWorkCenter =
     watch('work_center_code');
+
+  const selectedLocation =
+    watch('location_id');
 
   // =======================================================
   // FETCH OPTIONS
@@ -237,9 +266,14 @@ export default function CreatePositionScreen() {
         try {
           setLoadingOptions(true);
 
+          // listLocations has signature (companyId, page?, limit?)
+          // — NOT (companyId, deviceId, accessToken).
+          // It reads the auth context internally via axiosInstance
+          // interceptors.
           const [
             deptRes,
             wcRes,
+            locRes,
           ] = await Promise.all([
             getRootDepartments(
               companyId,
@@ -256,6 +290,8 @@ export default function CreatePositionScreen() {
               },
               accessToken
             ),
+
+            listLocations(companyId, 1, 200),
           ]);
 
           setDepartments(
@@ -265,6 +301,15 @@ export default function CreatePositionScreen() {
           setWorkCenters(
             wcRes.data || []
           );
+
+          // listLocations returns the UNWRAPPED payload. It may be
+          // an array directly, or an object with a `locations` key.
+          const locData: any = locRes;
+          setLocations(
+            Array.isArray(locData)
+              ? locData
+              : locData?.locations ?? []
+          );
         } catch (error) {
           console.error(
             'Failed to load options:',
@@ -273,7 +318,7 @@ export default function CreatePositionScreen() {
 
           Alert.alert(
             'Unable to load',
-            'Departments and work centers could not be loaded.'
+            'Departments, work centers, and locations could not be loaded.'
           );
         } finally {
           setLoadingOptions(false);
@@ -303,7 +348,6 @@ export default function CreatePositionScreen() {
         'Authentication Error',
         'Your session information is missing. Please log in again.'
       );
-
       return;
     }
 
@@ -311,14 +355,17 @@ export default function CreatePositionScreen() {
 
     try {
       const payload = {
-        ...data,
-
-        company_id:
-          companyId,
-
+        department_id: data.department_id,
+        job_id: data.job_id,
+        location_id: data.location_id ?? undefined,
+        title_override:
+          data.title_override &&
+          data.title_override.trim()
+            ? data.title_override.trim()
+            : undefined,
+        is_open: data.is_open,
         work_center_code:
-          data.work_center_code ??
-          undefined,
+          data.work_center_code ?? undefined,
       };
 
       await createPosition(
@@ -328,14 +375,19 @@ export default function CreatePositionScreen() {
         accessToken
       );
 
+      const displayName =
+        data.title_override &&
+        data.title_override.trim()
+          ? data.title_override.trim()
+          : selectedJob?.job_title ?? 'New position';
+
       Alert.alert(
         'Position Created',
-        `"${data.title}" has been created successfully.`,
+        `"${displayName}" has been created successfully.`,
         [
           {
             text: 'Done',
-            onPress: () =>
-              navigation.goBack(),
+            onPress: () => navigation.goBack(),
           },
         ]
       );
@@ -346,8 +398,7 @@ export default function CreatePositionScreen() {
       );
 
       const message =
-        error?.response?.data
-          ?.message ||
+        error?.response?.data?.message ||
         error?.message ||
         'Unable to create the position. Please try again.';
 
@@ -365,9 +416,7 @@ export default function CreatePositionScreen() {
   // =======================================================
 
   const openPicker = (
-    type:
-      | 'department'
-      | 'workCenter'
+    type: 'department' | 'workCenter' | 'location'
   ) => {
     setModalType(type);
     setModalVisible(true);
@@ -377,28 +426,19 @@ export default function CreatePositionScreen() {
     setModalVisible(false);
   };
 
-  const selectItem = (
-    value: string
-  ) => {
-    if (
-      modalType ===
-      'department'
-    ) {
-      setValue(
-        'department_id',
-        value,
-        {
-          shouldValidate: true,
-        }
-      );
+  const selectItem = (value: string) => {
+    if (modalType === 'department') {
+      setValue('department_id', value, {
+        shouldValidate: true,
+      });
+    } else if (modalType === 'workCenter') {
+      setValue('work_center_code', value, {
+        shouldValidate: true,
+      });
     } else {
-      setValue(
-        'work_center_code',
-        value,
-        {
-          shouldValidate: true,
-        }
-      );
+      setValue('location_id', value, {
+        shouldValidate: true,
+      });
     }
 
     closePicker();
@@ -408,39 +448,30 @@ export default function CreatePositionScreen() {
   // LABEL HELPERS
   // =======================================================
 
-  const getDepartmentLabel = (
-    id: string
-  ) => {
-    const department =
-      departments.find(
-        (item) =>
-          item.department_id === id
-      );
-
+  const getDepartmentLabel = (id: string) => {
+    const department = departments.find(
+      (item) => item.department_id === id
+    );
     return (
       department?.department_name ||
       'Select Department'
     );
   };
 
-  const getWorkCenterLabel = (
-    code: string | null
-  ) => {
-    if (!code) {
-      return 'Select Work Center';
-    }
-
-    const workCenter =
-      workCenters.find(
-        (item) =>
-          item.work_center_code ===
-          code
-      );
-
-    return (
-      workCenter?.name ||
-      'Select Work Center'
+  const getWorkCenterLabel = (code: string | null) => {
+    if (!code) return 'Select Work Center';
+    const workCenter = workCenters.find(
+      (item) => item.work_center_code === code
     );
+    return workCenter?.name || 'Select Work Center';
+  };
+
+  const getLocationLabel = (id: string | null) => {
+    if (!id) return 'Select Location';
+    const location = locations.find(
+      (item) => item.location_id === id
+    );
+    return location?.location_name || 'Select Location';
   };
 
   // =======================================================
@@ -450,52 +481,31 @@ export default function CreatePositionScreen() {
   if (loadingOptions) {
     return (
       <SafeAreaView
-        edges={[
-          'top',
-          'bottom',
-        ]}
+        edges={['top', 'bottom']}
         style={styles.container}
       >
         <View style={styles.loadingScreen}>
-
-          <View
-            style={styles.loadingIcon}
-          >
+          <View style={styles.loadingIcon}>
             <Icon
               name="briefcase-plus-outline"
               size={30}
-              color={
-                PRIMARY_COLOR
-              }
+              color={PRIMARY_COLOR}
             />
           </View>
 
           <ActivityIndicator
             size="small"
-            color={
-              PRIMARY_COLOR
-            }
-            style={
-              styles.loadingSpinner
-            }
+            color={PRIMARY_COLOR}
+            style={styles.loadingSpinner}
           />
 
-          <Text
-            style={
-              styles.loadingTitle
-            }
-          >
+          <Text style={styles.loadingTitle}>
             Preparing Position Form
           </Text>
 
-          <Text
-            style={
-              styles.loadingSubtitle
-            }
-          >
-            Loading departments and work centers...
+          <Text style={styles.loadingSubtitle}>
+            Loading departments, locations, and work centers...
           </Text>
-
         </View>
       </SafeAreaView>
     );
@@ -507,94 +517,45 @@ export default function CreatePositionScreen() {
 
   return (
     <SafeAreaView
-      edges={[
-        'top',
-        'bottom',
-      ]}
+      edges={['top', 'bottom']}
       style={styles.container}
     >
-
       {/* =================================================
           HEADER
       ================================================= */}
 
       <LinearGradient
-        colors={
-          GRADIENT_COLORS
-        }
-        start={
-          GRADIENT_START
-        }
-        end={
-          GRADIENT_END
-        }
-        style={[
-          styles.header,
-          {
-            paddingTop:
-              10,
-          },
-        ]}
+        colors={GRADIENT_COLORS}
+        start={GRADIENT_START}
+        end={GRADIENT_END}
+        style={[styles.header, { paddingTop: 10 }]}
       >
-
-        <View
-          style={
-            styles.headerRow
-          }
-        >
-
+        <View style={styles.headerRow}>
           <TouchableOpacity
-            style={
-              styles.backButton
-            }
-            onPress={() =>
-              navigation.goBack()
-            }
+            style={styles.backButton}
+            onPress={() => navigation.goBack()}
             activeOpacity={0.8}
           >
-            <Icon
-              name="arrow-left"
-              size={21}
-              color="#FFFFFF"
-            />
+            <Icon name="arrow-left" size={21} color="#FFFFFF" />
           </TouchableOpacity>
 
-          <View
-            style={
-              styles.headerTitleContainer
-            }
-          >
-            <Text
-              style={
-                styles.headerTitle
-              }
-            >
+          <View style={styles.headerTitleContainer}>
+            <Text style={styles.headerTitle}>
               Create Position
             </Text>
-
-            <Text
-              style={
-                styles.headerSubtitle
-              }
-            >
-              Add a new organizational position
+            <Text style={styles.headerSubtitle}>
+              Add a new seat from a job
             </Text>
           </View>
 
-          <View
-            style={
-              styles.headerIcon
-            }
-          >
+          <View style={styles.headerIcon}>
             <Icon
               name="briefcase-plus-outline"
               size={22}
               color="#FFFFFF"
             />
           </View>
-
         </View>
-
       </LinearGradient>
 
       {/* =================================================
@@ -602,175 +563,157 @@ export default function CreatePositionScreen() {
       ================================================= */}
 
       <ScrollView
-        style={
-          styles.scrollView
-        }
+        style={styles.scrollView}
         contentContainerStyle={[
           styles.scrollContent,
-          {
-            paddingBottom:
-              insets.bottom +
-              35,
-          },
+          { paddingBottom: insets.bottom + 35 },
         ]}
         keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={
-          false
-        }
+        showsVerticalScrollIndicator={false}
       >
-
         {/* =================================================
             BASIC INFORMATION
         ================================================= */}
 
-        <View
-          style={
-            styles.sectionHeader
-          }
-        >
-          <View
-            style={
-              styles.sectionIcon
-            }
-          >
+        <View style={styles.sectionHeader}>
+          <View style={styles.sectionIcon}>
             <Icon
               name="information-outline"
               size={19}
-              color={
-                PRIMARY_COLOR
-              }
+              color={PRIMARY_COLOR}
             />
           </View>
 
           <View>
-            <Text
-              style={
-                styles.sectionTitle
-              }
-            >
+            <Text style={styles.sectionTitle}>
               Basic Information
             </Text>
-
-            <Text
-              style={
-                styles.sectionSubtitle
-              }
-            >
-              Define the position and where it belongs
+            <Text style={styles.sectionSubtitle}>
+              Pick the job this seat implements
             </Text>
           </View>
         </View>
 
-        <View
-          style={
-            styles.formCard
-          }
-        >
+        <View style={styles.formCard}>
+          {/* Job picker */}
 
-          {/* Position title */}
+          <View>
+            <Text style={styles.fieldLabel}>
+              Job
+              <Text style={styles.required}> *</Text>
+            </Text>
 
-          <Controller
-            control={control}
-            name="title"
-            render={({
-              field: {
-                onChange,
-                onBlur,
-                value,
-              },
-            }) => (
-              <View>
-                <Text
-                  style={
-                    styles.fieldLabel
-                  }
-                >
-                  Position Title
-                  <Text
-                    style={
-                      styles.required
-                    }
-                  >
-                    {' '}*
-                  </Text>
+            <Controller
+              control={control}
+              name="job_id"
+              render={({ field: { value } }) => (
+                <JobPicker
+                  companyId={companyId!}
+                  deviceId={deviceId!}
+                  accessToken={accessToken!}
+                  value={value || null}
+                  onChange={(job: Job | null) => {
+                    setSelectedJob(job);
+                    setValue(
+                      'job_id',
+                      job?.job_id ?? '',
+                      { shouldValidate: true }
+                    );
+                  }}
+                  placeholder="Select a job"
+                />
+              )}
+            />
+
+            {errors.job_id && (
+              <Text style={styles.errorText}>
+                {errors.job_id.message}
+              </Text>
+            )}
+
+            {selectedJob && (
+              <View style={styles.jobFlags}>
+                <JobFlag
+                  icon="calendar-check-outline"
+                  label="Schedulable"
+                  active={selectedJob.is_schedulable}
+                />
+                <JobFlag
+                  icon="clock-check-outline"
+                  label="Attendance"
+                  active={selectedJob.attendance_required}
+                />
+                <JobFlag
+                  icon="clock-plus-outline"
+                  label="Overtime"
+                  active={selectedJob.overtime_allowed}
+                />
+              </View>
+            )}
+          </View>
+
+          {/* Title override */}
+
+          <View style={styles.fieldSpacing}>
+            <View style={styles.labelRow}>
+              <Text style={styles.fieldLabel}>
+                Title Override
+              </Text>
+
+              <View style={styles.optionalBadge}>
+                <Text style={styles.optionalText}>
+                  OPTIONAL
                 </Text>
+              </View>
+            </View>
 
-                <View
-                  style={[
-                    styles.inputContainer,
-                    errors.title &&
-                      styles.inputError,
-                  ]}
-                >
-
+            <Controller
+              control={control}
+              name="title_override"
+              render={({
+                field: { onChange, onBlur, value },
+              }) => (
+                <View style={styles.inputContainer}>
                   <Icon
-                    name="briefcase-outline"
+                    name="tag-outline"
                     size={20}
-                    color={
-                      errors.title
-                        ? ERROR_COLOR
-                        : TEXT_SECONDARY
-                    }
+                    color={TEXT_SECONDARY}
                   />
 
                   <TextInput
-                    value={value}
-                    onChangeText={
-                      onChange
+                    value={value ?? ''}
+                    onChangeText={(t) =>
+                      onChange(t || null)
                     }
                     onBlur={onBlur}
-                    placeholder="e.g. Senior Software Engineer"
-                    placeholderTextColor="#9AA4B2"
-                    style={
-                      styles.textInput
+                    placeholder={
+                      selectedJob
+                        ? `Defaults to: ${selectedJob.job_title}`
+                        : 'Leave blank to use the job title'
                     }
+                    placeholderTextColor="#9AA4B2"
+                    style={styles.textInput}
                     underlineColor="transparent"
                     activeUnderlineColor="transparent"
-                    selectionColor={
-                      PRIMARY_COLOR
-                    }
+                    selectionColor={PRIMARY_COLOR}
                     autoCapitalize="words"
                   />
-
                 </View>
+              )}
+            />
 
-                {errors.title && (
-                  <Text
-                    style={
-                      styles.errorText
-                    }
-                  >
-                    {
-                      errors.title
-                        .message
-                    }
-                  </Text>
-                )}
-              </View>
-            )}
-          />
+            <Text style={styles.helperText}>
+              Shown to HR and the employee. Leave empty to use
+              the job's title.
+            </Text>
+          </View>
 
           {/* Department */}
 
-          <View
-            style={
-              styles.fieldSpacing
-            }
-          >
-
-            <Text
-              style={
-                styles.fieldLabel
-              }
-            >
+          <View style={styles.fieldSpacing}>
+            <Text style={styles.fieldLabel}>
               Department
-              <Text
-                style={
-                  styles.required
-                }
-              >
-                {' '}*
-              </Text>
+              <Text style={styles.required}> *</Text>
             </Text>
 
             <TouchableOpacity
@@ -779,31 +722,15 @@ export default function CreatePositionScreen() {
                 errors.department_id &&
                   styles.selectError,
               ]}
-              onPress={() =>
-                openPicker(
-                  'department'
-                )
-              }
+              onPress={() => openPicker('department')}
               activeOpacity={0.8}
             >
-
-              <View
-                style={
-                  styles.selectLeft
-                }
-              >
-
-                <View
-                  style={
-                    styles.selectIcon
-                  }
-                >
+              <View style={styles.selectLeft}>
+                <View style={styles.selectIcon}>
                   <Icon
                     name="domain"
                     size={19}
-                    color={
-                      PRIMARY_COLOR
-                    }
+                    color={PRIMARY_COLOR}
                   />
                 </View>
 
@@ -811,107 +738,114 @@ export default function CreatePositionScreen() {
                   numberOfLines={1}
                   style={[
                     styles.selectText,
-                    !selectedDepartment &&
-                      styles.placeholder,
+                    !selectedDepartment && styles.placeholder,
                   ]}
                 >
                   {selectedDepartment
-                    ? getDepartmentLabel(
-                        selectedDepartment
-                      )
+                    ? getDepartmentLabel(selectedDepartment)
                     : 'Select Department'}
                 </Text>
-
               </View>
 
               <Icon
                 name="chevron-down"
                 size={22}
-                color={
-                  TEXT_SECONDARY
-                }
+                color={TEXT_SECONDARY}
               />
-
             </TouchableOpacity>
 
             {errors.department_id && (
-              <Text
-                style={
-                  styles.errorText
-                }
-              >
-                {
-                  errors.department_id
-                    .message
-                }
+              <Text style={styles.errorText}>
+                {errors.department_id.message}
               </Text>
             )}
+          </View>
 
+          {/* Location */}
+
+          <View style={styles.fieldSpacing}>
+            <View style={styles.labelRow}>
+              <Text style={styles.fieldLabel}>
+                Location
+              </Text>
+
+              <View style={styles.optionalBadge}>
+                <Text style={styles.optionalText}>
+                  OPTIONAL
+                </Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={styles.selectButton}
+              onPress={() => openPicker('location')}
+              activeOpacity={0.8}
+            >
+              <View style={styles.selectLeft}>
+                <View
+                  style={[
+                    styles.selectIcon,
+                    { backgroundColor: '#F1F5F9' },
+                  ]}
+                >
+                  <Icon
+                    name="map-marker-outline"
+                    size={19}
+                    color="#64748B"
+                  />
+                </View>
+
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    styles.selectText,
+                    !selectedLocation && styles.placeholder,
+                  ]}
+                >
+                  {selectedLocation
+                    ? getLocationLabel(selectedLocation)
+                    : 'Select Location'}
+                </Text>
+              </View>
+
+              <Icon
+                name="chevron-down"
+                size={22}
+                color={TEXT_SECONDARY}
+              />
+            </TouchableOpacity>
+
+            <Text style={styles.helperText}>
+              The site this seat belongs to. Leave empty for a
+              company-wide seat.
+            </Text>
           </View>
 
           {/* Work Center */}
 
-          <View
-            style={
-              styles.fieldSpacing
-            }
-          >
-
-            <View
-              style={
-                styles.labelRow
-              }
-            >
-
-              <Text
-                style={
-                  styles.fieldLabel
-                }
-              >
+          <View style={styles.fieldSpacing}>
+            <View style={styles.labelRow}>
+              <Text style={styles.fieldLabel}>
                 Work Center
               </Text>
 
-              <View
-                style={
-                  styles.optionalBadge
-                }
-              >
-                <Text
-                  style={
-                    styles.optionalText
-                  }
-                >
+              <View style={styles.optionalBadge}>
+                <Text style={styles.optionalText}>
                   OPTIONAL
                 </Text>
               </View>
-
             </View>
 
             <TouchableOpacity
-              style={
-                styles.selectButton
-              }
-              onPress={() =>
-                openPicker(
-                  'workCenter'
-                )
-              }
+              style={styles.selectButton}
+              onPress={() => openPicker('workCenter')}
               activeOpacity={0.8}
             >
-
-              <View
-                style={
-                  styles.selectLeft
-                }
-              >
-
+              <View style={styles.selectLeft}>
                 <View
                   style={[
                     styles.selectIcon,
-                    {
-                      backgroundColor:
-                        '#F1F5F9',
-                    },
+                    { backgroundColor: '#F1F5F9' },
                   ]}
                 >
                   <Icon
@@ -925,31 +859,22 @@ export default function CreatePositionScreen() {
                   numberOfLines={1}
                   style={[
                     styles.selectText,
-                    !selectedWorkCenter &&
-                      styles.placeholder,
+                    !selectedWorkCenter && styles.placeholder,
                   ]}
                 >
                   {selectedWorkCenter
-                    ? getWorkCenterLabel(
-                        selectedWorkCenter
-                      )
+                    ? getWorkCenterLabel(selectedWorkCenter)
                     : 'Select Work Center'}
                 </Text>
-
               </View>
 
               <Icon
                 name="chevron-down"
                 size={22}
-                color={
-                  TEXT_SECONDARY
-                }
+                color={TEXT_SECONDARY}
               />
-
             </TouchableOpacity>
-
           </View>
-
         </View>
 
         {/* =================================================
@@ -959,63 +884,32 @@ export default function CreatePositionScreen() {
         <View
           style={[
             styles.sectionHeader,
-            {
-              marginTop: 27,
-            },
+            { marginTop: 27 },
           ]}
         >
-
-          <View
-            style={
-              styles.sectionIcon
-            }
-          >
+          <View style={styles.sectionIcon}>
             <Icon
               name="tune-variant"
               size={19}
-              color={
-                PRIMARY_COLOR
-              }
+              color={PRIMARY_COLOR}
             />
           </View>
 
           <View>
-            <Text
-              style={
-                styles.sectionTitle
-              }
-            >
+            <Text style={styles.sectionTitle}>
               Position Settings
             </Text>
-
-            <Text
-              style={
-                styles.sectionSubtitle
-              }
-            >
-              Configure how this position operates
+            <Text style={styles.sectionSubtitle}>
+              Only the seat-level toggle remains here
             </Text>
           </View>
-
         </View>
 
-        <View
-          style={
-            styles.settingsCard
-          }
-        >
-
-          {/* Open Position */}
-
+        <View style={styles.settingsCard}>
           <Controller
             control={control}
             name="is_open"
-            render={({
-              field: {
-                onChange,
-                value,
-              },
-            }) => (
+            render={({ field: { onChange, value } }) => (
               <SettingRow
                 icon="briefcase-check-outline"
                 title="Open Position"
@@ -1026,116 +920,66 @@ export default function CreatePositionScreen() {
             )}
           />
 
-          <View
-            style={
-              styles.settingDivider
-            }
-          />
+          {selectedJob && (
+            <>
+              <View style={styles.settingDivider} />
 
-          {/* Schedulable */}
+              <View style={styles.derivedRow}>
+                <View style={styles.settingLeft}>
+                  <View
+                    style={[
+                      styles.settingIcon,
+                      { backgroundColor: '#F1F5F9' },
+                    ]}
+                  >
+                    <Icon
+                      name="information-outline"
+                      size={18}
+                      color="#64748B"
+                    />
+                  </View>
 
-          <Controller
-            control={control}
-            name="is_schedulable"
-            render={({
-              field: {
-                onChange,
-                value,
-              },
-            }) => (
-              <SettingRow
-                icon="calendar-clock-outline"
-                title="Schedulable"
-                description="Allow shifts and schedules to be assigned"
-                value={value}
-                onChange={onChange}
-              />
-            )}
-          />
+                  <View style={styles.settingText}>
+                    <Text style={styles.settingTitle}>
+                      Inherited from "{selectedJob.job_title}"
+                    </Text>
 
-          <View
-            style={
-              styles.settingDivider
-            }
-          />
-
-          {/* Attendance */}
-
-          <Controller
-            control={control}
-            name="attendance_required"
-            render={({
-              field: {
-                onChange,
-                value,
-              },
-            }) => (
-              <SettingRow
-                icon="clock-check-outline"
-                title="Attendance Required"
-                description="Require attendance tracking for this position"
-                value={value}
-                onChange={onChange}
-              />
-            )}
-          />
-
-          <View
-            style={
-              styles.settingDivider
-            }
-          />
-
-          {/* Overtime */}
-
-          <Controller
-            control={control}
-            name="overtime_allowed"
-            render={({
-              field: {
-                onChange,
-                value,
-              },
-            }) => (
-              <SettingRow
-                icon="clock-plus-outline"
-                title="Overtime Allowed"
-                description="Allow overtime hours for this position"
-                value={value}
-                onChange={onChange}
-              />
-            )}
-          />
-
+                    <Text style={styles.settingDescription}>
+                      {[
+                        selectedJob.is_schedulable
+                          ? 'Schedulable'
+                          : 'Not schedulable',
+                        selectedJob.attendance_required
+                          ? 'Attendance required'
+                          : 'No attendance',
+                        selectedJob.overtime_allowed
+                          ? 'Overtime allowed'
+                          : 'No overtime',
+                      ].join(' · ')}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            </>
+          )}
         </View>
 
         {/* =================================================
             INFO
         ================================================= */}
 
-        <View
-          style={
-            styles.infoBox
-          }
-        >
-
+        <View style={styles.infoBox}>
           <Icon
             name="information-outline"
             size={18}
-            color={
-              PRIMARY_COLOR
-            }
+            color={PRIMARY_COLOR}
           />
 
-          <Text
-            style={
-              styles.infoText
-            }
-          >
-            You can change these settings later from the
-            position management screen.
+          <Text style={styles.infoText}>
+            Attendance, overtime, and scheduling are defined on
+            the job. Edit the job to change them for every seat
+            that uses it.
           </Text>
-
         </View>
 
         {/* =================================================
@@ -1143,43 +987,24 @@ export default function CreatePositionScreen() {
         ================================================= */}
 
         <TouchableOpacity
-          onPress={handleSubmit(
-            onSubmit
-          )}
+          onPress={handleSubmit(onSubmit)}
           disabled={loading}
           activeOpacity={0.85}
-          style={
-            styles.submitButtonWrapper
-          }
+          style={styles.submitButtonWrapper}
         >
-
           <LinearGradient
-            colors={
-              GRADIENT_COLORS
-            }
-            start={
-              GRADIENT_START
-            }
-            end={
-              GRADIENT_END
-            }
-            style={
-              styles.submitButton
-            }
+            colors={GRADIENT_COLORS}
+            start={GRADIENT_START}
+            end={GRADIENT_END}
+            style={styles.submitButton}
           >
-
             {loading ? (
               <>
                 <ActivityIndicator
                   size="small"
                   color="#FFFFFF"
                 />
-
-                <Text
-                  style={
-                    styles.submitButtonText
-                  }
-                >
+                <Text style={styles.submitButtonText}>
                   Creating Position...
                 </Text>
               </>
@@ -1190,15 +1015,9 @@ export default function CreatePositionScreen() {
                   size={21}
                   color="#FFFFFF"
                 />
-
-                <Text
-                  style={
-                    styles.submitButtonText
-                  }
-                >
+                <Text style={styles.submitButtonText}>
                   Create Position
                 </Text>
-
                 <Icon
                   name="arrow-right"
                   size={19}
@@ -1206,11 +1025,8 @@ export default function CreatePositionScreen() {
                 />
               </>
             )}
-
           </LinearGradient>
-
         </TouchableOpacity>
-
       </ScrollView>
 
       {/* =================================================
@@ -1221,122 +1037,61 @@ export default function CreatePositionScreen() {
         visible={modalVisible}
         transparent
         animationType="slide"
-        onRequestClose={
-          closePicker
-        }
+        onRequestClose={closePicker}
       >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHandle} />
 
-        <View
-          style={
-            styles.modalOverlay
-          }
-        >
-
-          <View
-            style={
-              styles.modalContent
-            }
-          >
-
-            {/* Handle */}
-
-            <View
-              style={
-                styles.modalHandle
-              }
-            />
-
-            {/* Header */}
-
-            <View
-              style={
-                styles.modalHeader
-              }
-            >
-
+            <View style={styles.modalHeader}>
               <View>
-                <Text
-                  style={
-                    styles.modalTitle
-                  }
-                >
-                  {modalType ===
-                  'department'
+                <Text style={styles.modalTitle}>
+                  {modalType === 'department'
                     ? 'Select Department'
+                    : modalType === 'location'
+                    ? 'Select Location'
                     : 'Select Work Center'}
                 </Text>
 
-                <Text
-                  style={
-                    styles.modalSubtitle
-                  }
-                >
+                <Text style={styles.modalSubtitle}>
                   Choose one option to continue
                 </Text>
               </View>
 
               <TouchableOpacity
-                onPress={
-                  closePicker
-                }
-                style={
-                  styles.modalClose
-                }
+                onPress={closePicker}
+                style={styles.modalClose}
               >
                 <Icon
                   name="close"
                   size={20}
-                  color={
-                    TEXT_SECONDARY
-                  }
+                  color={TEXT_SECONDARY}
                 />
               </TouchableOpacity>
-
             </View>
 
-            {/* List */}
-
-            {modalType ===
-            'department' ? (
+            {/* Department list */}
+            {modalType === 'department' && (
               <FlatList
-                data={
-                  departments
-                }
-                keyExtractor={(
-                  item
-                ) =>
-                  item.department_id
-                }
-                showsVerticalScrollIndicator={
-                  false
-                }
-                contentContainerStyle={
-                  styles.modalList
-                }
-                renderItem={({
-                  item,
-                }) => {
+                data={departments}
+                keyExtractor={(item) => item.department_id}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.modalList}
+                renderItem={({ item }) => {
                   const selected =
-                    selectedDepartment ===
-                    item.department_id;
+                    selectedDepartment === item.department_id;
 
                   return (
                     <TouchableOpacity
                       style={[
                         styles.modalItem,
-                        selected &&
-                          styles.modalItemSelected,
+                        selected && styles.modalItemSelected,
                       ]}
                       onPress={() =>
-                        selectItem(
-                          item.department_id
-                        )
+                        selectItem(item.department_id)
                       }
-                      activeOpacity={
-                        0.75
-                      }
+                      activeOpacity={0.75}
                     >
-
                       <View
                         style={[
                           styles.modalItemIcon,
@@ -1362,65 +1117,126 @@ export default function CreatePositionScreen() {
                             styles.modalItemTextSelected,
                         ]}
                       >
-                        {
-                          item.department_name
-                        }
+                        {item.department_name}
                       </Text>
 
                       {selected && (
                         <Icon
                           name="check-circle"
                           size={21}
-                          color={
-                            PRIMARY_COLOR
-                          }
+                          color={PRIMARY_COLOR}
                         />
                       )}
-
                     </TouchableOpacity>
                   );
                 }}
               />
-            ) : (
+            )}
+
+            {/* Location list */}
+            {modalType === 'location' && (
               <FlatList
-                data={
-                  workCenters
+                data={locations}
+                keyExtractor={(item) => item.location_id}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.modalList}
+                ListEmptyComponent={
+                  <View style={styles.modalEmpty}>
+                    <Icon
+                      name="map-marker-off-outline"
+                      size={28}
+                      color="#CBD5E1"
+                    />
+                    <Text style={styles.modalEmptyText}>
+                      No locations available
+                    </Text>
+                  </View>
                 }
-                keyExtractor={(
-                  item
-                ) =>
-                  item.work_center_code
-                }
-                showsVerticalScrollIndicator={
-                  false
-                }
-                contentContainerStyle={
-                  styles.modalList
-                }
-                renderItem={({
-                  item,
-                }) => {
+                renderItem={({ item }) => {
                   const selected =
-                    selectedWorkCenter ===
-                    item.work_center_code;
+                    selectedLocation === item.location_id;
 
                   return (
                     <TouchableOpacity
                       style={[
                         styles.modalItem,
-                        selected &&
-                          styles.modalItemSelected,
+                        selected && styles.modalItemSelected,
                       ]}
                       onPress={() =>
-                        selectItem(
-                          item.work_center_code
-                        )
+                        selectItem(item.location_id)
                       }
-                      activeOpacity={
-                        0.75
-                      }
+                      activeOpacity={0.75}
                     >
+                      <View
+                        style={[
+                          styles.modalItemIcon,
+                          selected &&
+                            styles.modalItemIconSelected,
+                        ]}
+                      >
+                        <Icon
+                          name="map-marker-outline"
+                          size={18}
+                          color={
+                            selected
+                              ? PRIMARY_COLOR
+                              : '#64748B'
+                          }
+                        />
+                      </View>
 
+                      <View style={styles.modalItemInfo}>
+                        <Text
+                          style={[
+                            styles.modalItemText,
+                            selected &&
+                              styles.modalItemTextSelected,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {item.location_name}
+                        </Text>
+
+                        <Text style={styles.modalItemCode}>
+                          {item.location_code}
+                        </Text>
+                      </View>
+
+                      {selected && (
+                        <Icon
+                          name="check-circle"
+                          size={21}
+                          color={PRIMARY_COLOR}
+                        />
+                      )}
+                    </TouchableOpacity>
+                  );
+                }}
+              />
+            )}
+
+            {/* Work center list */}
+            {modalType === 'workCenter' && (
+              <FlatList
+                data={workCenters}
+                keyExtractor={(item) => item.work_center_code}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.modalList}
+                renderItem={({ item }) => {
+                  const selected =
+                    selectedWorkCenter === item.work_center_code;
+
+                  return (
+                    <TouchableOpacity
+                      style={[
+                        styles.modalItem,
+                        selected && styles.modalItemSelected,
+                      ]}
+                      onPress={() =>
+                        selectItem(item.work_center_code)
+                      }
+                      activeOpacity={0.75}
+                    >
                       <View
                         style={[
                           styles.modalItemIcon,
@@ -1439,62 +1255,78 @@ export default function CreatePositionScreen() {
                         />
                       </View>
 
-                      <View
-                        style={
-                          styles.modalItemInfo
-                        }
-                      >
-
+                      <View style={styles.modalItemInfo}>
                         <Text
                           style={[
                             styles.modalItemText,
                             selected &&
                               styles.modalItemTextSelected,
                           ]}
-                          numberOfLines={
-                            1
-                          }
+                          numberOfLines={1}
                         >
-                          {
-                            item.name
-                          }
+                          {item.name}
                         </Text>
 
-                        <Text
-                          style={
-                            styles.modalItemCode
-                          }
-                        >
-                          {
-                            item.work_center_code
-                          }
+                        <Text style={styles.modalItemCode}>
+                          {item.work_center_code}
                         </Text>
-
                       </View>
 
                       {selected && (
                         <Icon
                           name="check-circle"
                           size={21}
-                          color={
-                            PRIMARY_COLOR
-                          }
+                          color={PRIMARY_COLOR}
                         />
                       )}
-
                     </TouchableOpacity>
                   );
                 }}
               />
             )}
-
           </View>
-
         </View>
-
       </Modal>
-
     </SafeAreaView>
+  );
+}
+
+// =========================================================
+// JOB FLAG CHIP
+// =========================================================
+
+function JobFlag({
+  icon,
+  label,
+  active,
+}: {
+  icon: string;
+  label: string;
+  active: boolean;
+}) {
+  return (
+    <View
+      style={[
+        styles.jobFlag,
+        active ? styles.jobFlagActive : styles.jobFlagInactive,
+      ]}
+    >
+      <Icon
+        name={icon}
+        size={11}
+        color={active ? PRIMARY_COLOR : '#94A3B8'}
+      />
+      <Text
+        style={[
+          styles.jobFlagText,
+          active
+            ? styles.jobFlagTextActive
+            : styles.jobFlagTextInactive,
+        ]}
+      >
+        {label}
+      </Text>
+    </View>
   );
 }
 
@@ -1507,9 +1339,7 @@ type SettingRowProps = {
   title: string;
   description: string;
   value: boolean;
-  onChange: (
-    value: boolean
-  ) => void;
+  onChange: (value: boolean) => void;
 };
 
 function SettingRow({
@@ -1520,75 +1350,37 @@ function SettingRow({
   onChange,
 }: SettingRowProps) {
   return (
-    <View
-      style={
-        styles.settingRow
-      }
-    >
-
-      <View
-        style={
-          styles.settingLeft
-        }
-      >
-
+    <View style={styles.settingRow}>
+      <View style={styles.settingLeft}>
         <View
           style={[
             styles.settingIcon,
-            value &&
-              styles.settingIconActive,
+            value && styles.settingIconActive,
           ]}
         >
           <Icon
             name={icon}
             size={20}
-            color={
-              value
-                ? PRIMARY_COLOR
-                : '#64748B'
-            }
+            color={value ? PRIMARY_COLOR : '#64748B'}
           />
         </View>
 
-        <View
-          style={
-            styles.settingText
-          }
-        >
-
-          <Text
-            style={
-              styles.settingTitle
-            }
-          >
+        <View style={styles.settingText}>
+          <Text style={styles.settingTitle}>
             {title}
           </Text>
-
-          <Text
-            style={
-              styles.settingDescription
-            }
-          >
+          <Text style={styles.settingDescription}>
             {description}
           </Text>
-
         </View>
-
       </View>
 
       <Switch
         value={value}
-        onValueChange={
-          onChange
-        }
-        color={
-          PRIMARY_COLOR
-        }
-        style={
-          styles.switch
-        }
+        onValueChange={onChange}
+        color={PRIMARY_COLOR}
+        style={styles.switch}
       />
-
     </View>
   );
 }
@@ -1597,811 +1389,500 @@ function SettingRow({
 // STYLES
 // =========================================================
 
-const styles =
-  StyleSheet.create({
-
-    // =====================================================
-    // PAGE
-    // =====================================================
-
-    container: {
-      flex: 1,
-      backgroundColor:
-        BACKGROUND_COLOR,
-    },
-
-    scrollView: {
-      flex: 1,
-    },
-
-    scrollContent: {
-      paddingHorizontal: 20,
-      paddingTop: 20,
-    },
-
-    // =====================================================
-    // HEADER
-    // =====================================================
-
-    header: {
-      paddingHorizontal: 20,
-      paddingBottom: 17,
-
-      borderBottomLeftRadius: 22,
-      borderBottomRightRadius: 22,
-
-      shadowColor: '#000',
-
-      shadowOffset: {
-        width: 0,
-        height: 4,
-      },
-
-      shadowOpacity: 0.12,
-      shadowRadius: 10,
-
-      elevation: 5,
-    },
-
-    headerRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-    },
-
-    backButton: {
-      width: 40,
-      height: 40,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 11,
-
-      backgroundColor:
-        'rgba(255,255,255,0.14)',
-
-      borderWidth: 1,
-
-      borderColor:
-        'rgba(255,255,255,0.18)',
-    },
-
-    headerTitleContainer: {
-      flex: 1,
-
-      marginLeft: 12,
-    },
-
-    headerTitle: {
-      color: '#FFFFFF',
-
-      fontSize: 19,
-
-      fontWeight: '700',
-    },
-
-    headerSubtitle: {
-      marginTop: 3,
-
-      color:
-        'rgba(255,255,255,0.68)',
-
-      fontSize: 9,
-
-      fontWeight: '500',
-    },
-
-    headerIcon: {
-      width: 40,
-      height: 40,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 11,
-
-      backgroundColor:
-        'rgba(255,255,255,0.12)',
-
-      borderWidth: 1,
-
-      borderColor:
-        'rgba(255,255,255,0.16)',
-    },
-
-    // =====================================================
-    // SECTION
-    // =====================================================
-
-    sectionHeader: {
-      flexDirection: 'row',
-      alignItems: 'center',
-
-      marginBottom: 13,
-    },
-
-    sectionIcon: {
-      width: 40,
-      height: 40,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 11,
-
-      backgroundColor:
-        `${PRIMARY_COLOR}12`,
-    },
-
-    sectionTitle: {
-      marginLeft: 10,
-
-      color: TEXT_PRIMARY,
-
-      fontSize: 16,
-
-      fontWeight: '700',
-    },
-
-    sectionSubtitle: {
-      marginLeft: 10,
-      marginTop: 3,
-
-      color: TEXT_SECONDARY,
-
-      fontSize: 9,
-
-      fontWeight: '500',
-    },
-
-    // =====================================================
-    // FORM CARD
-    // =====================================================
-
-    formCard: {
-      padding: 16,
-
-      borderRadius: 16,
-
-      backgroundColor:
-        CARD_BACKGROUND,
-
-      borderWidth: 1,
-
-      borderColor:
-        '#E5EAF0',
-
-      shadowColor: '#000',
-
-      shadowOffset: {
-        width: 0,
-        height: 2,
-      },
-
-      shadowOpacity: 0.035,
-
-      shadowRadius: 7,
-
-      elevation: 1,
-    },
-
-    // =====================================================
-    // LABELS
-    // =====================================================
-
-    fieldLabel: {
-      color: TEXT_PRIMARY,
-
-      fontSize: 12,
-
-      fontWeight: '600',
-
-      marginBottom: 7,
-    },
-
-    required: {
-      color: ERROR_COLOR,
-    },
-
-    labelRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-
-      marginBottom: 7,
-    },
-
-    optionalBadge: {
-      paddingHorizontal: 7,
-      paddingVertical: 4,
-
-      borderRadius: 5,
-
-      backgroundColor:
-        '#F1F5F9',
-    },
-
-    optionalText: {
-      color: '#64748B',
-
-      fontSize: 7,
-
-      fontWeight: '700',
-
-      letterSpacing: 0.4,
-    },
-
-    // =====================================================
-    // TEXT INPUT
-    // =====================================================
-
-    inputContainer: {
-      minHeight: 52,
-
-      flexDirection: 'row',
-      alignItems: 'center',
-
-      paddingHorizontal: 13,
-
-      borderWidth: 1,
-
-      borderColor:
-        BORDER_COLOR,
-
-      borderRadius: 11,
-
-      backgroundColor:
-        CARD_BACKGROUND,
-    },
-
-    inputError: {
-      borderColor:
-        ERROR_COLOR,
-    },
-
-    textInput: {
-      flex: 1,
-
-      height: 50,
-
-      marginLeft: 9,
-
-      paddingHorizontal: 0,
-
-      backgroundColor:
-        'transparent',
-
-      color: TEXT_PRIMARY,
-
-      fontSize: 14,
-    },
-
-    // =====================================================
-    // SELECT
-    // =====================================================
-
-    fieldSpacing: {
-      marginTop: 18,
-    },
-
-    selectButton: {
-      minHeight: 54,
-
-      flexDirection: 'row',
-
-      alignItems: 'center',
-
-      justifyContent:
-        'space-between',
-
-      paddingHorizontal: 11,
-
-      borderWidth: 1,
-
-      borderColor:
-        BORDER_COLOR,
-
-      borderRadius: 11,
-
-      backgroundColor:
-        CARD_BACKGROUND,
-    },
-
-    selectError: {
-      borderColor:
-        ERROR_COLOR,
-    },
-
-    selectLeft: {
-      flex: 1,
-
-      flexDirection: 'row',
-
-      alignItems: 'center',
-
-      minWidth: 0,
-    },
-
-    selectIcon: {
-      width: 36,
-      height: 36,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 9,
-
-      backgroundColor:
-        `${PRIMARY_COLOR}12`,
-    },
-
-    selectText: {
-      flex: 1,
-
-      marginLeft: 10,
-
-      color: TEXT_PRIMARY,
-
-      fontSize: 13,
-
-      fontWeight: '500',
-    },
-
-    placeholder: {
-      color: '#9AA4B2',
-
-      fontWeight: '500',
-    },
-
-    errorText: {
-      marginTop: 5,
-      marginLeft: 3,
-
-      color: ERROR_COLOR,
-
-      fontSize: 10,
-
-      fontWeight: '500',
-    },
-
-    // =====================================================
-    // SETTINGS
-    // =====================================================
-
-    settingsCard: {
-      paddingHorizontal: 15,
-
-      borderRadius: 16,
-
-      backgroundColor:
-        CARD_BACKGROUND,
-
-      borderWidth: 1,
-
-      borderColor:
-        '#E5EAF0',
-
-      shadowColor: '#000',
-
-      shadowOffset: {
-        width: 0,
-        height: 2,
-      },
-
-      shadowOpacity: 0.035,
-
-      shadowRadius: 7,
-
-      elevation: 1,
-    },
-
-    settingRow: {
-      minHeight: 76,
-
-      flexDirection: 'row',
-
-      alignItems: 'center',
-
-      justifyContent:
-        'space-between',
-    },
-
-    settingLeft: {
-      flex: 1,
-
-      flexDirection: 'row',
-
-      alignItems: 'center',
-
-      minWidth: 0,
-    },
-
-    settingIcon: {
-      width: 40,
-      height: 40,
-
-      flexShrink: 0,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 11,
-
-      backgroundColor:
-        '#F1F5F9',
-    },
-
-    settingIconActive: {
-      backgroundColor:
-        `${PRIMARY_COLOR}12`,
-    },
-
-    settingText: {
-      flex: 1,
-
-      marginLeft: 10,
-
-      paddingRight: 8,
-    },
-
-    settingTitle: {
-      color: TEXT_PRIMARY,
-
-      fontSize: 13,
-
-      fontWeight: '600',
-    },
-
-    settingDescription: {
-      marginTop: 3,
-
-      color: TEXT_SECONDARY,
-
-      fontSize: 9,
-
-      lineHeight: 13,
-
-      fontWeight: '500',
-    },
-
-    switch: {
-      marginLeft: 5,
-    },
-
-    settingDivider: {
-      height: 1,
-
-      backgroundColor:
-        '#EDF0F4',
-    },
-
-    // =====================================================
-    // INFO
-    // =====================================================
-
-    infoBox: {
-      marginTop: 16,
-
-      padding: 12,
-
-      flexDirection: 'row',
-
-      alignItems: 'flex-start',
-
-      borderRadius: 11,
-
-      backgroundColor:
-        `${PRIMARY_COLOR}08`,
-
-      borderWidth: 1,
-
-      borderColor:
-        `${PRIMARY_COLOR}18`,
-    },
-
-    infoText: {
-      flex: 1,
-
-      marginLeft: 8,
-
-      color: '#64748B',
-
-      fontSize: 9,
-
-      lineHeight: 14,
-
-      fontWeight: '500',
-    },
-
-    // =====================================================
-    // SUBMIT
-    // =====================================================
-
-    submitButtonWrapper: {
-      marginTop: 20,
-
-      borderRadius: 13,
-
-      overflow: 'hidden',
-
-      shadowColor:
-        PRIMARY_COLOR,
-
-      shadowOffset: {
-        width: 0,
-        height: 5,
-      },
-
-      shadowOpacity: 0.2,
-
-      shadowRadius: 10,
-
-      elevation: 5,
-    },
-
-    submitButton: {
-      minHeight: 55,
-
-      paddingHorizontal: 17,
-
-      flexDirection: 'row',
-
-      alignItems: 'center',
-
-      justifyContent:
-        'center',
-
-      gap: 9,
-
-      borderRadius: 13,
-    },
-
-    submitButtonText: {
-      color: '#FFFFFF',
-
-      fontSize: 14,
-
-      fontWeight: '700',
-    },
-
-    // =====================================================
-    // LOADING
-    // =====================================================
-
-    loadingScreen: {
-      flex: 1,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      paddingHorizontal: 30,
-    },
-
-    loadingIcon: {
-      width: 70,
-      height: 70,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 19,
-
-      backgroundColor:
-        `${PRIMARY_COLOR}12`,
-    },
-
-    loadingSpinner: {
-      marginTop: 20,
-    },
-
-    loadingTitle: {
-      marginTop: 13,
-
-      color: TEXT_PRIMARY,
-
-      fontSize: 17,
-
-      fontWeight: '700',
-    },
-
-    loadingSubtitle: {
-      marginTop: 5,
-
-      color: TEXT_SECONDARY,
-
-      fontSize: 10,
-
-      textAlign: 'center',
-    },
-
-    // =====================================================
-    // MODAL
-    // =====================================================
-
-    modalOverlay: {
-      flex: 1,
-
-      justifyContent:
-        'flex-end',
-
-      backgroundColor:
-        'rgba(15,23,42,0.45)',
-    },
-
-    modalContent: {
-      maxHeight: '78%',
-
-      backgroundColor:
-        CARD_BACKGROUND,
-
-      borderTopLeftRadius: 24,
-
-      borderTopRightRadius: 24,
-
-      paddingBottom: 15,
-
-      shadowColor: '#000',
-
-      shadowOffset: {
-        width: 0,
-        height: -4,
-      },
-
-      shadowOpacity: 0.15,
-
-      shadowRadius: 14,
-
-      elevation: 12,
-    },
-
-    modalHandle: {
-      width: 38,
-      height: 4,
-
-      alignSelf: 'center',
-
-      marginTop: 9,
-      marginBottom: 4,
-
-      borderRadius: 2,
-
-      backgroundColor:
-        '#D7DCE3',
-    },
-
-    modalHeader: {
-      paddingHorizontal: 20,
-      paddingVertical: 15,
-
-      flexDirection: 'row',
-
-      alignItems: 'center',
-
-      justifyContent:
-        'space-between',
-
-      borderBottomWidth: 1,
-
-      borderBottomColor:
-        '#EDF0F4',
-    },
-
-    modalTitle: {
-      color: TEXT_PRIMARY,
-
-      fontSize: 17,
-
-      fontWeight: '700',
-    },
-
-    modalSubtitle: {
-      marginTop: 3,
-
-      color: TEXT_SECONDARY,
-
-      fontSize: 9,
-
-      fontWeight: '500',
-    },
-
-    modalClose: {
-      width: 36,
-      height: 36,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 10,
-
-      backgroundColor:
-        '#F1F5F9',
-    },
-
-    modalList: {
-      paddingHorizontal: 15,
-
-      paddingTop: 8,
-
-      paddingBottom: 15,
-    },
-
-    modalItem: {
-      minHeight: 58,
-
-      paddingHorizontal: 10,
-
-      flexDirection: 'row',
-
-      alignItems: 'center',
-
-      borderRadius: 11,
-
-      marginBottom: 5,
-    },
-
-    modalItemSelected: {
-      backgroundColor:
-        SELECTED_ITEM_BG ||
-        `${PRIMARY_COLOR}10`,
-    },
-
-    modalItemIcon: {
-      width: 38,
-      height: 38,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 10,
-
-      backgroundColor:
-        '#F1F5F9',
-    },
-
-    modalItemIconSelected: {
-      backgroundColor:
-        `${PRIMARY_COLOR}12`,
-    },
-
-    modalItemText: {
-      flex: 1,
-
-      marginLeft: 10,
-
-      color: TEXT_PRIMARY,
-
-      fontSize: 13,
-
-      fontWeight: '500',
-    },
-
-    modalItemTextSelected: {
-      color: PRIMARY_COLOR,
-
-      fontWeight: '700',
-    },
-
-    modalItemInfo: {
-      flex: 1,
-
-      marginLeft: 10,
-    },
-
-    modalItemInfoText: {
-      color: TEXT_PRIMARY,
-
-      fontSize: 13,
-
-      fontWeight: '500',
-    },
-
-    modalItemCode: {
-      marginTop: 3,
-
-      color: '#94A3B8',
-
-      fontSize: 9,
-
-      fontWeight: '500',
-    },
-  });
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: BACKGROUND_COLOR,
+  },
+
+  scrollView: { flex: 1 },
+
+  scrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 20,
+  },
+
+  // HEADER
+  header: {
+    paddingHorizontal: 20,
+    paddingBottom: 17,
+    borderBottomLeftRadius: 22,
+    borderBottomRightRadius: 22,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  backButton: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 11,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  headerTitleContainer: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  headerTitle: {
+    color: '#FFFFFF',
+    fontSize: 19,
+    fontWeight: '700',
+  },
+  headerSubtitle: {
+    marginTop: 3,
+    color: 'rgba(255,255,255,0.68)',
+    fontSize: 9,
+    fontWeight: '500',
+  },
+  headerIcon: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 11,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+  },
+
+  // SECTION
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 13,
+  },
+  sectionIcon: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 11,
+    backgroundColor: `${PRIMARY_COLOR}12`,
+  },
+  sectionTitle: {
+    marginLeft: 10,
+    color: TEXT_PRIMARY,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  sectionSubtitle: {
+    marginLeft: 10,
+    marginTop: 3,
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    fontWeight: '500',
+  },
+
+  // FORM CARD
+  formCard: {
+    padding: 16,
+    borderRadius: 16,
+    backgroundColor: CARD_BACKGROUND,
+    borderWidth: 1,
+    borderColor: '#E5EAF0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.035,
+    shadowRadius: 7,
+    elevation: 1,
+  },
+
+  // LABELS
+  fieldLabel: {
+    color: TEXT_PRIMARY,
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 7,
+  },
+  required: { color: ERROR_COLOR },
+  labelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 7,
+  },
+  optionalBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 5,
+    backgroundColor: '#F1F5F9',
+  },
+  optionalText: {
+    color: '#64748B',
+    fontSize: 7,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+  },
+
+  // TEXT INPUT
+  inputContainer: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 13,
+    borderWidth: 1,
+    borderColor: BORDER_COLOR,
+    borderRadius: 11,
+    backgroundColor: CARD_BACKGROUND,
+  },
+  inputError: { borderColor: ERROR_COLOR },
+  textInput: {
+    flex: 1,
+    height: 50,
+    marginLeft: 9,
+    paddingHorizontal: 0,
+    backgroundColor: 'transparent',
+    color: TEXT_PRIMARY,
+    fontSize: 14,
+  },
+
+  // SELECT
+  fieldSpacing: { marginTop: 18 },
+  selectButton: {
+    minHeight: 54,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 11,
+    borderWidth: 1,
+    borderColor: BORDER_COLOR,
+    borderRadius: 11,
+    backgroundColor: CARD_BACKGROUND,
+  },
+  selectError: { borderColor: ERROR_COLOR },
+  selectLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 0,
+  },
+  selectIcon: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 9,
+    backgroundColor: `${PRIMARY_COLOR}12`,
+  },
+  selectText: {
+    flex: 1,
+    marginLeft: 10,
+    color: TEXT_PRIMARY,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  placeholder: {
+    color: '#9AA4B2',
+    fontWeight: '500',
+  },
+  errorText: {
+    marginTop: 5,
+    marginLeft: 3,
+    color: ERROR_COLOR,
+    fontSize: 10,
+    fontWeight: '500',
+  },
+  helperText: {
+    marginTop: 5,
+    marginLeft: 3,
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    lineHeight: 13,
+    fontWeight: '500',
+  },
+
+  // JOB FLAGS PREVIEW
+  jobFlags: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 10,
+  },
+  jobFlag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  jobFlagActive: {
+    backgroundColor: `${PRIMARY_COLOR}08`,
+    borderColor: `${PRIMARY_COLOR}25`,
+  },
+  jobFlagInactive: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E2E8F0',
+  },
+  jobFlagText: {
+    fontSize: 9,
+    fontWeight: '600',
+  },
+  jobFlagTextActive: { color: PRIMARY_COLOR },
+  jobFlagTextInactive: { color: '#94A3B8' },
+
+  // SETTINGS
+  settingsCard: {
+    paddingHorizontal: 15,
+    borderRadius: 16,
+    backgroundColor: CARD_BACKGROUND,
+    borderWidth: 1,
+    borderColor: '#E5EAF0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.035,
+    shadowRadius: 7,
+    elevation: 1,
+  },
+  settingRow: {
+    minHeight: 76,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  settingLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 0,
+  },
+  settingIcon: {
+    width: 40,
+    height: 40,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 11,
+    backgroundColor: '#F1F5F9',
+  },
+  settingIconActive: {
+    backgroundColor: `${PRIMARY_COLOR}12`,
+  },
+  settingText: {
+    flex: 1,
+    marginLeft: 10,
+    paddingRight: 8,
+  },
+  settingTitle: {
+    color: TEXT_PRIMARY,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  settingDescription: {
+    marginTop: 3,
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    lineHeight: 13,
+    fontWeight: '500',
+  },
+  switch: { marginLeft: 5 },
+  settingDivider: {
+    height: 1,
+    backgroundColor: '#EDF0F4',
+  },
+  derivedRow: {
+    minHeight: 76,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+
+  // INFO
+  infoBox: {
+    marginTop: 16,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    borderRadius: 11,
+    backgroundColor: `${PRIMARY_COLOR}08`,
+    borderWidth: 1,
+    borderColor: `${PRIMARY_COLOR}18`,
+  },
+  infoText: {
+    flex: 1,
+    marginLeft: 8,
+    color: '#64748B',
+    fontSize: 9,
+    lineHeight: 14,
+    fontWeight: '500',
+  },
+
+  // SUBMIT
+  submitButtonWrapper: {
+    marginTop: 20,
+    borderRadius: 13,
+    overflow: 'hidden',
+    shadowColor: PRIMARY_COLOR,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  submitButton: {
+    minHeight: 55,
+    paddingHorizontal: 17,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 9,
+    borderRadius: 13,
+  },
+  submitButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+
+  // LOADING
+  loadingScreen: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 30,
+  },
+  loadingIcon: {
+    width: 70,
+    height: 70,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 19,
+    backgroundColor: `${PRIMARY_COLOR}12`,
+  },
+  loadingSpinner: { marginTop: 20 },
+  loadingTitle: {
+    marginTop: 13,
+    color: TEXT_PRIMARY,
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  loadingSubtitle: {
+    marginTop: 5,
+    color: TEXT_SECONDARY,
+    fontSize: 10,
+    textAlign: 'center',
+  },
+
+  // MODAL
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(15,23,42,0.45)',
+  },
+  modalContent: {
+    maxHeight: '78%',
+    backgroundColor: CARD_BACKGROUND,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingBottom: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 14,
+    elevation: 12,
+  },
+  modalHandle: {
+    width: 38,
+    height: 4,
+    alignSelf: 'center',
+    marginTop: 9,
+    marginBottom: 4,
+    borderRadius: 2,
+    backgroundColor: '#D7DCE3',
+  },
+  modalHeader: {
+    paddingHorizontal: 20,
+    paddingVertical: 15,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: 1,
+    borderBottomColor: '#EDF0F4',
+  },
+  modalTitle: {
+    color: TEXT_PRIMARY,
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  modalSubtitle: {
+    marginTop: 3,
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    fontWeight: '500',
+  },
+  modalClose: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    backgroundColor: '#F1F5F9',
+  },
+  modalList: {
+    paddingHorizontal: 15,
+    paddingTop: 8,
+    paddingBottom: 15,
+  },
+  modalItem: {
+    minHeight: 58,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 11,
+    marginBottom: 5,
+  },
+  modalItemSelected: {
+    backgroundColor: SELECTED_ITEM_BG || `${PRIMARY_COLOR}10`,
+  },
+  modalItemIcon: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    backgroundColor: '#F1F5F9',
+  },
+  modalItemIconSelected: {
+    backgroundColor: `${PRIMARY_COLOR}12`,
+  },
+  modalItemText: {
+    flex: 1,
+    marginLeft: 10,
+    color: TEXT_PRIMARY,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  modalItemTextSelected: {
+    color: PRIMARY_COLOR,
+    fontWeight: '700',
+  },
+  modalItemInfo: {
+    flex: 1,
+    marginLeft: 10,
+  },
+  modalItemCode: {
+    marginTop: 3,
+    color: '#94A3B8',
+    fontSize: 9,
+    fontWeight: '500',
+  },
+  modalEmpty: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 40,
+    gap: 8,
+  },
+  modalEmptyText: {
+    color: TEXT_SECONDARY,
+    fontSize: 12,
+    fontWeight: '500',
+  },
+});

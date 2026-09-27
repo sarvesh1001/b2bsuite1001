@@ -66,6 +66,27 @@ import {
 } from '../../../constants/colors';
 
 // =========================================================
+// HELPERS
+// =========================================================
+
+/**
+ * A position no longer carries its own `title`. Its display name is:
+ *   effective_title  ← computed by the backend as
+ *                       COALESCE(title_override, job_title)
+ *   job_title        ← fallback if effective_title is missing
+ *   title_override   ← fallback if job_title is missing
+ *   '—'              ← last resort
+ */
+function displayTitle(p: Position): string {
+  return (
+    p.effective_title ??
+    p.job_title ??
+    p.title_override ??
+    '—'
+  );
+}
+
+// =========================================================
 // TYPES
 // =========================================================
 
@@ -127,9 +148,7 @@ export default function PositionsListScreen() {
 
   const fetchPositions =
     useCallback(
-      async (
-        isRefresh = false
-      ) => {
+      async (isRefresh = false) => {
         if (
           !accessToken ||
           !companyId ||
@@ -190,7 +209,6 @@ export default function PositionsListScreen() {
   useFocusEffect(
     useCallback(() => {
       fetchPositions();
-
       return undefined;
     }, [fetchPositions])
   );
@@ -210,24 +228,41 @@ export default function PositionsListScreen() {
 
       return positions.filter(
         (position) => {
-          const title =
-            position.title
-              ?.toLowerCase() || '';
+          const title = displayTitle(
+            position
+          ).toLowerCase();
 
-          const department =
-            String(
-              position.department_id || ''
-            ).toLowerCase();
+          const jobTitle = (
+            position.job_title || ''
+          ).toLowerCase();
 
-          const workCenter =
-            String(
-              position.work_center_code || ''
-            ).toLowerCase();
+          const jobCode = (
+            position.job_code || ''
+          ).toLowerCase();
+
+          const department = (
+            position.department_name ||
+            position.department_id ||
+            ''
+          ).toLowerCase();
+
+          const workCenter = (
+            position.work_center_name ||
+            position.work_center_code ||
+            ''
+          ).toLowerCase();
+
+          const location = (
+            position.location_name || ''
+          ).toLowerCase();
 
           return (
             title.includes(query) ||
+            jobTitle.includes(query) ||
+            jobCode.includes(query) ||
             department.includes(query) ||
-            workCenter.includes(query)
+            workCenter.includes(query) ||
+            location.includes(query)
           );
         }
       );
@@ -244,7 +279,9 @@ export default function PositionsListScreen() {
     (position: Position) => {
       Alert.alert(
         'Delete Position',
-        `Are you sure you want to delete "${position.title}"?`,
+        `Are you sure you want to delete "${displayTitle(
+          position
+        )}"?`,
         [
           {
             text: 'Cancel',
@@ -318,10 +355,36 @@ export default function PositionsListScreen() {
       deletingId ===
       item.position_id;
 
+    const title = displayTitle(item);
+
+    // Prefer joined names; fall back to ids.
+    const departmentLabel =
+      item.department_name ||
+      item.department_id;
+
+    const workCenterLabel =
+      item.work_center_name ||
+      item.work_center_code;
+
+    const isSchedulable =
+      item.is_schedulable ?? false;
+
+    const attendanceRequired =
+      item.attendance_required ?? false;
+
     return (
       <TouchableOpacity
         activeOpacity={0.92}
         disabled={isDeleting}
+        onPress={() =>
+          navigation.navigate(
+            'EditPosition',
+            {
+              positionId:
+                item.position_id,
+            }
+          )
+        }
         style={styles.positionCard}
       >
         {/* Accent */}
@@ -361,37 +424,41 @@ export default function PositionsListScreen() {
               numberOfLines={1}
               style={styles.positionTitle}
             >
-              {item.title}
+              {title}
             </Text>
 
-            <View
-              style={
-                styles.positionMeta
-              }
-            >
-              <Icon
-                name="domain"
-                size={13}
-                color={TEXT_SECONDARY}
-              />
-
-              <Text
-                numberOfLines={1}
-                style={
-                  styles.positionMetaText
-                }
+            {/* Job subtitle (only if a job is linked) */}
+            {item.job_title ||
+            item.job_code ? (
+              <View
+                style={styles.positionMeta}
               >
-                Department
-              </Text>
-            </View>
+                <Icon
+                  name="briefcase-variant-outline"
+                  size={12}
+                  color={TEXT_SECONDARY}
+                />
+
+                <Text
+                  numberOfLines={1}
+                  style={
+                    styles.positionMetaText
+                  }
+                >
+                  {item.job_title ||
+                    item.job_code}
+                  {item.job_code
+                    ? ` · ${item.job_code}`
+                    : ''}
+                </Text>
+              </View>
+            ) : null}
 
           </View>
 
           {/* Actions */}
 
-          <View
-            style={styles.actions}
-          >
+          <View style={styles.actions}>
 
             <TouchableOpacity
               activeOpacity={0.75}
@@ -449,9 +516,7 @@ export default function PositionsListScreen() {
 
         <View style={styles.detailsRow}>
 
-          <View
-            style={styles.detailItem}
-          >
+          <View style={styles.detailItem}>
             <Icon
               name="office-building-outline"
               size={14}
@@ -462,11 +527,11 @@ export default function PositionsListScreen() {
               numberOfLines={1}
               style={styles.detailText}
             >
-              {item.department_id}
+              {departmentLabel}
             </Text>
           </View>
 
-          {item.work_center_code ? (
+          {workCenterLabel ? (
             <View
               style={styles.detailItem}
             >
@@ -480,18 +545,35 @@ export default function PositionsListScreen() {
                 numberOfLines={1}
                 style={styles.detailText}
               >
-                {item.work_center_code}
+                {workCenterLabel}
               </Text>
             </View>
           ) : null}
 
         </View>
 
+        {/* Location (optional row) */}
+
+        {item.location_name ? (
+          <View style={styles.locationRow}>
+            <Icon
+              name="map-marker-outline"
+              size={13}
+              color="#94A3B8"
+            />
+
+            <Text
+              numberOfLines={1}
+              style={styles.detailText}
+            >
+              {item.location_name}
+            </Text>
+          </View>
+        ) : null}
+
         {/* Status */}
 
-        <View
-          style={styles.statusRow}
-        >
+        <View style={styles.statusRow}>
 
           <StatusBadge
             label={
@@ -508,12 +590,12 @@ export default function PositionsListScreen() {
 
           <StatusBadge
             label={
-              item.is_schedulable
+              isSchedulable
                 ? 'Schedulable'
                 : 'Not Schedulable'
             }
             type={
-              item.is_schedulable
+              isSchedulable
                 ? 'success'
                 : 'neutral'
             }
@@ -521,12 +603,12 @@ export default function PositionsListScreen() {
 
           <StatusBadge
             label={
-              item.attendance_required
+              attendanceRequired
                 ? 'Attendance Required'
                 : 'No Attendance'
             }
             type={
-              item.attendance_required
+              attendanceRequired
                 ? 'success'
                 : 'neutral'
             }
@@ -542,322 +624,261 @@ export default function PositionsListScreen() {
   // HEADER
   // =======================================================
 
-  const ListHeader =
-    () => (
-      <>
-        {/* =================================================
-            HEADER
-        ================================================= */}
+  const ListHeader = () => (
+    <>
+      {/* =================================================
+          HEADER
+      ================================================= */}
 
-        <View
-          style={styles.header}
+      <View style={styles.header}>
+
+        <TouchableOpacity
+          activeOpacity={0.75}
+          onPress={() =>
+            navigation.goBack()
+          }
+          style={styles.backButton}
         >
-
-          {/* Back */}
-
-          <TouchableOpacity
-            activeOpacity={0.75}
-            onPress={() =>
-              navigation.goBack()
-            }
-            style={styles.backButton}
-          >
-            <Icon
-              name="arrow-left"
-              size={21}
-              color={TEXT_PRIMARY}
-            />
-          </TouchableOpacity>
-
-          {/* Title */}
-
-          <View
-            style={styles.headerTitleContainer}
-          >
-            <Text
-              style={styles.eyebrow}
-            >
-              ADMINISTRATION
-            </Text>
-
-            <Text
-              style={styles.headerTitle}
-            >
-              Positions
-            </Text>
-
-            <Text
-              style={styles.headerSubtitle}
-            >
-              Manage employee positions
-            </Text>
-          </View>
-
-          {/* Add */}
-
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() =>
-              navigation.navigate(
-                'CreatePosition'
-              )
-            }
-            style={styles.headerAddButton}
-          >
-            <Icon
-              name="plus"
-              size={21}
-              color="#FFFFFF"
-            />
-          </TouchableOpacity>
-
-        </View>
-
-        {/* =================================================
-            SUMMARY
-        ================================================= */}
-
-        <View
-          style={styles.summaryRow}
-        >
-
-          <View
-            style={styles.summaryCard}
-          >
-            <View
-              style={[
-                styles.summaryIcon,
-                {
-                  backgroundColor:
-                    `${PRIMARY_COLOR}12`,
-                },
-              ]}
-            >
-              <Icon
-                name="briefcase-outline"
-                size={18}
-                color={PRIMARY_COLOR}
-              />
-            </View>
-
-            <View>
-              <Text
-                style={styles.summaryNumber}
-              >
-                {positions.length}
-              </Text>
-
-              <Text
-                style={styles.summaryLabel}
-              >
-                Total Positions
-              </Text>
-            </View>
-          </View>
-
-          <View
-            style={styles.summaryCard}
-          >
-            <View
-              style={[
-                styles.summaryIcon,
-                {
-                  backgroundColor:
-                    '#D1FAE5',
-                },
-              ]}
-            >
-              <Icon
-                name="check-circle-outline"
-                size={18}
-                color={SUCCESS_COLOR}
-              />
-            </View>
-
-            <View>
-              <Text
-                style={styles.summaryNumber}
-              >
-                {
-                  positions.filter(
-                    (item) =>
-                      item.is_open
-                  ).length
-                }
-              </Text>
-
-              <Text
-                style={styles.summaryLabel}
-              >
-                Open
-              </Text>
-            </View>
-          </View>
-
-        </View>
-
-        {/* =================================================
-            SEARCH
-        ================================================= */}
-
-        <View
-          style={styles.searchContainer}
-        >
-
           <Icon
-            name="magnify"
-            size={20}
-            color="#94A3B8"
+            name="arrow-left"
+            size={21}
+            color={TEXT_PRIMARY}
           />
+        </TouchableOpacity>
 
-          <TextInput
-            value={search}
-            onChangeText={setSearch}
-            placeholder="Search positions..."
-            placeholderTextColor="#A0AAB8"
-            style={styles.searchInput}
-            returnKeyType="search"
-          />
+        <View style={styles.headerTitleContainer}>
+          <Text style={styles.eyebrow}>
+            HR
+          </Text>
 
-          {search.length > 0 && (
-            <TouchableOpacity
-              activeOpacity={0.7}
-              onPress={() =>
-                setSearch('')
-              }
-            >
-              <Icon
-                name="close-circle"
-                size={18}
-                color="#94A3B8"
-              />
-            </TouchableOpacity>
-          )}
+          <Text style={styles.headerTitle}>
+            Positions
+          </Text>
 
+          <Text style={styles.headerSubtitle}>
+            Manage employee seats
+          </Text>
         </View>
 
-        {/* =================================================
-            SECTION TITLE
-        ================================================= */}
-
-        <View
-          style={styles.sectionHeader}
+        <TouchableOpacity
+          activeOpacity={0.8}
+          onPress={() =>
+            navigation.navigate(
+              'CreatePosition'
+            )
+          }
+          style={styles.headerAddButton}
         >
+          <Icon
+            name="plus"
+            size={21}
+            color="#FFFFFF"
+          />
+        </TouchableOpacity>
+
+      </View>
+
+      {/* =================================================
+          SUMMARY
+      ================================================= */}
+
+      <View style={styles.summaryRow}>
+
+        <View style={styles.summaryCard}>
+          <View
+            style={[
+              styles.summaryIcon,
+              {
+                backgroundColor:
+                  `${PRIMARY_COLOR}12`,
+              },
+            ]}
+          >
+            <Icon
+              name="briefcase-outline"
+              size={18}
+              color={PRIMARY_COLOR}
+            />
+          </View>
 
           <View>
-            <Text
-              style={styles.sectionTitle}
-            >
-              All Positions
+            <Text style={styles.summaryNumber}>
+              {positions.length}
             </Text>
 
-            <Text
-              style={styles.sectionSubtitle}
-            >
-              {search
-                ? `${filteredPositions.length} result${
-                    filteredPositions.length === 1
-                      ? ''
-                      : 's'
-                  } found`
-                : 'Select a position to manage it'}
+            <Text style={styles.summaryLabel}>
+              Total Positions
             </Text>
           </View>
-
-          <View
-            style={styles.countBadge}
-          >
-            <Text
-              style={styles.countBadgeText}
-            >
-              {filteredPositions.length}
-            </Text>
-          </View>
-
         </View>
-      </>
-    );
+
+        <View style={styles.summaryCard}>
+          <View
+            style={[
+              styles.summaryIcon,
+              {
+                backgroundColor:
+                  '#D1FAE5',
+              },
+            ]}
+          >
+            <Icon
+              name="check-circle-outline"
+              size={18}
+              color={SUCCESS_COLOR}
+            />
+          </View>
+
+          <View>
+            <Text style={styles.summaryNumber}>
+              {
+                positions.filter(
+                  (item) => item.is_open
+                ).length
+              }
+            </Text>
+
+            <Text style={styles.summaryLabel}>
+              Open
+            </Text>
+          </View>
+        </View>
+
+      </View>
+
+      {/* =================================================
+          SEARCH
+      ================================================= */}
+
+      <View style={styles.searchContainer}>
+
+        <Icon
+          name="magnify"
+          size={20}
+          color="#94A3B8"
+        />
+
+        <TextInput
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search by title, job, or department..."
+          placeholderTextColor="#A0AAB8"
+          style={styles.searchInput}
+          returnKeyType="search"
+        />
+
+        {search.length > 0 && (
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={() => setSearch('')}
+          >
+            <Icon
+              name="close-circle"
+              size={18}
+              color="#94A3B8"
+            />
+          </TouchableOpacity>
+        )}
+
+      </View>
+
+      {/* =================================================
+          SECTION TITLE
+      ================================================= */}
+
+      <View style={styles.sectionHeader}>
+
+        <View>
+          <Text style={styles.sectionTitle}>
+            All Positions
+          </Text>
+
+          <Text style={styles.sectionSubtitle}>
+            {search
+              ? `${filteredPositions.length} result${
+                  filteredPositions.length === 1
+                    ? ''
+                    : 's'
+                } found`
+              : 'Select a position to manage it'}
+          </Text>
+        </View>
+
+        <View style={styles.countBadge}>
+          <Text style={styles.countBadgeText}>
+            {filteredPositions.length}
+          </Text>
+        </View>
+
+      </View>
+    </>
+  );
 
   // =======================================================
   // EMPTY
   // =======================================================
 
-  const EmptyComponent =
-    () => (
-      <View
-        style={styles.emptyContainer}
-      >
+  const EmptyComponent = () => (
+    <View style={styles.emptyContainer}>
 
-        <View
-          style={styles.emptyIcon}
+      <View style={styles.emptyIcon}>
+        <Icon
+          name={
+            search
+              ? 'magnify-close'
+              : 'briefcase-off-outline'
+          }
+          size={30}
+          color={PRIMARY_COLOR}
+        />
+      </View>
+
+      <Text style={styles.emptyTitle}>
+        {search
+          ? 'No positions found'
+          : 'No positions yet'}
+      </Text>
+
+      <Text style={styles.emptyDescription}>
+        {search
+          ? `No position matches "${search}".`
+          : 'Create your first position from a job to start assigning seats.'}
+      </Text>
+
+      {search ? (
+        <TouchableOpacity
+          activeOpacity={0.8}
+          onPress={() => setSearch('')}
+          style={styles.emptyButton}
+        >
+          <Text style={styles.emptyButtonText}>
+            Clear Search
+          </Text>
+        </TouchableOpacity>
+      ) : (
+        <TouchableOpacity
+          activeOpacity={0.8}
+          onPress={() =>
+            navigation.navigate(
+              'CreatePosition'
+            )
+          }
+          style={styles.emptyButton}
         >
           <Icon
-            name={
-              search
-                ? 'magnify-close'
-                : 'briefcase-off-outline'
-            }
-            size={30}
-            color={PRIMARY_COLOR}
+            name="plus"
+            size={17}
+            color="#FFFFFF"
           />
-        </View>
 
-        <Text
-          style={styles.emptyTitle}
-        >
-          {search
-            ? 'No positions found'
-            : 'No positions yet'}
-        </Text>
+          <Text style={styles.emptyButtonText}>
+            Create Position
+          </Text>
+        </TouchableOpacity>
+      )}
 
-        <Text
-          style={styles.emptyDescription}
-        >
-          {search
-            ? `No position matches "${search}".`
-            : 'Create your first position to start managing employee roles.'}
-        </Text>
-
-        {search ? (
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() =>
-              setSearch('')
-            }
-            style={styles.emptyButton}
-          >
-            <Text
-              style={styles.emptyButtonText}
-            >
-              Clear Search
-            </Text>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() =>
-              navigation.navigate(
-                'CreatePosition'
-              )
-            }
-            style={styles.emptyButton}
-          >
-            <Icon
-              name="plus"
-              size={17}
-              color="#FFFFFF"
-            />
-
-            <Text
-              style={styles.emptyButtonText}
-            >
-              Create Position
-            </Text>
-          </TouchableOpacity>
-        )}
-
-      </View>
-    );
+    </View>
+  );
 
   // =======================================================
   // LOADING
@@ -866,19 +887,12 @@ export default function PositionsListScreen() {
   if (loading) {
     return (
       <SafeAreaView
-        edges={[
-          'top',
-          'bottom',
-        ]}
+        edges={['top', 'bottom']}
         style={styles.container}
       >
-        <View
-          style={styles.loadingScreen}
-        >
+        <View style={styles.loadingScreen}>
 
-          <View
-            style={styles.loadingIcon}
-          >
+          <View style={styles.loadingIcon}>
             <Icon
               name="briefcase-outline"
               size={28}
@@ -889,20 +903,14 @@ export default function PositionsListScreen() {
           <ActivityIndicator
             size="small"
             color={PRIMARY_COLOR}
-            style={{
-              marginTop: 20,
-            }}
+            style={{ marginTop: 20 }}
           />
 
-          <Text
-            style={styles.loadingTitle}
-          >
+          <Text style={styles.loadingTitle}>
             Loading positions
           </Text>
 
-          <Text
-            style={styles.loadingSubtitle}
-          >
+          <Text style={styles.loadingSubtitle}>
             Please wait...
           </Text>
 
@@ -917,10 +925,7 @@ export default function PositionsListScreen() {
 
   return (
     <SafeAreaView
-      edges={[
-        'top',
-        'bottom',
-      ]}
+      edges={['top', 'bottom']}
       style={styles.container}
     >
 
@@ -930,18 +935,13 @@ export default function PositionsListScreen() {
           item.position_id
         }
         renderItem={renderItem}
-        ListHeaderComponent={
-          <ListHeader />
-        }
-        ListEmptyComponent={
-          <EmptyComponent />
-        }
+        ListHeaderComponent={<ListHeader />}
+        ListEmptyComponent={<EmptyComponent />}
         contentContainerStyle={[
           styles.listContent,
           {
             paddingBottom:
-              100 +
-              insets.bottom,
+              100 + insets.bottom,
           },
         ]}
         refreshControl={
@@ -951,14 +951,10 @@ export default function PositionsListScreen() {
               fetchPositions(true)
             }
             tintColor={PRIMARY_COLOR}
-            colors={[
-              PRIMARY_COLOR,
-            ]}
+            colors={[PRIMARY_COLOR]}
           />
         }
-        showsVerticalScrollIndicator={
-          false
-        }
+        showsVerticalScrollIndicator={false}
       />
 
       {/* =================================================
@@ -975,9 +971,7 @@ export default function PositionsListScreen() {
         style={[
           styles.fab,
           {
-            bottom:
-              18 +
-              insets.bottom,
+            bottom: 18 + insets.bottom,
           },
         ]}
       >
@@ -987,9 +981,7 @@ export default function PositionsListScreen() {
           color="#FFFFFF"
         />
 
-        <Text
-          style={styles.fabText}
-        >
+        <Text style={styles.fabText}>
           New Position
         </Text>
       </TouchableOpacity>
@@ -1007,10 +999,7 @@ function StatusBadge({
   type,
 }: {
   label: string;
-  type:
-    | 'success'
-    | 'error'
-    | 'neutral';
+  type: 'success' | 'error' | 'neutral';
 }) {
   const config = {
     success: {
@@ -1018,13 +1007,11 @@ function StatusBadge({
       color: SUCCESS_COLOR,
       icon: 'check-circle-outline',
     },
-
     error: {
       background: '#FEF2F2',
       color: ERROR_COLOR,
       icon: 'close-circle-outline',
     },
-
     neutral: {
       background: '#F1F5F9',
       color: '#64748B',
@@ -1036,10 +1023,7 @@ function StatusBadge({
     <View
       style={[
         styles.statusBadge,
-        {
-          backgroundColor:
-            config.background,
-        },
+        { backgroundColor: config.background },
       ]}
     >
       <Icon
@@ -1051,9 +1035,7 @@ function StatusBadge({
       <Text
         style={[
           styles.statusBadgeText,
-          {
-            color: config.color,
-          },
+          { color: config.color },
         ]}
       >
         {label}
@@ -1066,679 +1048,481 @@ function StatusBadge({
 // STYLES
 // =========================================================
 
-const styles =
-  StyleSheet.create({
-
-    // =====================================================
-    // PAGE
-    // =====================================================
-
-    container: {
-      flex: 1,
-      backgroundColor:
-        BACKGROUND_COLOR,
-    },
-
-    listContent: {
-      paddingHorizontal: 20,
-      paddingTop: 8,
-    },
-
-    // =====================================================
-    // HEADER
-    // =====================================================
-
-    header: {
-      minHeight: 78,
-
-      flexDirection: 'row',
-      alignItems: 'center',
-
-      paddingVertical: 12,
-    },
-
-    backButton: {
-      width: 40,
-      height: 40,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 11,
-
-      backgroundColor:
-        CARD_BACKGROUND,
-
-      borderWidth: 1,
-      borderColor:
-        BORDER_COLOR,
-    },
-
-    headerTitleContainer: {
-      flex: 1,
-
-      marginLeft: 12,
-    },
-
-    eyebrow: {
-      color: PRIMARY_COLOR,
-
-      fontSize: 8,
-
-      fontWeight: '800',
-
-      letterSpacing: 1,
-    },
-
-    headerTitle: {
-      marginTop: 2,
-
-      color: TEXT_PRIMARY,
-
-      fontSize: 25,
-
-      fontWeight: '700',
-
-      letterSpacing: -0.4,
-    },
-
-    headerSubtitle: {
-      marginTop: 2,
-
-      color: TEXT_SECONDARY,
-
-      fontSize: 9,
-
-      fontWeight: '500',
-    },
-
-    headerAddButton: {
-      width: 40,
-      height: 40,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 11,
-
-      backgroundColor:
-        PRIMARY_COLOR,
-
-      shadowColor:
-        PRIMARY_COLOR,
-
-      shadowOffset: {
-        width: 0,
-        height: 4,
-      },
-
-      shadowOpacity: 0.2,
-
-      shadowRadius: 7,
-
-      elevation: 4,
-    },
-
-    // =====================================================
-    // SUMMARY
-    // =====================================================
-
-    summaryRow: {
-      flexDirection: 'row',
-
-      gap: 10,
-
-      marginTop: 8,
-      marginBottom: 15,
-    },
-
-    summaryCard: {
-      flex: 1,
-
-      minHeight: 67,
-
-      flexDirection: 'row',
-      alignItems: 'center',
-
-      paddingHorizontal: 11,
-
-      borderRadius: 13,
-
-      backgroundColor:
-        CARD_BACKGROUND,
-
-      borderWidth: 1,
-
-      borderColor:
-        BORDER_COLOR,
-    },
-
-    summaryIcon: {
-      width: 38,
-      height: 38,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 10,
-    },
-
-    summaryNumber: {
-      marginLeft: 9,
-
-      color: TEXT_PRIMARY,
-
-      fontSize: 17,
-
-      fontWeight: '700',
-    },
-
-    summaryLabel: {
-      marginLeft: 9,
-      marginTop: 2,
-
-      color: TEXT_SECONDARY,
-
-      fontSize: 8,
-
-      fontWeight: '600',
-    },
-
-    // =====================================================
-    // SEARCH
-    // =====================================================
-
-    searchContainer: {
-      height: 46,
-
-      flexDirection: 'row',
-      alignItems: 'center',
-
-      paddingHorizontal: 13,
-
-      borderRadius: 12,
-
-      backgroundColor:
-        CARD_BACKGROUND,
-
-      borderWidth: 1,
-
-      borderColor:
-        BORDER_COLOR,
-    },
-
-    searchInput: {
-      flex: 1,
-
-      height: 44,
-
-      marginLeft: 8,
-
-      paddingVertical: 0,
-
-      color: TEXT_PRIMARY,
-
-      fontSize: 12,
-
-      fontWeight: '500',
-    },
-
-    // =====================================================
-    // SECTION
-    // =====================================================
-
-    sectionHeader: {
-      marginTop: 24,
-      marginBottom: 13,
-
-      flexDirection: 'row',
-      alignItems: 'center',
-
-      justifyContent: 'space-between',
-    },
-
-    sectionTitle: {
-      color: TEXT_PRIMARY,
-
-      fontSize: 17,
-
-      fontWeight: '700',
-    },
-
-    sectionSubtitle: {
-      marginTop: 3,
-
-      color: TEXT_SECONDARY,
-
-      fontSize: 9,
-
-      fontWeight: '500',
-    },
-
-    countBadge: {
-      minWidth: 29,
-      height: 26,
-
-      paddingHorizontal: 8,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 8,
-
-      backgroundColor:
-        `${PRIMARY_COLOR}12`,
-    },
-
-    countBadgeText: {
-      color: PRIMARY_COLOR,
-
-      fontSize: 10,
-
-      fontWeight: '700',
-    },
-
-    // =====================================================
-    // POSITION CARD
-    // =====================================================
-
-    positionCard: {
-      position: 'relative',
-
-      marginBottom: 12,
-
-      padding: 16,
-
-      borderRadius: 16,
-
-      backgroundColor:
-        CARD_BACKGROUND,
-
-      borderWidth: 1,
-
-      borderColor:
-        BORDER_COLOR,
-
-      overflow: 'hidden',
-
-      shadowColor: '#000',
-
-      shadowOffset: {
-        width: 0,
-        height: 3,
-      },
-
-      shadowOpacity: 0.035,
-
-      shadowRadius: 8,
-
-      elevation: 2,
-    },
-
-    cardAccent: {
-      position: 'absolute',
-
-      top: 0,
-      left: 0,
-      right: 0,
-
-      height: 3,
-
-      backgroundColor:
-        PRIMARY_COLOR,
-    },
-
-    cardNumber: {
-      position: 'absolute',
-
-      top: 14,
-      right: 15,
-
-      color: '#CBD5E1',
-
-      fontSize: 9,
-
-      fontWeight: '800',
-
-      letterSpacing: 0.5,
-    },
-
-    cardTopRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-    },
-
-    // =====================================================
-    // POSITION ICON
-    // =====================================================
-
-    positionIcon: {
-      width: 48,
-      height: 48,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 13,
-
-      backgroundColor:
-        `${PRIMARY_COLOR}12`,
-    },
-
-    positionInfo: {
-      flex: 1,
-
-      marginLeft: 12,
-
-      paddingRight: 7,
-    },
-
-    positionTitle: {
-      color: TEXT_PRIMARY,
-
-      fontSize: 15,
-
-      fontWeight: '700',
-
-      lineHeight: 19,
-    },
-
-    positionMeta: {
-      flexDirection: 'row',
-      alignItems: 'center',
-
-      marginTop: 5,
-    },
-
-    positionMetaText: {
-      marginLeft: 4,
-
-      color: TEXT_SECONDARY,
-
-      fontSize: 9,
-
-      fontWeight: '500',
-    },
-
-    // =====================================================
-    // ACTIONS
-    // =====================================================
-
-    actions: {
-      flexDirection: 'row',
-
-      gap: 6,
-    },
-
-    actionButton: {
-      width: 35,
-      height: 35,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 9,
-    },
-
-    editButton: {
-      backgroundColor:
-        `${PRIMARY_COLOR}10`,
-    },
-
-    deleteButton: {
-      backgroundColor:
-        '#FEF2F2',
-    },
-
-    // =====================================================
-    // DETAILS
-    // =====================================================
-
-    detailsRow: {
-      marginTop: 14,
-
-      paddingTop: 12,
-
-      flexDirection: 'row',
-
-      gap: 13,
-
-      borderTopWidth: 1,
-
-      borderTopColor:
-        '#EEF1F5',
-    },
-
-    detailItem: {
-      flex: 1,
-
-      flexDirection: 'row',
-      alignItems: 'center',
-
-      minWidth: 0,
-    },
-
-    detailText: {
-      flex: 1,
-
-      marginLeft: 5,
-
-      color: '#64748B',
-
-      fontSize: 9,
-
-      fontWeight: '500',
-    },
-
-    // =====================================================
-    // STATUS
-    // =====================================================
-
-    statusRow: {
-      flexDirection: 'row',
-
-      flexWrap: 'wrap',
-
-      gap: 6,
-
-      marginTop: 12,
-    },
-
-    statusBadge: {
-      minHeight: 24,
-
-      paddingHorizontal: 8,
-
-      flexDirection: 'row',
-      alignItems: 'center',
-
-      borderRadius: 7,
-
-      gap: 4,
-    },
-
-    statusBadgeText: {
-      fontSize: 8,
-
-      fontWeight: '600',
-    },
-
-    // =====================================================
-    // EMPTY
-    // =====================================================
-
-    emptyContainer: {
-      minHeight: 300,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      paddingHorizontal: 30,
-
-      marginTop: 10,
-
-      borderWidth: 1,
-
-      borderStyle: 'dashed',
-
-      borderColor: '#DCE2EA',
-
-      borderRadius: 16,
-
-      backgroundColor:
-        'rgba(255,255,255,0.55)',
-    },
-
-    emptyIcon: {
-      width: 65,
-      height: 65,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 18,
-
-      backgroundColor:
-        `${PRIMARY_COLOR}12`,
-    },
-
-    emptyTitle: {
-      marginTop: 17,
-
-      color: TEXT_PRIMARY,
-
-      fontSize: 18,
-
-      fontWeight: '700',
-    },
-
-    emptyDescription: {
-      marginTop: 6,
-
-      color: TEXT_SECONDARY,
-
-      fontSize: 11,
-
-      lineHeight: 17,
-
-      textAlign: 'center',
-    },
-
-    emptyButton: {
-      minHeight: 40,
-
-      marginTop: 20,
-
-      paddingHorizontal: 16,
-
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      gap: 6,
-
-      borderRadius: 9,
-
-      backgroundColor:
-        PRIMARY_COLOR,
-    },
-
-    emptyButtonText: {
-      color: '#FFFFFF',
-
-      fontSize: 11,
-
-      fontWeight: '700',
-    },
-
-    // =====================================================
-    // FAB
-    // =====================================================
-
-    fab: {
-      position: 'absolute',
-
-      right: 18,
-
-      minHeight: 48,
-
-      paddingHorizontal: 17,
-
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      gap: 6,
-
-      borderRadius: 25,
-
-      backgroundColor:
-        PRIMARY_COLOR,
-
-      shadowColor:
-        PRIMARY_COLOR,
-
-      shadowOffset: {
-        width: 0,
-        height: 6,
-      },
-
-      shadowOpacity: 0.25,
-
-      shadowRadius: 10,
-
-      elevation: 7,
-    },
-
-    fabText: {
-      color: '#FFFFFF',
-
-      fontSize: 11,
-
-      fontWeight: '700',
-    },
-
-    // =====================================================
-    // LOADING
-    // =====================================================
-
-    loadingScreen: {
-      flex: 1,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      paddingHorizontal: 30,
-    },
-
-    loadingIcon: {
-      width: 65,
-      height: 65,
-
-      alignItems: 'center',
-      justifyContent: 'center',
-
-      borderRadius: 18,
-
-      backgroundColor:
-        `${PRIMARY_COLOR}12`,
-    },
-
-    loadingTitle: {
-      marginTop: 14,
-
-      color: TEXT_PRIMARY,
-
-      fontSize: 17,
-
-      fontWeight: '700',
-    },
-
-    loadingSubtitle: {
-      marginTop: 4,
-
-      color: TEXT_SECONDARY,
-
-      fontSize: 10,
-    },
-  });
+const styles = StyleSheet.create({
+  // =====================================================
+  // PAGE
+  // =====================================================
+
+  container: {
+    flex: 1,
+    backgroundColor: BACKGROUND_COLOR,
+  },
+
+  listContent: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+  },
+
+  // =====================================================
+  // HEADER
+  // =====================================================
+
+  header: {
+    minHeight: 78,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+
+  backButton: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 11,
+    backgroundColor: CARD_BACKGROUND,
+    borderWidth: 1,
+    borderColor: BORDER_COLOR,
+  },
+
+  headerTitleContainer: {
+    flex: 1,
+    marginLeft: 12,
+  },
+
+  eyebrow: {
+    color: PRIMARY_COLOR,
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+
+  headerTitle: {
+    marginTop: 2,
+    color: TEXT_PRIMARY,
+    fontSize: 25,
+    fontWeight: '700',
+    letterSpacing: -0.4,
+  },
+
+  headerSubtitle: {
+    marginTop: 2,
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    fontWeight: '500',
+  },
+
+  headerAddButton: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 11,
+    backgroundColor: PRIMARY_COLOR,
+    shadowColor: PRIMARY_COLOR,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 7,
+    elevation: 4,
+  },
+
+  // =====================================================
+  // SUMMARY
+  // =====================================================
+
+  summaryRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 8,
+    marginBottom: 15,
+  },
+
+  summaryCard: {
+    flex: 1,
+    minHeight: 67,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 11,
+    borderRadius: 13,
+    backgroundColor: CARD_BACKGROUND,
+    borderWidth: 1,
+    borderColor: BORDER_COLOR,
+  },
+
+  summaryIcon: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+  },
+
+  summaryNumber: {
+    marginLeft: 9,
+    color: TEXT_PRIMARY,
+    fontSize: 17,
+    fontWeight: '700',
+  },
+
+  summaryLabel: {
+    marginLeft: 9,
+    marginTop: 2,
+    color: TEXT_SECONDARY,
+    fontSize: 8,
+    fontWeight: '600',
+  },
+
+  // =====================================================
+  // SEARCH
+  // =====================================================
+
+  searchContainer: {
+    height: 46,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 13,
+    borderRadius: 12,
+    backgroundColor: CARD_BACKGROUND,
+    borderWidth: 1,
+    borderColor: BORDER_COLOR,
+  },
+
+  searchInput: {
+    flex: 1,
+    height: 44,
+    marginLeft: 8,
+    paddingVertical: 0,
+    color: TEXT_PRIMARY,
+    fontSize: 12,
+    fontWeight: '500',
+  },
+
+  // =====================================================
+  // SECTION
+  // =====================================================
+
+  sectionHeader: {
+    marginTop: 24,
+    marginBottom: 13,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+
+  sectionTitle: {
+    color: TEXT_PRIMARY,
+    fontSize: 17,
+    fontWeight: '700',
+  },
+
+  sectionSubtitle: {
+    marginTop: 3,
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    fontWeight: '500',
+  },
+
+  countBadge: {
+    minWidth: 29,
+    height: 26,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    backgroundColor: `${PRIMARY_COLOR}12`,
+  },
+
+  countBadgeText: {
+    color: PRIMARY_COLOR,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+
+  // =====================================================
+  // POSITION CARD
+  // =====================================================
+
+  positionCard: {
+    position: 'relative',
+    marginBottom: 12,
+    padding: 16,
+    borderRadius: 16,
+    backgroundColor: CARD_BACKGROUND,
+    borderWidth: 1,
+    borderColor: BORDER_COLOR,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.035,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+
+  cardAccent: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+    backgroundColor: PRIMARY_COLOR,
+  },
+
+  cardNumber: {
+    position: 'absolute',
+    top: 14,
+    right: 15,
+    color: '#CBD5E1',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+
+  cardTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+
+  // =====================================================
+  // POSITION ICON / INFO
+  // =====================================================
+
+  positionIcon: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 13,
+    backgroundColor: `${PRIMARY_COLOR}12`,
+  },
+
+  positionInfo: {
+    flex: 1,
+    marginLeft: 12,
+    paddingRight: 7,
+  },
+
+  positionTitle: {
+    color: TEXT_PRIMARY,
+    fontSize: 15,
+    fontWeight: '700',
+    lineHeight: 19,
+  },
+
+  positionMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 5,
+  },
+
+  positionMetaText: {
+    marginLeft: 4,
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    fontWeight: '500',
+  },
+
+  // =====================================================
+  // ACTIONS
+  // =====================================================
+
+  actions: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+
+  actionButton: {
+    width: 35,
+    height: 35,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 9,
+  },
+
+  editButton: {
+    backgroundColor: `${PRIMARY_COLOR}10`,
+  },
+
+  deleteButton: {
+    backgroundColor: '#FEF2F2',
+  },
+
+  // =====================================================
+  // DETAILS
+  // =====================================================
+
+  detailsRow: {
+    marginTop: 14,
+    paddingTop: 12,
+    flexDirection: 'row',
+    gap: 13,
+    borderTopWidth: 1,
+    borderTopColor: '#EEF1F5',
+  },
+
+  detailItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 0,
+  },
+
+  locationRow: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+
+  detailText: {
+    flex: 1,
+    marginLeft: 5,
+    color: '#64748B',
+    fontSize: 9,
+    fontWeight: '500',
+  },
+
+  // =====================================================
+  // STATUS
+  // =====================================================
+
+  statusRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 12,
+  },
+
+  statusBadge: {
+    minHeight: 24,
+    paddingHorizontal: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 7,
+    gap: 4,
+  },
+
+  statusBadgeText: {
+    fontSize: 8,
+    fontWeight: '600',
+  },
+
+  // =====================================================
+  // EMPTY
+  // =====================================================
+
+  emptyContainer: {
+    minHeight: 300,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 30,
+    marginTop: 10,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: '#DCE2EA',
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.55)',
+  },
+
+  emptyIcon: {
+    width: 65,
+    height: 65,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 18,
+    backgroundColor: `${PRIMARY_COLOR}12`,
+  },
+
+  emptyTitle: {
+    marginTop: 17,
+    color: TEXT_PRIMARY,
+    fontSize: 18,
+    fontWeight: '700',
+  },
+
+  emptyDescription: {
+    marginTop: 6,
+    color: TEXT_SECONDARY,
+    fontSize: 11,
+    lineHeight: 17,
+    textAlign: 'center',
+  },
+
+  emptyButton: {
+    minHeight: 40,
+    marginTop: 20,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderRadius: 9,
+    backgroundColor: PRIMARY_COLOR,
+  },
+
+  emptyButtonText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+
+  // =====================================================
+  // FAB
+  // =====================================================
+
+  fab: {
+    position: 'absolute',
+    right: 18,
+    minHeight: 48,
+    paddingHorizontal: 17,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderRadius: 25,
+    backgroundColor: PRIMARY_COLOR,
+    shadowColor: PRIMARY_COLOR,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    elevation: 7,
+  },
+
+  fabText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+
+  // =====================================================
+  // LOADING
+  // =====================================================
+
+  loadingScreen: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 30,
+  },
+
+  loadingIcon: {
+    width: 65,
+    height: 65,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 18,
+    backgroundColor: `${PRIMARY_COLOR}12`,
+  },
+
+  loadingTitle: {
+    marginTop: 14,
+    color: TEXT_PRIMARY,
+    fontSize: 17,
+    fontWeight: '700',
+  },
+
+  loadingSubtitle: {
+    marginTop: 4,
+    color: TEXT_SECONDARY,
+    fontSize: 10,
+  },
+});

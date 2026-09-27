@@ -51,10 +51,11 @@ import {
 
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
-// API — ✅ no more isAllLocations import
+// API — ✅ no more isAllLocations import; getLocation added
 import {
   getWorkCenterByCode,
   updateWorkCenter,
+  getLocation,
 } from '@b2b/api-client';
 
 // Store
@@ -169,6 +170,13 @@ export default function EditWorkCenterScreen() {
   const [workCenterData, setWorkCenterData] =
     useState<any>(null);
 
+  // ✅ resolved location details (code + name) for read-only display
+  const [locationInfo, setLocationInfo] =
+    useState<{
+      location_code?: string;
+      location_name?: string;
+    } | null>(null);
+
   // =======================================================
   // FORM
   // =======================================================
@@ -230,6 +238,10 @@ export default function EditWorkCenterScreen() {
       try {
         setLoading(true);
 
+        // reset any stale data from a previous screen instance
+        setLocationInfo(null);
+        setWorkCenterData(null);
+
         const response =
           await getWorkCenterByCode(
             companyId,
@@ -242,22 +254,53 @@ export default function EditWorkCenterScreen() {
           response.success &&
           response.data
         ) {
-          setWorkCenterData(
-            response.data
-          );
+          const wc = response.data;
+          setWorkCenterData(wc);
 
           reset({
-            name:
-              response.data.name || '',
-
+            name: wc.name || '',
             description:
-              response.data.description ||
-              '',
-
+              wc.description || '',
             is_active:
-              response.data.is_active ??
-              true,
+              wc.is_active ?? true,
           });
+
+          // ── Resolve location details ──────────────────
+          // Prefer location_name / location_code already
+          // present in the payload. Otherwise, look up the
+          // location by ID so we don't display a raw UUID.
+          const hasLocationText =
+            !!wc.location_name ||
+            !!wc.location_code;
+
+          if (hasLocationText) {
+            setLocationInfo({
+              location_code: wc.location_code,
+              location_name: wc.location_name,
+            });
+          } else if (wc.location_id) {
+            try {
+              const loc = await getLocation(
+                companyId,
+                wc.location_id
+              );
+
+              if (loc) {
+                setLocationInfo({
+                  location_code:
+                    loc.location_code,
+                  location_name:
+                    loc.location_name,
+                });
+              }
+            } catch (locErr) {
+              // Non-fatal — fall back to raw ID in the UI
+              console.warn(
+                'Failed to resolve location details:',
+                locErr
+              );
+            }
+          }
         } else {
           Alert.alert(
             'Work Center Not Found',
@@ -435,6 +478,24 @@ export default function EditWorkCenterScreen() {
 
     navigation.goBack();
   };
+
+  // =======================================================
+  // DERIVED DISPLAY VALUES
+  // =======================================================
+
+  // Prefer the resolved location (name → code), then whatever
+  // the work-center payload already carried, then raw ID, then dash.
+  const locationDisplay =
+    locationInfo?.location_name ||
+    locationInfo?.location_code ||
+    workCenterData?.location_name ||
+    workCenterData?.location_code ||
+    workCenterData?.location_id ||
+    '—';
+
+  const locationCodeDisplay =
+    locationInfo?.location_code ||
+    workCenterData?.location_code;
 
   // =======================================================
   // LOADING
@@ -623,11 +684,9 @@ export default function EditWorkCenterScreen() {
 
               </View>
 
-              {/* Location */}
+              {/* Location — resolved name/code */}
 
-              {(workCenterData?.location_name ||
-                workCenterData?.location_code ||
-                workCenterData?.location_id) && (
+              {locationDisplay !== '—' && (
                 <View
                   style={styles.codeRow}
                 >
@@ -642,9 +701,10 @@ export default function EditWorkCenterScreen() {
                     numberOfLines={1}
                     style={styles.codeText}
                   >
-                    {workCenterData?.location_name ||
-                      workCenterData?.location_code ||
-                      workCenterData?.location_id}
+                    {locationDisplay}
+                    {locationCodeDisplay
+                      ? `  •  ${locationCodeDisplay}`
+                      : ''}
                   </Text>
 
                 </View>
@@ -1045,7 +1105,7 @@ export default function EditWorkCenterScreen() {
                 this screen.
               </Text>
 
-              {/* Location pill */}
+              {/* Location pill — resolved name/code */}
 
               <View
                 style={[
@@ -1067,10 +1127,7 @@ export default function EditWorkCenterScreen() {
                     { marginLeft: 4 },
                   ]}
                 >
-                  {workCenterData?.location_name ||
-                    workCenterData?.location_code ||
-                    workCenterData?.location_id ||
-                    '—'}
+                  {locationDisplay}
                 </Text>
 
               </View>

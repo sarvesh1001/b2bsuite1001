@@ -10,7 +10,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, ActivityIndicator, Card, Chip, TextInput, Button } from 'react-native-paper';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRoute, useNavigation } from '@react-navigation/native';
-import { StackNavigationProp } from '@react-navigation/stack'; // ✅ ADDED
+import { StackNavigationProp } from '@react-navigation/stack';
 
 import {
   updateUser,
@@ -18,10 +18,11 @@ import {
   banUser,
   unbanUser,
   advancedUserSearch,
+  getUserPhoneNumber,     // 🆕
+  changeUserPhone,        // 🆕
   User,
 } from '../../../services/admin';
 
-// Import KYC constants
 import {
   KYC_STATUSES,
   KYC_LEVELS,
@@ -31,12 +32,10 @@ import {
   KYCLevel,
 } from '../../../constants/kyc';
 
-// ✅ ADDED: Import RootStackParamList for navigation typing
 import { RootStackParamList } from '../../../navigation';
 
 export default function UserDetailScreen() {
   const route = useRoute();
-  // ✅ ADDED: typed navigation
   const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
   const { userId } = route.params as { userId: string };
 
@@ -51,10 +50,32 @@ export default function UserDetailScreen() {
     data_region: '',
   });
 
-  // KYC state with proper types
+  // 🆕 Phone state
+  const [phone, setPhone] = useState<string | null>(null);
+  const [maskedPhone, setMaskedPhone] = useState<string | null>(null);
+  const [revealPhone, setRevealPhone] = useState(false);
+  const [editingPhone, setEditingPhone] = useState(false);
+  const [newPhone, setNewPhone] = useState('');
+  const [phoneSaving, setPhoneSaving] = useState(false);
+
+  // KYC state
   const [kycStatus, setKycStatus] = useState<KYCStatus>(KYC_STATUSES.PENDING);
   const [kycLevel, setKycLevel] = useState<KYCLevel>(KYC_LEVELS.BASIC);
   const [availableStatuses, setAvailableStatuses] = useState<KYCStatus[]>([]);
+
+  const loadPhone = async () => {
+    try {
+      const result = await getUserPhoneNumber(userId);
+      setPhone(result.phone_number || null);
+      setMaskedPhone(result.masked_phone || null);
+    } catch (err: any) {
+      // Non-fatal: user detail is still usable without phone.
+      // We surface the error message inline instead of alerting.
+      setPhone(null);
+      setMaskedPhone(null);
+      // Optional: console.warn('[phone] failed to load', err?.message);
+    }
+  };
 
   const loadUser = async () => {
     setLoading(true);
@@ -75,12 +96,13 @@ export default function UserDetailScreen() {
         data_region: foundUser.data_region || '',
       });
 
-      // Set KYC values, fallback to defaults
       const currentStatus = (foundUser.kyc_status || KYC_STATUSES.PENDING) as KYCStatus;
       setKycStatus(currentStatus);
       setKycLevel((foundUser.kyc_level || KYC_LEVELS.BASIC) as KYCLevel);
-      // Compute allowed transitions based on current status
       setAvailableStatuses(KYC_TRANSITIONS[currentStatus] || []);
+
+      // 🆕 Fetch phone in parallel
+      await loadPhone();
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load user');
     } finally {
@@ -90,9 +112,9 @@ export default function UserDetailScreen() {
 
   useEffect(() => {
     loadUser();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
-  // When status changes manually, update the available transitions
   const handleStatusChange = (newStatus: KYCStatus) => {
     setKycStatus(newStatus);
     setAvailableStatuses(KYC_TRANSITIONS[newStatus] || []);
@@ -141,6 +163,45 @@ export default function UserDetailScreen() {
     } finally {
       setUpdating(false);
     }
+  };
+
+  // 🆕 Change phone handler
+  const handleChangePhone = async () => {
+    const trimmed = newPhone.trim();
+    if (!trimmed) {
+      Alert.alert('Validation', 'Phone number is required');
+      return;
+    }
+    if (trimmed.length < 10 || trimmed.length > 15) {
+      Alert.alert('Validation', 'Phone number must be 10–15 characters');
+      return;
+    }
+
+    Alert.alert(
+      'Confirm Phone Change',
+      `Replace the user's phone number with ${trimmed}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Change',
+          style: 'destructive',
+          onPress: async () => {
+            setPhoneSaving(true);
+            try {
+              await changeUserPhone(userId, trimmed, 'Admin action');
+              Alert.alert('Success', 'Phone number updated');
+              setEditingPhone(false);
+              setNewPhone('');
+              await loadPhone();
+            } catch (error: any) {
+              Alert.alert('Error', error.message || 'Phone update failed');
+            } finally {
+              setPhoneSaving(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   if (loading || !user) {
@@ -206,6 +267,91 @@ export default function UserDetailScreen() {
               <View style={styles.infoRow}>
                 <Text style={styles.label}>Joined:</Text>
                 <Text style={styles.value}>{new Date(user.created_at).toLocaleString()}</Text>
+              </View>
+            )}
+          </Card.Content>
+        </Card>
+
+        {/* 🆕 CONTACT / PHONE CARD */}
+        <Card style={styles.card}>
+          <Card.Content style={styles.cardContent}>
+            <View style={styles.phoneHeaderRow}>
+              <Text variant="titleMedium" style={styles.sectionTitle}>
+                Phone Number
+              </Text>
+              {phone && (
+                <TouchableOpacity onPress={() => setRevealPhone((v) => !v)}>
+                  <Text style={styles.linkText}>
+                    {revealPhone ? 'Hide' : 'Show'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            <View style={styles.infoRow}>
+              <Text style={styles.label}>Current:</Text>
+              <Text style={styles.value}>
+                {phone
+                  ? revealPhone
+                    ? phone
+                    : maskedPhone || phone
+                  : '—'}
+              </Text>
+            </View>
+
+            {!editingPhone ? (
+              <TouchableOpacity
+                onPress={() => {
+                  setEditingPhone(true);
+                  setNewPhone('');
+                }}
+                style={styles.buttonWrapper}
+                activeOpacity={0.8}
+              >
+                <LinearGradient
+                  colors={['#00B4DB', '#7B2FBE']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.gradientButton}
+                >
+                  <Text style={styles.buttonText}>Change Phone Number</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            ) : (
+              <View style={{ marginTop: 8 }}>
+                <TextInput
+                  mode="outlined"
+                  label="New phone number"
+                  keyboardType="phone-pad"
+                  value={newPhone}
+                  onChangeText={setNewPhone}
+                  style={styles.input}
+                  theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
+                />
+                <View style={styles.buttonRow}>
+                  <Button
+                    mode="outlined"
+                    onPress={() => {
+                      setEditingPhone(false);
+                      setNewPhone('');
+                    }}
+                    style={styles.cancelButton}
+                    labelStyle={{ color: '#666' }}
+                    disabled={phoneSaving}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    mode="contained"
+                    onPress={handleChangePhone}
+                    loading={phoneSaving}
+                    disabled={phoneSaving}
+                    style={styles.saveButton}
+                    theme={{ colors: { primary: '#7B2FBE' } }}
+                  >
+                    Save Phone
+                  </Button>
+                </View>
               </View>
             )}
           </Card.Content>
@@ -287,14 +433,12 @@ export default function UserDetailScreen() {
           </TouchableOpacity>
         )}
 
-        {/* Updated KYC Card with Chip Selectors */}
         <Card style={styles.card}>
           <Card.Content style={styles.cardContent}>
             <Text variant="titleMedium" style={styles.sectionTitle}>
               Update KYC
             </Text>
 
-            {/* Status selector */}
             <View style={styles.pickerContainer}>
               <Text style={styles.pickerLabel}>New Status</Text>
               <View style={styles.chipContainer}>
@@ -306,10 +450,7 @@ export default function UserDetailScreen() {
                       key={status}
                       selected={kycStatus === status}
                       onPress={() => handleStatusChange(status)}
-                      style={[
-                        styles.chip,
-                        kycStatus === status && styles.activeChip,
-                      ]}
+                      style={[styles.chip, kycStatus === status && styles.activeChip]}
                       textStyle={kycStatus === status ? styles.activeChipText : {}}
                     >
                       {status.replace('_', ' ').toUpperCase()}
@@ -319,7 +460,6 @@ export default function UserDetailScreen() {
               </View>
             </View>
 
-            {/* Level selector */}
             <View style={styles.pickerContainer}>
               <Text style={styles.pickerLabel}>KYC Level</Text>
               <View style={styles.chipContainer}>
@@ -328,10 +468,7 @@ export default function UserDetailScreen() {
                     key={level}
                     selected={kycLevel === level}
                     onPress={() => setKycLevel(level)}
-                    style={[
-                      styles.chip,
-                      kycLevel === level && styles.activeChip,
-                    ]}
+                    style={[styles.chip, kycLevel === level && styles.activeChip]}
                     textStyle={kycLevel === level ? styles.activeChipText : {}}
                   >
                     {level.toUpperCase()}
@@ -363,7 +500,6 @@ export default function UserDetailScreen() {
           </Card.Content>
         </Card>
 
-        {/* ✅ NEW: View Documents Button */}
         <TouchableOpacity
           onPress={() => navigation.navigate('UserDocuments', { userId })}
           activeOpacity={0.8}
@@ -416,13 +552,21 @@ const styles = StyleSheet.create({
     elevation: 2,
     backgroundColor: '#FFFFFF',
   },
-  cardContent: {
-    backgroundColor: '#FFFFFF',
-  },
+  cardContent: { backgroundColor: '#FFFFFF' },
   infoRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
   label: { color: '#666', fontSize: 14 },
-  value: { color: '#1A1A1A', fontSize: 14, fontWeight: '500' },
+  value: { color: '#1A1A1A', fontSize: 14, fontWeight: '500', flexShrink: 1, textAlign: 'right' },
   sectionTitle: { fontWeight: '600', color: '#1A1A1A', marginBottom: 12 },
+
+  // 🆕 phone card
+  phoneHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  linkText: { color: '#7B2FBE', fontSize: 13, fontWeight: '600' },
+
   input: { marginBottom: 12, backgroundColor: 'white' },
   buttonRow: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 8 },
   cancelButton: { marginRight: 8, borderColor: '#ccc' },
@@ -433,7 +577,6 @@ const styles = StyleSheet.create({
   buttonDisabled: { opacity: 0.6 },
   buttonText: { color: 'white', fontSize: 16, fontWeight: '600', letterSpacing: 0.5 },
 
-  // New styles for KYC pickers
   pickerContainer: { marginBottom: 16 },
   pickerLabel: { fontSize: 14, fontWeight: '500', color: '#333', marginBottom: 6 },
   chipContainer: { flexDirection: 'row', flexWrap: 'wrap' },

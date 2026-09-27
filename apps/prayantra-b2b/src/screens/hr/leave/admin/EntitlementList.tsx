@@ -45,11 +45,16 @@ export default function EntitlementList() {
     if (showRefresh) setRefreshing(true);
     else setLoading(true);
     try {
-      const params: any = { page: 1, page_size: 50 };
+      const params: { page: number; page_size: number; user_id?: string } = {
+        page: 1,
+        page_size: 50,
+      };
       if (userIdFilter.trim()) params.user_id = userIdFilter.trim();
-      const res = await listEntitlements(companyId, deviceId, accessToken, params);
-      setEntitlements(res.data?.entitlements || []);
-      setTotal(res.data?.total || 0);
+
+      // ⚠️ Returns EntitlementsListData — not { entitlements, total }
+      const data = await listEntitlements(companyId, deviceId, accessToken, params);
+      setEntitlements(data.entitlements);
+      setTotal(data.pagination.total);
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Failed to load entitlements');
     } finally {
@@ -60,7 +65,7 @@ export default function EntitlementList() {
 
   useFocusEffect(useCallback(() => { fetchEntitlements(); }, [fetchEntitlements]));
 
-  const handleRecalculate = (id: string) => {
+  const handleRecalculate = (entitlementId: string) => {
     Alert.alert(
       'Recalculate',
       'This will recalculate the entitlement based on current policies. Proceed?',
@@ -70,9 +75,9 @@ export default function EntitlementList() {
           text: 'Recalculate',
           onPress: async () => {
             if (!accessToken || !companyId || !deviceId) return;
-            setRecalcId(id);
+            setRecalcId(entitlementId);
             try {
-              await recalculateEntitlement(companyId, id, deviceId, accessToken);
+              await recalculateEntitlement(companyId, entitlementId, deviceId, accessToken);
               Alert.alert('Success', 'Entitlement recalculated');
               fetchEntitlements();
             } catch (error: any) {
@@ -89,10 +94,20 @@ export default function EntitlementList() {
       <Text style={styles.userId}>User: {item.user_id}</Text>
       <Text style={styles.detail}>Leave Type: {item.leave_type_id}</Text>
       <Text style={styles.detail}>Total Days: {item.total_days}</Text>
-      <Text style={styles.detail}>Effective: {new Date(item.effective_from).toLocaleDateString()} – {item.effective_to ? new Date(item.effective_to).toLocaleDateString() : 'No end'}</Text>
+      <Text style={styles.detail}>
+        Effective: {new Date(item.effective_from).toLocaleDateString()} – {item.effective_to ? new Date(item.effective_to).toLocaleDateString() : 'No end'}
+      </Text>
       <View style={styles.actions}>
-        <TouchableOpacity style={styles.recalcButton} onPress={() => handleRecalculate(item.id)} disabled={recalcId === item.id}>
-          {recalcId === item.id ? <ActivityIndicator size="small" color={PRIMARY_COLOR} /> : <Text style={styles.recalcText}>Recalculate</Text>}
+        <TouchableOpacity
+          style={styles.recalcButton}
+          onPress={() => handleRecalculate(item.entitlement_id)}
+          disabled={recalcId === item.entitlement_id}
+        >
+          {recalcId === item.entitlement_id ? (
+            <ActivityIndicator size="small" color={PRIMARY_COLOR} />
+          ) : (
+            <Text style={styles.recalcText}>Recalculate</Text>
+          )}
         </TouchableOpacity>
       </View>
     </View>
@@ -114,13 +129,7 @@ export default function EntitlementList() {
         <Text style={styles.headerTitle}>Entitlements</Text>
         <TouchableOpacity
           style={styles.addButton}
-          onPress={() =>
-            // ✅ Use object form to satisfy TypeScript
-            navigation.navigate({
-              name: 'CreateEntitlement',
-              params: {}, // No params needed
-            })
-          }
+          onPress={() => navigation.navigate({ name: 'CreateEntitlement', params: {} })}
         >
           <Icon name="plus" size={24} color="#fff" />
         </TouchableOpacity>
@@ -135,14 +144,17 @@ export default function EntitlementList() {
           onChangeText={setUserIdFilter}
           onSubmitEditing={() => fetchEntitlements()}
         />
-        <TouchableOpacity onPress={() => { setUserIdFilter(''); fetchEntitlements(); }} style={styles.clearButton}>
+        <TouchableOpacity
+          onPress={() => { setUserIdFilter(''); fetchEntitlements(); }}
+          style={styles.clearButton}
+        >
           <Icon name="close" size={18} color={TEXT_SECONDARY} />
         </TouchableOpacity>
       </View>
 
       <FlatList
         data={entitlements}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item) => item.entitlement_id}
         renderItem={renderItem}
         contentContainerStyle={styles.listContent}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetchEntitlements(true)} />}

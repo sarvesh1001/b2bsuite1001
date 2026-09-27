@@ -1,3 +1,4 @@
+// apps/prayantra-b2b/src/screens/hr/leave/admin/CreateEntitlementScreen.tsx
 import React, { useState } from 'react';
 import {
   View,
@@ -29,11 +30,12 @@ import { RootStackParamList } from '../../../../navigation';
 
 type NavigationProps = StackNavigationProp<RootStackParamList, 'CreateEntitlement'>;
 
+const toDateOnly = (d: Date): string => d.toISOString().slice(0, 10);
+
 export default function CreateEntitlementScreen() {
   const navigation = useNavigation<NavigationProps>();
   const { accessToken, deviceId, companyId } = useUserAuthStore();
 
-  // Form fields
   const [userId, setUserId] = useState('');
   const [leaveTypeId, setLeaveTypeId] = useState('');
   const [totalDays, setTotalDays] = useState('');
@@ -46,22 +48,24 @@ export default function CreateEntitlementScreen() {
   const [loadingTypes, setLoadingTypes] = useState(false);
   const [showTypePicker, setShowTypePicker] = useState(false);
 
-  // Load leave types on focus
   React.useEffect(() => {
     const fetchLeaveTypes = async () => {
       if (!accessToken || !companyId || !deviceId) return;
       setLoadingTypes(true);
       try {
-        const res = await listLeaveTypes(companyId, deviceId, accessToken);
-        setLeaveTypes(res.data || []);
-      } catch (error) {
-        Alert.alert('Error', 'Failed to load leave types');
+        // ⚠️ Now returns LeaveTypesListData — not an array
+        const data = await listLeaveTypes(companyId, deviceId, accessToken);
+        setLeaveTypes(data.leave_types);
+      } catch (error: any) {
+        Alert.alert('Error', error?.message || 'Failed to load leave types');
       } finally {
         setLoadingTypes(false);
       }
     };
     fetchLeaveTypes();
   }, [accessToken, companyId, deviceId]);
+
+  const selectedType = leaveTypes.find(t => t.leave_type_id === leaveTypeId);
 
   const handleSubmit = async () => {
     if (!userId.trim()) { Alert.alert('Error', 'User ID is required'); return; }
@@ -70,7 +74,6 @@ export default function CreateEntitlementScreen() {
       Alert.alert('Error', 'Total days must be a positive number');
       return;
     }
-
     if (!accessToken || !companyId || !deviceId) {
       Alert.alert('Error', 'Missing authentication');
       return;
@@ -82,8 +85,9 @@ export default function CreateEntitlementScreen() {
         user_id: userId.trim(),
         leave_type_id: leaveTypeId,
         total_days: Number(totalDays),
-        effective_from: effectiveFrom.toISOString(),
-        effective_to: effectiveTo ? effectiveTo.toISOString() : null,
+        // ⚠️ Backend expects DATE (YYYY-MM-DD), not RFC3339
+        effective_from: toDateOnly(effectiveFrom),
+        effective_to: effectiveTo ? toDateOnly(effectiveTo) : null,
       });
       Alert.alert('Success', 'Entitlement created successfully');
       navigation.goBack();
@@ -106,7 +110,6 @@ export default function CreateEntitlementScreen() {
 
       <ScrollView contentContainerStyle={styles.formContainer}>
         <View style={styles.card}>
-          {/* User ID */}
           <Text style={styles.label}>User ID</Text>
           <TextInput
             style={styles.input}
@@ -115,35 +118,42 @@ export default function CreateEntitlementScreen() {
             onChangeText={setUserId}
           />
 
-          {/* Leave Type */}
           <Text style={styles.label}>Leave Type</Text>
           <TouchableOpacity
             style={styles.selectButton}
             onPress={() => setShowTypePicker(!showTypePicker)}
+            disabled={loadingTypes}
           >
             <Text style={styles.selectText}>
-              {leaveTypes.find(t => t.id === leaveTypeId)?.name || 'Select leave type'}
+              {loadingTypes
+                ? 'Loading...'
+                : selectedType
+                  ? `${selectedType.name} (${selectedType.code})`
+                  : 'Select leave type'}
             </Text>
             <Icon name="chevron-down" size={20} color={TEXT_SECONDARY} />
           </TouchableOpacity>
           {showTypePicker && (
             <View style={styles.optionsContainer}>
-              {leaveTypes.map(type => (
-                <TouchableOpacity
-                  key={type.id}
-                  style={styles.optionItem}
-                  onPress={() => {
-                    setLeaveTypeId(type.id);
-                    setShowTypePicker(false);
-                  }}
-                >
-                  <Text style={styles.optionText}>{type.name} ({type.code})</Text>
-                </TouchableOpacity>
-              ))}
+              {leaveTypes.length === 0 ? (
+                <Text style={styles.optionText}>No leave types</Text>
+              ) : (
+                leaveTypes.map(type => (
+                  <TouchableOpacity
+                    key={type.leave_type_id}
+                    style={styles.optionItem}
+                    onPress={() => {
+                      setLeaveTypeId(type.leave_type_id);
+                      setShowTypePicker(false);
+                    }}
+                  >
+                    <Text style={styles.optionText}>{type.name} ({type.code})</Text>
+                  </TouchableOpacity>
+                ))
+              )}
             </View>
           )}
 
-          {/* Total Days */}
           <Text style={styles.label}>Total Days</Text>
           <TextInput
             style={styles.input}
@@ -153,7 +163,6 @@ export default function CreateEntitlementScreen() {
             onChangeText={setTotalDays}
           />
 
-          {/* Effective From */}
           <Text style={styles.label}>Effective From</Text>
           <TouchableOpacity
             style={styles.dateButton}
@@ -163,7 +172,6 @@ export default function CreateEntitlementScreen() {
             <Icon name="calendar" size={20} color={PRIMARY_COLOR} />
           </TouchableOpacity>
 
-          {/* Effective To (optional) */}
           <Text style={styles.label}>Effective To (optional)</Text>
           <TouchableOpacity
             style={styles.dateButton}
@@ -217,106 +225,23 @@ export default function CreateEntitlementScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: BACKGROUND_COLOR,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: CARD_BACKGROUND,
-    borderBottomWidth: 1,
-    borderBottomColor: BORDER_COLOR,
-  },
+  container: { flex: 1, backgroundColor: BACKGROUND_COLOR },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, backgroundColor: CARD_BACKGROUND, borderBottomWidth: 1, borderBottomColor: BORDER_COLOR },
   backButton: { padding: 4 },
-  headerTitle: {
-    flex: 1,
-    fontSize: 18,
-    fontWeight: '700',
-    color: TEXT_PRIMARY,
-    marginLeft: 10,
-  },
-  formContainer: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-  card: {
-    backgroundColor: CARD_BACKGROUND,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: BORDER_COLOR,
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: TEXT_PRIMARY,
-    marginTop: 12,
-    marginBottom: 4,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: BORDER_COLOR,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: TEXT_PRIMARY,
-    backgroundColor: '#fff',
-  },
-  selectButton: {
-    borderWidth: 1,
-    borderColor: BORDER_COLOR,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-  },
+  headerTitle: { flex: 1, fontSize: 18, fontWeight: '700', color: TEXT_PRIMARY, marginLeft: 10 },
+  formContainer: { padding: 16, paddingBottom: 40 },
+  card: { backgroundColor: CARD_BACKGROUND, borderRadius: 12, padding: 16, borderWidth: 1, borderColor: BORDER_COLOR },
+  label: { fontSize: 13, fontWeight: '600', color: TEXT_PRIMARY, marginTop: 12, marginBottom: 4 },
+  input: { borderWidth: 1, borderColor: BORDER_COLOR, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: TEXT_PRIMARY, backgroundColor: '#fff' },
+  selectButton: { borderWidth: 1, borderColor: BORDER_COLOR, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#fff' },
   selectText: { fontSize: 14, color: TEXT_PRIMARY },
-  optionsContainer: {
-    marginTop: 4,
-    borderWidth: 1,
-    borderColor: BORDER_COLOR,
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    maxHeight: 150,
-  },
-  optionItem: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: BORDER_COLOR,
-  },
+  optionsContainer: { marginTop: 4, borderWidth: 1, borderColor: BORDER_COLOR, borderRadius: 8, backgroundColor: '#fff', maxHeight: 150 },
+  optionItem: { paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: BORDER_COLOR },
   optionText: { fontSize: 14, color: TEXT_PRIMARY },
-  dateButton: {
-    borderWidth: 1,
-    borderColor: BORDER_COLOR,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-  },
+  dateButton: { borderWidth: 1, borderColor: BORDER_COLOR, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#fff' },
   clearDate: { marginTop: 4, alignSelf: 'flex-start' },
   clearDateText: { fontSize: 12, color: PRIMARY_COLOR },
-  submitButton: {
-    backgroundColor: PRIMARY_COLOR,
-    paddingVertical: 14,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginTop: 20,
-  },
+  submitButton: { backgroundColor: PRIMARY_COLOR, paddingVertical: 14, borderRadius: 10, alignItems: 'center', marginTop: 20 },
   disabledButton: { opacity: 0.6 },
-  submitText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
+  submitText: { color: '#fff', fontSize: 16, fontWeight: '600' },
 });

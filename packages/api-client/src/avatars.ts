@@ -2,7 +2,11 @@
 import { axiosInstance } from './axios-instance';
 import { Avatar, ApiResponse } from '@b2b/shared-types';
 import axios from 'axios';
-import { idempotentPost, idempotentPut, idempotentDelete } from './idempotency';
+import {
+  idempotentPost,
+  idempotentPatch,
+  idempotentDelete,
+} from './idempotency';
 
 // ---- Helper to build the full avatar URL using the /avatars/file endpoint ----
 const buildFileUrl = (key: string): string => {
@@ -28,7 +32,9 @@ const getBaseHeaders = (
 
 /**
  * Generate an upload URL for a new avatar.
- * (No idempotency needed – this is a GET-like URL generation.)
+ *
+ * Route: POST /avatars/me/upload-url
+ * Identity comes from the JWT — no {userId} in the URL.
  */
 export const generateAvatarUploadUrl = async (
   mimeType: string,
@@ -36,7 +42,7 @@ export const generateAvatarUploadUrl = async (
   accessToken: string,
   companyId: string,
 ): Promise<{ uploadUrl: string; fileKey: string; expiresIn: number }> => {
-  const url = `/avatars/upload-url`;
+  const url = `/avatars/me/upload-url`;
   const headers = {
     ...getBaseHeaders(deviceId, accessToken, companyId),
     'Content-Type': 'application/json',
@@ -65,11 +71,10 @@ export const generateAvatarUploadUrl = async (
  *   - Authorization  → identifies the user
  *   - X-Device-ID    → required by SessionValidationMiddleware
  *   - X-Company-ID   → required by tenant-scoped routes
- *   - X-Location-ID  → required by LocationValidationMiddleware on writes
- *                      (must be a SPECIFIC location id, not "ALL")
  *
- * If the backend returns a **relative** path, we resolve it against the
- * API baseURL manually so both shapes work.
+ * NOTE: `/avatars/me/upload` is registered OUTSIDE the location-validated
+ * group, so it does NOT require an X-Location-ID header. We still accept
+ * a `locationId` param for backward compat but do not send it.
  */
 export const uploadAvatarFile = async (
   uploadUrl: string,
@@ -80,7 +85,8 @@ export const uploadAvatarFile = async (
   accessToken: string,
   deviceId: string,
   companyId: string,
-  locationId?: string,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _locationId?: string, // kept for signature compat; not sent (route is not location-scoped)
 ): Promise<{ file_key: string }> => {
   const formData = new FormData();
   formData.append('file_key', fileKey);
@@ -114,7 +120,6 @@ export const uploadAvatarFile = async (
       Authorization: `Bearer ${accessToken}`,
       'X-Device-ID': deviceId,
       'X-Company-ID': companyId,
-      ...(locationId ? { 'X-Location-ID': locationId } : {}),
       'Content-Type': 'multipart/form-data',
     },
     timeout: 30_000,
@@ -127,6 +132,8 @@ export const uploadAvatarFile = async (
 
 /**
  * Confirm avatar upload and create the avatar record.
+ *
+ * Route: POST /avatars/me/confirm
  * Uses idempotentPost.
  */
 export const confirmAvatarUpload = async (
@@ -138,7 +145,7 @@ export const confirmAvatarUpload = async (
   idempotencyKey: string, // kept for signature compatibility; the wrapper generates its own
   companyId: string,
 ): Promise<Avatar> => {
-  const url = `/avatars/confirm`;
+  const url = `/avatars/me/confirm`;
   const headers = getBaseHeaders(deviceId, accessToken, companyId);
   const response = await idempotentPost<ApiResponse<Avatar>>(
     url,
@@ -151,6 +158,9 @@ export const confirmAvatarUpload = async (
 
 /**
  * Get the primary avatar of the authenticated user.
+ *
+ * Route: GET /avatars/me/primary
+ * Identity comes from the JWT — no {userId} in the URL.
  * (Read‑only, no idempotency.)
  */
 export const getMyPrimaryAvatar = async (
@@ -158,7 +168,7 @@ export const getMyPrimaryAvatar = async (
   accessToken: string,
   companyId: string,
 ): Promise<Avatar | null> => {
-  const url = `/avatars/primary`;
+  const url = `/avatars/me/primary`;
   const headers = getBaseHeaders(deviceId, accessToken, companyId);
   try {
     const response = await axiosInstance.get<ApiResponse<Avatar>>(url, {
@@ -172,6 +182,8 @@ export const getMyPrimaryAvatar = async (
 
 /**
  * List all active avatars of the authenticated user.
+ *
+ * Route: GET /avatars/me
  * (Read‑only.)
  */
 export const listMyAvatars = async (
@@ -179,7 +191,7 @@ export const listMyAvatars = async (
   accessToken: string,
   companyId: string,
 ): Promise<Avatar[]> => {
-  const url = `/avatars/`;
+  const url = `/avatars/me`;
   const headers = getBaseHeaders(deviceId, accessToken, companyId);
   const response = await axiosInstance.get<ApiResponse<Avatar[]>>(url, {
     headers,
@@ -188,7 +200,9 @@ export const listMyAvatars = async (
 };
 
 /**
- * List all soft‑deleted (inactive) avatars.
+ * List all soft‑deleted (inactive) avatars of the authenticated user.
+ *
+ * Route: GET /avatars/me/inactive
  * (Read‑only.)
  */
 export const listInactiveAvatars = async (
@@ -196,7 +210,7 @@ export const listInactiveAvatars = async (
   accessToken: string,
   companyId: string,
 ): Promise<Avatar[]> => {
-  const url = `/avatars/inactive`;
+  const url = `/avatars/me/inactive`;
   const headers = getBaseHeaders(deviceId, accessToken, companyId);
   const response = await axiosInstance.get<ApiResponse<Avatar[]>>(url, {
     headers,
@@ -205,7 +219,9 @@ export const listInactiveAvatars = async (
 };
 
 /**
- * Get a specific avatar by ID.
+ * Get a specific avatar by ID (must belong to the authenticated user).
+ *
+ * Route: GET /avatars/me/{id}
  * (Read‑only.)
  */
 export const getAvatarById = async (
@@ -214,7 +230,7 @@ export const getAvatarById = async (
   accessToken: string,
   companyId: string,
 ): Promise<Avatar> => {
-  const url = `/avatars/${avatarId}`;
+  const url = `/avatars/me/${avatarId}`;
   const headers = getBaseHeaders(deviceId, accessToken, companyId);
   const response = await axiosInstance.get<ApiResponse<Avatar>>(url, {
     headers,
@@ -224,7 +240,9 @@ export const getAvatarById = async (
 
 /**
  * Set an avatar as primary.
- * Uses idempotentPut.
+ *
+ * Route: PATCH /avatars/me/{id}/primary   (was PUT — changed to PATCH)
+ * Uses idempotentPatch.
  */
 export const setAvatarPrimary = async (
   avatarId: string,
@@ -233,13 +251,15 @@ export const setAvatarPrimary = async (
   idempotencyKey: string, // kept for compatibility; wrapper generates its own
   companyId: string,
 ): Promise<void> => {
-  const url = `/avatars/${avatarId}/primary`;
+  const url = `/avatars/me/${avatarId}/primary`;
   const headers = getBaseHeaders(deviceId, accessToken, companyId);
-  await idempotentPut<void>(url, {}, 'setAvatarPrimary', { headers });
+  await idempotentPatch<void>(url, {}, 'setAvatarPrimary', { headers });
 };
 
 /**
  * Delete (soft‑delete) an avatar.
+ *
+ * Route: DELETE /avatars/me/{id}
  * Uses idempotentDelete.
  */
 export const deleteAvatar = async (
@@ -249,14 +269,16 @@ export const deleteAvatar = async (
   idempotencyKey: string, // kept for compatibility
   companyId: string,
 ): Promise<void> => {
-  const url = `/avatars/${avatarId}`;
+  const url = `/avatars/me/${avatarId}`;
   const headers = getBaseHeaders(deviceId, accessToken, companyId);
   await idempotentDelete<void>(url, {}, 'deleteAvatar', { headers });
 };
 
 /**
  * Reactivate a soft‑deleted avatar.
- * Uses idempotentPut.
+ *
+ * Route: POST /avatars/me/{id}/reactivate   (was PUT — changed to POST)
+ * Uses idempotentPost.
  */
 export const reactivateAvatar = async (
   avatarId: string,
@@ -266,24 +288,36 @@ export const reactivateAvatar = async (
   companyId: string,
   setPrimary: boolean = false,
 ): Promise<void> => {
-  const url = `/avatars/${avatarId}/reactivate`;
+  const url = `/avatars/me/${avatarId}/reactivate`;
   const headers = getBaseHeaders(deviceId, accessToken, companyId);
-  await idempotentPut<void>(url, { setPrimary }, 'reactivateAvatar', {
+  await idempotentPost<void>(url, { setPrimary }, 'reactivateAvatar', {
     headers,
   });
 };
 
 /**
- * Get the primary avatar of any user (by userId).
- * (Read‑only, no idempotency.)
+ * Get the primary avatar of the authenticated user.
+ *
+ * Route: GET /avatars/me/primary
+ *
+ * ⚠️ `userId` is retained ONLY for backward compatibility with existing
+ *     callers (e.g. `UserAvatar` which passes the target user's id).
+ *     The server IGNORES the path and reads identity from the JWT — so
+ *     this function ALWAYS returns the caller's own avatar, never
+ *     someone else's.
+ *
+ *     If your app needs to render OTHER users' avatars, add a separate
+ *     endpoint (e.g. `/avatars/company/users/{userId}/primary`) gated
+ *     behind `hr.employee.view`.
  */
 export const getUserPrimaryAvatar = async (
-  userId: string,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _userId: string, // ← ignored; identity comes from the JWT
   deviceId: string,
   accessToken: string,
   companyId: string,
 ): Promise<Avatar | null> => {
-  const url = `/avatars/users/${userId}/primary`;
+  const url = `/avatars/me/primary`;
   const headers = getBaseHeaders(deviceId, accessToken, companyId);
   try {
     const response = await axiosInstance.get<ApiResponse<Avatar>>(url, {
@@ -294,7 +328,7 @@ export const getUserPrimaryAvatar = async (
     if (axios.isAxiosError(error) && error.response?.status === 404) {
       return null;
     }
-    console.warn(`Failed to fetch avatar for user ${userId}`, error);
+    console.warn(`Failed to fetch avatar (self)`, error);
     return null;
   }
 };

@@ -17,7 +17,7 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useUserAuthStore } from '../../../../store/userAuthStore';
 import { listLeaveRequests } from '@b2b/api-client';
-import { LeaveRequest } from '@b2b/shared-types';
+import { LeaveRequest, LeaveRequestStatus } from '@b2b/shared-types';
 import {
   BACKGROUND_COLOR,
   CARD_BACKGROUND,
@@ -29,6 +29,14 @@ import {
 import { RootStackParamList } from '../../../../navigation';
 
 type NavigationProps = StackNavigationProp<RootStackParamList, 'LeaveRequestList'>;
+
+// ⚠️ FIX #4 — typed record instead of string-switch
+const STATUS_COLOR: Record<LeaveRequestStatus, string> = {
+  approved: '#10b981',
+  rejected: '#ef4444',
+  pending: '#f59e0b',
+  cancelled: '#6b7280',
+};
 
 export default function LeaveRequestList() {
   const navigation = useNavigation<NavigationProps>();
@@ -43,10 +51,13 @@ export default function LeaveRequestList() {
     if (showRefresh) setRefreshing(true);
     else setLoading(true);
     try {
-      const params: any = {};
-      if (statusFilter) params.status = statusFilter;
-      const res = await listLeaveRequests(companyId, deviceId, accessToken, params);
-      setRequests(res.data || []);
+      const params: { status?: string } = {};
+      if (statusFilter.trim()) params.status = statusFilter.trim();
+
+      // ⚠️ FIX #1 — listLeaveRequests returns LeaveRequestsListData
+      // (the API client now unwraps the envelope for you)
+      const data = await listLeaveRequests(companyId, deviceId, accessToken, params);
+      setRequests(data.requests);
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Failed to load leave requests');
     } finally {
@@ -57,43 +68,52 @@ export default function LeaveRequestList() {
 
   useFocusEffect(useCallback(() => { fetchRequests(); }, [fetchRequests]));
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'approved': return '#10b981';
-      case 'rejected': return '#ef4444';
-      case 'pending': return '#f59e0b';
-      default: return '#6b7280';
-    }
-  };
+  const getStatusColor = (status: LeaveRequestStatus) =>
+    STATUS_COLOR[status] ?? '#6b7280';
 
   const renderItem = ({ item }: { item: LeaveRequest }) => (
     <TouchableOpacity
       style={styles.card}
       onPress={() =>
         navigation.navigate({
-          name: 'LeaveRequestForm',
-          params: { requestId: item.id },
+          // ⚠️ FIX #2 — route name must match LeaveDetail.tsx's RouteProp
+          // LeaveDetail declares: RouteProp<RootStackParamList, 'LeaveRequestDetail'>
+          name: 'LeaveRequestDetail',
+          // ⚠️ FIX #3 — backend field is leave_request_id, not id
+          params: { requestId: item.leave_request_id },
         })
       }
     >
       <View style={styles.cardHeader}>
         <Text style={styles.userId}>User: {item.user_id}</Text>
-        <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item.status) + '20' }]}>
-          <Text style={[styles.statusText, { color: getStatusColor(item.status) }]}>{item.status.toUpperCase()}</Text>
+        <View
+          style={[
+            styles.statusBadge,
+            { backgroundColor: getStatusColor(item.status) + '20' },
+          ]}
+        >
+          <Text style={[styles.statusText, { color: getStatusColor(item.status) }]}>
+            {item.status.toUpperCase()}
+          </Text>
         </View>
       </View>
       <Text style={styles.detail}>Leave Type: {item.leave_type_id}</Text>
-      <Text style={styles.detail}>Dates: {new Date(item.start_date).toLocaleDateString()} - {new Date(item.end_date).toLocaleDateString()}</Text>
+      <Text style={styles.detail}>
+        Dates: {new Date(item.start_date).toLocaleDateString()} -{' '}
+        {new Date(item.end_date).toLocaleDateString()}
+      </Text>
       <Text style={styles.detail}>Total Days: {item.total_days}</Text>
     </TouchableOpacity>
   );
 
-  if (loading) return (
-    <SafeAreaView style={styles.loadingContainer}>
-      <ActivityIndicator size="large" color={PRIMARY_COLOR} />
-      <Text style={styles.loadingText}>Loading requests...</Text>
-    </SafeAreaView>
-  );
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color={PRIMARY_COLOR} />
+        <Text style={styles.loadingText}>Loading requests...</Text>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -104,7 +124,6 @@ export default function LeaveRequestList() {
         <Text style={styles.headerTitle}>Leave Requests</Text>
         <TouchableOpacity
           style={styles.addButton}
-          // ✅ Pass empty params object to satisfy TypeScript
           onPress={() => navigation.navigate('LeaveRequestForm', {})}
         >
           <Icon name="plus" size={24} color="#fff" />
@@ -115,22 +134,32 @@ export default function LeaveRequestList() {
         <Icon name="filter" size={20} color={TEXT_SECONDARY} style={styles.filterIcon} />
         <TextInput
           style={styles.filterInput}
-          placeholder="Filter by status (pending, approved, rejected)"
+          placeholder="Filter by status (pending, approved, rejected, cancelled)"
           value={statusFilter}
           onChangeText={setStatusFilter}
           onSubmitEditing={() => fetchRequests()}
+          autoCapitalize="none"
         />
-        <TouchableOpacity onPress={() => { setStatusFilter(''); fetchRequests(); }} style={styles.clearButton}>
+        <TouchableOpacity
+          onPress={() => {
+            setStatusFilter('');
+            fetchRequests();
+          }}
+          style={styles.clearButton}
+        >
           <Icon name="close" size={18} color={TEXT_SECONDARY} />
         </TouchableOpacity>
       </View>
 
       <FlatList
         data={requests}
-        keyExtractor={(item) => item.id}
+        // ⚠️ FIX #3 (again) — keyExtractor must use leave_request_id
+        keyExtractor={(item) => item.leave_request_id}
         renderItem={renderItem}
         contentContainerStyle={styles.listContent}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetchRequests(true)} />}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={() => fetchRequests(true)} />
+        }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Icon name="calendar-blank" size={60} color={TEXT_SECONDARY} />

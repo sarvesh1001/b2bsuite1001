@@ -13,18 +13,15 @@ import { navigationRef, onNavigationReady } from './navigationService';
 //
 // HR = people + org structure + leave + contact
 //   HREmployeeList, HREmployeeForm, HREmployeeDetail, HREmployeeStats,
-//   HRDocumentList, EmployeeSearch, UserPhone,
-//   PositionsList, DepartmentsList, WorkCentersList, OrgUnitList,
+//   HRDocumentList,
+//   JobsList, PositionsList, DepartmentsList, WorkCentersList, OrgUnitList,
 //   LeaveRequestList, LeaveBalanceScreen, PolicyConfigList, ...
 //
 // Payroll = payroll domain (unchanged)
 //
 // TOP-LEVEL (not in any module grid — reached from the main screen):
-//   AvatarManagement — tapped from the user chip in ModuleGridScreen header
-//
-// LEGACY / DEPRECATED ROUTES (still registered for deep links only):
-//   EmployeesList, AddEmployee, EditEmployee, EmployeeDetail
-//   — superseded by HREmployeeList / HREmployeeForm / HREmployeeDetail
+//   MyProfile       — tapped from the profile chip in ModuleGridScreen header
+//   AvatarManagement — tapped from the profile chip AND from MyProfileScreen
 // ============================================================
 
 // Auth Screens
@@ -36,11 +33,11 @@ import MPINForgotScreen from '../screens/auth/MPINForgotScreen';
 import CompanySelectionScreen from '../screens/auth/CompanySelectionScreen';
 import WebLoginQRScanner from '../screens/auth/WebLoginQRScanner';
 
-// 👇 NEW: Location picker shown after MPIN login (multi-location users)
 import LocationSelectionScreen from '../screens/auth/LocationSelectionScreen';
 
-// 👇 NEW: Subscription block screen (shown on HTTP 402 subscription_*)
 import SubscriptionPaymentScreen from '../screens/subscription/SubscriptionPaymentScreen';
+
+import MyProfileScreen from '../screens/profile/MyProfileScreen';
 
 // Main Screens
 import ModuleGridScreen from '../screens/main/ModuleGridScreen';
@@ -56,18 +53,24 @@ import EditDepartmentScreen from '../screens/module/administration/EditDepartmen
 import RolesListScreen from '../screens/module/administration/RolesListScreen';
 import CreateRoleScreen from '../screens/module/administration/CreateRoleScreen';
 import EditRoleScreen from '../screens/module/administration/EditRoleScreen';
+
+// ============================================================
+// JOB CATALOG  (NEW)
+//
+// A job is a role *definition* ("Cashier", "Line Operator"). It carries
+// no location and no work center — those live on `positions` (seats).
+// One job → many seats. 100 stores × 1 cashier = 1 job + 100 positions.
+// ============================================================
+import JobsListScreen from '../screens/module/administration/JobsListScreen';
+import CreateJobScreen from '../screens/module/administration/CreateJobScreen';
+import EditJobScreen from '../screens/module/administration/EditJobScreen';
+
 import PositionsListScreen from '../screens/module/administration/PositionsListScreen';
 import CreatePositionScreen from '../screens/module/administration/CreatePositionScreen';
 import EditPositionScreen from '../screens/module/administration/EditPositionScreen';
-import EmployeesListScreen from '../screens/module/administration/EmployeesListScreen';
-import AddEmployeeScreen from '../screens/module/administration/AddEmployeeScreen';
-import EditEmployeeScreen from '../screens/module/administration/EditEmployeeScreen';
-import EmployeeSearchScreen from '../screens/module/administration/EmployeeSearchScreen';
 import AvatarManagementScreen from '../screens/module/administration/AvatarManagementScreen';
-import EmployeeDetailScreen from '../screens/module/administration/EmployeeDetailScreen';
-import UserPhoneScreen from '../screens/module/administration/UserPhoneScreen';
 
-// 👇 NEW: Location Management Screens
+// Location Management Screens
 import LocationListScreen from '../screens/module/administration/LocationListScreen';
 import LocationFormScreen from '../screens/module/administration/LocationFormScreen';
 import EmployeeLocationAccessScreen from '../screens/module/administration/EmployeeLocationAccessScreen';
@@ -95,10 +98,16 @@ import LeaveDetail from '../screens/hr/leave/user/LeaveDetail';
 
 import PolicyConfigList from '../screens/hr/leave/admin/PolicyConfigList';
 import PolicyConfigForm from '../screens/hr/leave/admin/PolicyConfigForm';
+import PolicyConfigDetail from '../screens/hr/leave/admin/PolicyConfigDetail';
 import LeaveTypeList from '../screens/hr/leave/admin/LeaveTypeList';
 import LeaveTypeForm from '../screens/hr/leave/admin/LeaveTypeForm';
 import EntitlementList from '../screens/hr/leave/admin/EntitlementList';
 import CreateEntitlementScreen from '../screens/hr/leave/admin/CreateEntitlementScreen';
+// ⬇️ accrual schedule now lives here, not on the leave type
+import AddPolicyRuleScreen from '../screens/hr/leave/admin/AddPolicyRuleScreen';
+// ⬇️ NEW — policy resolution cockpit + effective-policy viewer
+import PolicyResolutionScreen from '../screens/hr/leave/admin/PolicyResolutionScreen';
+import UserEffectivePoliciesScreen from '../screens/hr/leave/admin/UserEffectivePoliciesScreen';
 
 // ============================================================
 // PAYROLL SCREENS
@@ -177,7 +186,6 @@ import StatutoryChallanForm from '../screens/hr/payroll/Reports/StatutoryChallan
 import PayrollRunList from '../screens/hr/payroll/Runs/PayrollRunList';
 import PayrollRunDetail from '../screens/hr/payroll/Runs/PayrollRunDetail';
 import CreateRunForm from '../screens/hr/payroll/Runs/CreateRunForm';
-// Note: InitializeRunButton and ExecuteRunButton are buttons, not screens – removed
 import RunLedgerSummary from '../screens/hr/payroll/Runs/RunLedgerSummary';
 import RunStatutorySummary from '../screens/hr/payroll/Runs/RunStatutorySummary';
 import RunEmployeesList from '../screens/hr/payroll/Runs/RunEmployeesList';
@@ -248,7 +256,17 @@ export type RootStackParamList = {
   PhoneInput: undefined;
   OTPVerification: { phone: string; userId?: string; hasMpin?: boolean; flowState?: string };
   MPINSetup: { userId: string; phone: string; companyId: string };
-  MPINVerification: { phone: string; userId: string; companyId?: string };
+
+  // ✅ UPDATED — MPINVerification now carries an optional companies list
+  // so the screen can render an inline company picker (needed because
+  // /auth/login/verify-mpin REQUIRES company_id in the body).
+  MPINVerification: {
+    phone: string;
+    userId: string;
+    companyId?: string;
+    companies?: { company_id: string; company_name: string }[];
+  };
+
   MPINForgot: { phone: string };
   CompanySelection: {
     userId: string;
@@ -280,19 +298,20 @@ export type RootStackParamList = {
   CreateRole: undefined;
   EditRole: { roleId: string };
 
+  // ===== Job catalog (NEW) =====
+  // A job is a role definition; positions are built from jobs.
+  JobsList: undefined;
+  CreateJob: undefined;
+  EditJob: { jobId: string };
+
+  // ===== Positions (seats) =====
   PositionsList: undefined;
   CreatePosition: undefined;
   EditPosition: { positionId: string };
 
-  // Legacy / deprecated admin employee routes — kept for deep links
-  EmployeesList: undefined;
-  AddEmployee: undefined;
-  EditEmployee: { userId: string };
-  EmployeeSearch: undefined;
-  EmployeeDetail: { userId: string };
-
+  // ===== User self-service =====
+  MyProfile: undefined;
   AvatarManagement: undefined;
-  UserPhone: { userId: string; userName?: string };
 
   // Location Management
   LocationList: undefined;
@@ -307,7 +326,10 @@ export type RootStackParamList = {
 
   // ===== HR SCREENS =====
   HREmployeeList: undefined;
-  HREmployeeDetail: { employeeId: string };
+  HREmployeeDetail: {
+    userId: string;
+    employeeProfileId?: string;
+  };
   HREmployeeForm: { employeeId?: string };
   HREmployeeStats: undefined;
   HRDocumentList: { employeeId: string; employeeName?: string };
@@ -326,10 +348,21 @@ export type RootStackParamList = {
   // Leave - Admin
   PolicyConfigList: undefined;
   PolicyConfigForm: { policyId?: string };
+  PolicyConfigDetail: { policyId: string };
   LeaveTypeList: undefined;
   LeaveTypeForm: { leaveTypeId?: string };
   EntitlementList: undefined;
   CreateEntitlement: { userId?: string; leaveTypeId?: string };
+  // ⬇️ accrual + carry-forward now belong to the rule, not the type
+  AddPolicyRule: { policyId: string };
+
+  // ⬇️ NEW — the two resolution surfaces
+  PolicyResolution: undefined;
+  UserEffectivePolicies: {
+    userId: string;
+    username?: string;
+    asOf?: string;
+  };
 
   // ===== PAYROLL SCREENS =====
 
@@ -565,20 +598,23 @@ export default function Navigation() {
         <Stack.Screen name="CreateRole" component={CreateRoleScreen} options={{ headerShown: true, title: 'New Role' }} />
         <Stack.Screen name="EditRole" component={EditRoleScreen} options={{ headerShown: true, title: 'Edit Role' }} />
 
+        {/* ===== Jobs (role catalog) ===== */}
+        <Stack.Screen name="JobsList" component={JobsListScreen} options={{ headerShown: true, title: 'Jobs' }} />
+        <Stack.Screen name="CreateJob" component={CreateJobScreen} options={{ headerShown: true, title: 'New Job' }} />
+        <Stack.Screen name="EditJob" component={EditJobScreen} options={{ headerShown: true, title: 'Edit Job' }} />
+
+        {/* ===== Positions (seats) ===== */}
         <Stack.Screen name="PositionsList" component={PositionsListScreen} options={{ headerShown: true, title: 'Positions' }} />
         <Stack.Screen name="CreatePosition" component={CreatePositionScreen} options={{ headerShown: true, title: 'New Position' }} />
         <Stack.Screen name="EditPosition" component={EditPositionScreen} options={{ headerShown: true, title: 'Edit Position' }} />
 
-        {/* Legacy — still registered, no longer surfaced from ModuleDetailScreen */}
-        <Stack.Screen name="EmployeesList" component={EmployeesListScreen} options={{ headerShown: true, title: 'Employees (Legacy)' }} />
-        <Stack.Screen name="AddEmployee" component={AddEmployeeScreen} options={{ headerShown: true, title: 'Add Employee (Legacy)' }} />
-        <Stack.Screen name="EditEmployee" component={EditEmployeeScreen} options={{ headerShown: true, title: 'Edit Employee (Legacy)' }} />
-        <Stack.Screen name="EmployeeDetail" component={EmployeeDetailScreen} options={{ headerShown: true, title: 'Employee Details (Legacy)' }} />
-
-        {/* Shared */}
-        <Stack.Screen name="EmployeeSearch" component={EmployeeSearchScreen} options={{ headerShown: true, title: 'Search Employees' }} />
+        {/* ===== User Self-Service ===== */}
+        <Stack.Screen
+          name="MyProfile"
+          component={MyProfileScreen}
+          options={{ headerShown: false }}
+        />
         <Stack.Screen name="AvatarManagement" component={AvatarManagementScreen} options={{ headerShown: true, title: 'My Avatars' }} />
-        <Stack.Screen name="UserPhone" component={UserPhoneScreen} options={{ headerShown: true, title: 'User Phone' }} />
 
         {/* Location Management */}
         <Stack.Screen name="LocationList" component={LocationListScreen} options={{ headerShown: true, title: 'Locations' }} />
@@ -608,10 +644,25 @@ export default function Navigation() {
 
         <Stack.Screen name="PolicyConfigList" component={PolicyConfigList} options={{ headerShown: true, title: 'Leave Policies' }} />
         <Stack.Screen name="PolicyConfigForm" component={PolicyConfigForm} options={{ headerShown: true, title: 'Leave Policy' }} />
+        <Stack.Screen name="PolicyConfigDetail" component={PolicyConfigDetail} options={{ headerShown: true, title: 'Policy Detail' }} />
         <Stack.Screen name="LeaveTypeList" component={LeaveTypeList} options={{ headerShown: true, title: 'Leave Types' }} />
         <Stack.Screen name="LeaveTypeForm" component={LeaveTypeForm} options={{ headerShown: true, title: 'Leave Type' }} />
         <Stack.Screen name="EntitlementList" component={EntitlementList} options={{ headerShown: true, title: 'Entitlements' }} />
         <Stack.Screen name="CreateEntitlement" component={CreateEntitlementScreen} options={{ headerShown: true, title: 'Create Entitlement' }} />
+        {/* ⬇️ the ONLY place accrual_method + carry_forward_limit are set */}
+        <Stack.Screen name="AddPolicyRule" component={AddPolicyRuleScreen} options={{ headerShown: true, title: 'Add Policy Rule' }} />
+
+        {/* ⬇️ NEW — resolution cockpit + effective-policy viewer */}
+        <Stack.Screen
+          name="PolicyResolution"
+          component={PolicyResolutionScreen}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name="UserEffectivePolicies"
+          component={UserEffectivePoliciesScreen}
+          options={{ headerShown: false }}
+        />
 
         {/* ============================================================
             PAYROLL SCREENS

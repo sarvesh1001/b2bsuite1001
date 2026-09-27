@@ -74,6 +74,7 @@ export interface Company {
   work_center?: CompanyWorkCenter;
   location?: CompanyLocation;
 }
+
 const EXCLUDED_DEPARTMENTS = ['Administration', 'Super Admin Management'];
 
 export interface CompanyEmployee {
@@ -130,6 +131,177 @@ export interface User {
 }
 
 // ============================================================
+// Jobs catalog (job definitions)
+//
+// A "job" is a role definition: "Cashier", "Line Operator".
+// It has NO location, NO work center, NO department — those live
+// on the "position" (seat) that references the job.
+// ============================================================
+
+export interface Job {
+  job_id: string;
+  company_id: string;
+  job_code: string;
+  job_title: string;
+  description: string | null;
+  is_schedulable: boolean;
+  attendance_required: boolean;
+  overtime_allowed: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateJobPayload {
+  job_code: string;
+  job_title: string;
+  description?: string | null;
+  is_schedulable?: boolean;
+  attendance_required?: boolean;
+  overtime_allowed?: boolean;
+}
+
+export interface UpdateJobPayload {
+  job_title?: string;
+  description?: string | null;
+  is_schedulable?: boolean;
+  attendance_required?: boolean;
+  overtime_allowed?: boolean;
+  is_active?: boolean;
+}
+
+export interface JobPositionCount {
+  job_id: string;
+  company_id: string;
+  position_count: number;
+  deletable: boolean;
+  deactivate_hint: boolean;
+}
+
+// ============================================================
+// Positions (updated shape)
+//
+// The seat's old `title` / `is_schedulable` / `attendance_required`
+// / `overtime_allowed` moved to the job. Use `effective_title`
+// for display (title_override ?? job_title).
+// ============================================================
+
+export interface Position {
+  position_id: string;
+  company_id: string;
+  department_id: string;
+  department_name?: string | null;
+  job_id: string;
+  job_code?: string;
+  job_title?: string;
+  title_override: string | null;
+  effective_title?: string;
+  location_id: string | null;
+  location_name?: string | null;
+  is_open: boolean;
+  work_center_code: string | null;
+  work_center_name?: string | null;
+  is_schedulable?: boolean;
+  attendance_required?: boolean;
+  overtime_allowed?: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreatePositionPayload {
+  department_id: string;
+  job_id: string;
+  location_id?: string;
+  title_override?: string;
+  is_open?: boolean;
+  work_center_code?: string;
+}
+
+export interface UpdatePositionPayload {
+  department_id: string;
+  job_id: string;
+  location_id?: string | null;
+  title_override?: string | null;
+  is_open: boolean;
+  work_center_code?: string | null;
+}
+
+// ============================================================
+// Members (hire / update)
+// ============================================================
+
+export interface MemberLocationGrant {
+  location_id: string;
+  access_level: 'VIEW' | 'MANAGE';
+}
+
+export interface AddMemberPayload {
+  member_type?: 'employee' | 'manager';
+  phone: string;
+  username: string;
+  full_name: string;
+  employee_id?: string;
+  role_id: string;
+  reports_to?: string;
+
+  // Position assignment — pick one side:
+  position_id?: string;           // reuse an existing seat
+  job_id?: string;                // OR auto-create a seat
+  department_id?: string;
+  location_id?: string;
+  work_center_code?: string;
+  title_override?: string;
+
+  // Location access
+  primary_location_id?: string;
+  location_access_scope?: 'PRIMARY' | 'SELECTED' | 'ALL';
+  selected_locations?: MemberLocationGrant[];
+  selected_location_ids?: string[];
+
+  // HR profile (all optional)
+  date_of_birth?: string;
+  gender?: string;
+  marital_status?: string;
+  nationality?: string;
+  employment_type?: string;
+  employment_status?: string;
+  probation_end_date?: string;
+  confirmation_date?: string;
+  grade?: string;
+  cost_center_id?: string;
+  cost_center?: string;
+  tax_id?: string;
+  social_security_id?: string;
+  email?: string;
+}
+
+export interface UpdateMemberPayload {
+  username?: string;
+  full_name?: string;
+  role_id?: string;
+  position_id?: string;
+  reports_to?: string;
+  primary_location_id?: string;
+  location_access_scope?: 'PRIMARY' | 'SELECTED' | 'ALL';
+  selected_locations?: MemberLocationGrant[];
+
+  email?: string;
+  tax_id?: string;
+  social_security_id?: string;
+  date_of_birth?: string;
+  gender?: string;
+  marital_status?: string;
+  nationality?: string;
+  employment_type?: string;
+  employment_status?: string;
+  probation_end_date?: string;
+  confirmation_date?: string;
+  grade?: string;
+  cost_center?: string;
+  cost_center_id?: string;
+}
+
+// ============================================================
 // Payloads – Company
 // ============================================================
 
@@ -139,6 +311,7 @@ export interface CreateCompanyPayload {
   owner_username: string;
   owner_full_name: string;
   owner_position_title: string;
+  owner_job_code?: string;
 
   subscription_tier: string;
   subscription_plan_code?: string;
@@ -154,14 +327,12 @@ export interface CreateCompanyPayload {
 
   departments: string[];
 
-  // Work center
   work_center_code?: string;
   work_center_name?: string;
   work_center_description?: string;
   work_center_timezone?: string;
   work_center_is_active?: boolean;
 
-  // Location
   location_code?: string;
   location_name?: string;
   address_line1?: string;
@@ -171,32 +342,22 @@ export interface CreateCompanyPayload {
   country?: string;
   pincode?: string;
 
-  // ============================================================
-  // 👇 Owner HR profile — optional / nullable.
-  //    Mirrors backend service.CreateCompanyRequest.
-  //    Cost center (text + FK) is intentionally nullable.
-  // ============================================================
   owner_email?: string | null;
-  owner_date_of_birth?: string | null;         // RFC3339 (e.g. "1988-04-12T00:00:00.000Z")
-  owner_gender?: string | null;                // male | female | other | prefer_not_to_say
-  owner_marital_status?: string | null;        // single | married | divorced | widowed | separated
+  owner_date_of_birth?: string | null;
+  owner_gender?: string | null;
+  owner_marital_status?: string | null;
   owner_nationality?: string | null;
-  owner_employment_type?: string | null;       // full_time | part_time | contract | intern | consultant | temporary
-  owner_employment_status?: string | null;     // active | probation | on_leave | suspended | terminated | resigned
-  owner_probation_end_date?: string | null;    // RFC3339
-  owner_confirmation_date?: string | null;     // RFC3339
+  owner_employment_type?: string | null;
+  owner_employment_status?: string | null;
+  owner_probation_end_date?: string | null;
+  owner_confirmation_date?: string | null;
   owner_grade?: string | null;
   owner_tax_id?: string | null;
   owner_social_security_id?: string | null;
-  owner_cost_center?: string | null;           // nullable text
-  owner_cost_center_id?: string | null;        // nullable UUID string
+  owner_cost_center?: string | null;
+  owner_cost_center_id?: string | null;
 }
 
-/**
- * Response returned by POST /admin/companies.
- * Superset of `Company` — carries subscription and department metadata
- * produced by the create flow.
- */
 export interface CreateCompanyResponse extends Company {
   subscription_plan?: string;
   subscription_months?: number;
@@ -344,7 +505,7 @@ export interface CreatePaymentPayload {
   gateway_txn_id?: string;
   status: string;
   notes?: string;
-  gateway_response?: any; // 🆕
+  gateway_response?: any;
 }
 
 // ============================================================
@@ -589,14 +750,11 @@ export const addCompanyDepartment = async (
   companyId: string,
   payload: AddDepartmentPayload
 ): Promise<any> => {
-  console.log('📤 [addCompanyDepartment] URL:', `/admin/companies/${companyId}`);
-  console.log('📤 [addCompanyDepartment] Payload:', payload);
   const result = await idempotentPost(
     `/admin/companies/${companyId}`,
     payload,
     'addCompanyDepartment'
   );
-  console.log('✅ [addCompanyDepartment] Response:', result);
   return result?.data ?? result;
 };
 
@@ -626,8 +784,6 @@ export const updateMaxDepartments = async (
 export const createCompany = async (
   payload: CreateCompanyPayload
 ): Promise<CreateCompanyResponse> => {
-  // Defensive filter: never allow these system-only departments to be
-  // sent during company creation, regardless of caller.
   const sanitizedPayload: CreateCompanyPayload = {
     ...payload,
     departments: (payload.departments || []).filter(
@@ -820,6 +976,229 @@ export const searchCompaniesByOwner = async (
 };
 
 // ============================================================
+// Jobs catalog APIs
+// Permissions: hr.position.* (a job is the definition side of
+// a position, so the same permission covers both).
+// ============================================================
+
+export const listJobs = async (
+  companyId: string,
+  activeOnly: boolean = true
+): Promise<{ jobs: Job[]; meta: any }> => {
+  const response = await axiosInstance.get(`/companies/${companyId}/jobs`, {
+    params: { active_only: activeOnly },
+    headers: { 'X-Company-ID': companyId },
+  });
+  return response.data?.data ?? response.data;
+};
+
+export const getJob = async (
+  companyId: string,
+  jobId: string
+): Promise<Job> => {
+  const response = await axiosInstance.get(
+    `/companies/${companyId}/jobs/${jobId}`,
+    { headers: { 'X-Company-ID': companyId } }
+  );
+  return response.data?.data ?? response.data;
+};
+
+export const createJob = async (
+  companyId: string,
+  payload: CreateJobPayload
+): Promise<Job> => {
+  const result = await idempotentPost(
+    `/companies/${companyId}/jobs`,
+    payload,
+    'createJob'
+  );
+  return result?.data ?? result;
+};
+
+export const updateJob = async (
+  companyId: string,
+  jobId: string,
+  payload: UpdateJobPayload
+): Promise<Job> => {
+  const result = await idempotentPatch(
+    `/companies/${companyId}/jobs/${jobId}`,
+    payload,
+    'updateJob'
+  );
+  return result?.data ?? result;
+};
+
+export const deactivateJob = async (
+  companyId: string,
+  jobId: string
+): Promise<any> => {
+  const result = await idempotentPost(
+    `/companies/${companyId}/jobs/${jobId}/deactivate`,
+    {},
+    'deactivateJob'
+  );
+  return result?.data ?? result;
+};
+
+export const reactivateJob = async (
+  companyId: string,
+  jobId: string
+): Promise<any> => {
+  const result = await idempotentPost(
+    `/companies/${companyId}/jobs/${jobId}/reactivate`,
+    {},
+    'reactivateJob'
+  );
+  return result?.data ?? result;
+};
+
+export const deleteJob = async (
+  companyId: string,
+  jobId: string
+): Promise<any> => {
+  const result = await idempotentDelete(
+    `/companies/${companyId}/jobs/${jobId}`,
+    undefined,
+    'deleteJob'
+  );
+  return result?.data ?? result;
+};
+
+export const getJobPositionCount = async (
+  companyId: string,
+  jobId: string
+): Promise<JobPositionCount> => {
+  const response = await axiosInstance.get(
+    `/companies/${companyId}/jobs/${jobId}/positions/count`,
+    { headers: { 'X-Company-ID': companyId } }
+  );
+  return response.data?.data ?? response.data;
+};
+
+// ============================================================
+// Positions APIs
+// ============================================================
+
+export const listPositions = async (
+  companyId: string,
+  departmentId?: string,
+  onlyOpen: boolean = false,
+  limit: number = 50,
+  offset: number = 0
+): Promise<{ positions: Position[]; meta: any }> => {
+  const params: Record<string, any> = { limit, offset, only_open: onlyOpen };
+  if (departmentId) params.department_id = departmentId;
+  const response = await axiosInstance.get(
+    `/companies/${companyId}/positions`,
+    { params, headers: { 'X-Company-ID': companyId } }
+  );
+  return response.data?.data ?? response.data;
+};
+
+export const getOpenPositions = async (
+  companyId: string,
+  isOpen?: boolean
+): Promise<{ positions: Position[]; meta: any }> => {
+  const params: Record<string, any> = { company_id: companyId };
+  if (isOpen !== undefined) params.is_open = isOpen;
+  const response = await axiosInstance.get('/positions/open', {
+    params,
+    headers: { 'X-Company-ID': companyId },
+  });
+  return response.data?.data ?? response.data;
+};
+
+export const getPosition = async (
+  companyId: string,
+  positionId: string
+): Promise<Position> => {
+  const response = await axiosInstance.get(
+    `/companies/${companyId}/positions/${positionId}`,
+    { headers: { 'X-Company-ID': companyId } }
+  );
+  return response.data?.data ?? response.data;
+};
+
+export const createPosition = async (
+  companyId: string,
+  payload: CreatePositionPayload
+): Promise<Position> => {
+  const result = await idempotentPost(
+    `/companies/${companyId}/positions`,
+    payload,
+    'createPosition'
+  );
+  return result?.data ?? result;
+};
+
+export const updatePosition = async (
+  companyId: string,
+  positionId: string,
+  payload: UpdatePositionPayload
+): Promise<Position> => {
+  const result = await idempotentPut(
+    `/companies/${companyId}/positions/${positionId}`,
+    payload,
+    'updatePosition'
+  );
+  return result?.data ?? result;
+};
+
+export const updatePositionStatus = async (
+  companyId: string,
+  positionId: string,
+  isOpen: boolean
+): Promise<any> => {
+  const result = await idempotentPatch(
+    `/companies/${companyId}/positions/${positionId}/status`,
+    { is_open: isOpen },
+    'updatePositionStatus'
+  );
+  return result?.data ?? result;
+};
+
+export const deletePosition = async (
+  companyId: string,
+  positionId: string
+): Promise<any> => {
+  const result = await idempotentDelete(
+    `/companies/${companyId}/positions/${positionId}`,
+    undefined,
+    'deletePosition'
+  );
+  return result?.data ?? result;
+};
+
+// ============================================================
+// Members APIs (hire / update)
+// ============================================================
+
+export const addMember = async (
+  companyId: string,
+  payload: AddMemberPayload
+): Promise<any> => {
+  const result = await idempotentPost(
+    `/companies/${companyId}/rbac/members`,
+    payload,
+    'addMember'
+  );
+  return result?.data ?? result;
+};
+
+export const updateMember = async (
+  companyId: string,
+  userId: string,
+  payload: UpdateMemberPayload
+): Promise<any> => {
+  const result = await idempotentPatch(
+    `/companies/${companyId}/rbac/members/${userId}`,
+    payload,
+    'updateMember'
+  );
+  return result?.data ?? result;
+};
+
+// ============================================================
 // User Management APIs
 // ============================================================
 
@@ -956,7 +1335,7 @@ export const getPermissionsByModule = async (
 };
 
 // ============================================================
-// 🆕 SUBSCRIPTION PLAN MANAGEMENT (ADMIN)
+// SUBSCRIPTION PLAN MANAGEMENT (ADMIN)
 // ============================================================
 
 export const createSubscriptionPlan = async (
@@ -1019,7 +1398,7 @@ export const deleteSubscriptionPlan = async (planId: string): Promise<any> => {
 };
 
 // ============================================================
-// 🆕 REMINDER MANAGEMENT (ADMIN)
+// REMINDER MANAGEMENT (ADMIN)
 // ============================================================
 
 export const processReminders = async (): Promise<any> => {
@@ -1042,7 +1421,7 @@ export const listPendingReminders = async (
 };
 
 // ============================================================
-// 🆕 SUBSCRIPTION LIFECYCLE (ADMIN)
+// SUBSCRIPTION LIFECYCLE (ADMIN)
 // ============================================================
 
 export const expireLapsedSubscriptions = async (): Promise<any> => {
@@ -1064,7 +1443,7 @@ export const expireExpiredTrials = async (): Promise<any> => {
 };
 
 // ============================================================
-// 🆕 COMPANY PAYMENTS (COMPANY SCOPED)
+// COMPANY PAYMENTS (COMPANY SCOPED)
 // ============================================================
 
 export const listCompanyPayments = async (
@@ -1127,7 +1506,7 @@ export const updateCompanyPaymentStatus = async (
 };
 
 // ============================================================
-// 🆕 COMPANY INVOICES (COMPANY SCOPED)
+// COMPANY INVOICES (COMPANY SCOPED)
 // ============================================================
 
 export const listCompanyInvoices = async (
@@ -1226,7 +1605,7 @@ export const deleteCompanyInvoice = async (
 };
 
 // ============================================================
-// COMPANY‑SCOPED AUDIT LOGS
+// COMPANY-SCOPED AUDIT LOGS
 // ============================================================
 
 export const getCompanyAuditLogs = async (
@@ -1269,7 +1648,7 @@ export const exportCompanyAuditLogs = async (
 };
 
 // ============================================================
-// SYSTEM‑WIDE AUDIT LOGS (admin only)
+// SYSTEM-WIDE AUDIT LOGS (admin only)
 // ============================================================
 
 export const getAuditLogs = async (
@@ -1309,7 +1688,7 @@ export const getSystemAuditStats = async (
 };
 
 // ============================================================
-// OPERATIONAL ANALYTICS (ClickHouse – time‑series logs)
+// OPERATIONAL ANALYTICS (ClickHouse – time-series logs)
 // ============================================================
 
 // ---- OTP Logs ----
@@ -1351,10 +1730,7 @@ export const exportOTPLogs = async (
 ): Promise<Blob> => {
   const response = await axiosInstance.get(
     `/companies/${companyId}/analytics/otp/export`,
-    {
-      params: { ...filters, format },
-      responseType: 'blob',
-    }
+    { params: { ...filters, format }, responseType: 'blob' }
   );
   return response.data;
 };
@@ -1399,10 +1775,7 @@ export const exportMPINLogs = async (
 ): Promise<Blob> => {
   const response = await axiosInstance.get(
     `/companies/${companyId}/analytics/mpin/export`,
-    {
-      params: { ...filters, format },
-      responseType: 'blob',
-    }
+    { params: { ...filters, format }, responseType: 'blob' }
   );
   return response.data;
 };
@@ -1448,15 +1821,12 @@ export const exportDeviceLogs = async (
 ): Promise<Blob> => {
   const response = await axiosInstance.get(
     `/companies/${companyId}/analytics/device/export`,
-    {
-      params: { ...filters, format },
-      responseType: 'blob',
-    }
+    { params: { ...filters, format }, responseType: 'blob' }
   );
   return response.data;
 };
 
-// ---- Security Logs (ClickHouse) ----
+// ---- Security Logs ----
 export const getSecurityLogs = async (
   companyId: string,
   filters: {
@@ -1498,10 +1868,7 @@ export const exportSecurityLogs = async (
 ): Promise<Blob> => {
   const response = await axiosInstance.get(
     `/companies/${companyId}/analytics/security/export`,
-    {
-      params: { ...filters, format },
-      responseType: 'blob',
-    }
+    { params: { ...filters, format }, responseType: 'blob' }
   );
   return response.data;
 };
@@ -1547,10 +1914,7 @@ export const exportSecurityRiskLogs = async (
 ): Promise<Blob> => {
   const response = await axiosInstance.get(
     `/companies/${companyId}/analytics/security-risk/export`,
-    {
-      params: { ...filters, format },
-      responseType: 'blob',
-    }
+    { params: { ...filters, format }, responseType: 'blob' }
   );
   return response.data;
 };
@@ -1570,7 +1934,7 @@ export const getDashboardStats = async (
 };
 
 // ============================================================
-// ADMIN ELASTICSEARCH SEARCH (system‑wide, super‑admin only)
+// ADMIN ELASTICSEARCH SEARCH (system-wide, super-admin only)
 // ============================================================
 
 export const searchAdminLogs = async (
@@ -1660,7 +2024,7 @@ export const globalSearch = async (
 };
 
 // ============================================================
-// SYSTEM‑WIDE LOGS (no company ID – admin only)
+// SYSTEM-WIDE LOGS (no company ID – admin only)
 // ============================================================
 
 export const getSystemOTPLogs = async (
@@ -1753,37 +2117,60 @@ export const getSystemSecurityRiskLogs = async (
 };
 
 // ============================================================
-// Company — list/summary (used by /admin/companies)
+// CompanyDetail — /admin/companies/:id
 // ============================================================
 
-// ============================================================
-// 🆕 CompanyDetail — detail view (/admin/companies/:id)
-// Same shape as Company but guarantees plan/amount/dates.
-// ============================================================
 export interface CompanyDetail extends Company {
-  /** UUID of the plan the company is subscribed to. */
   subscription_plan_id: string;
-
-  /** Amount paid for the subscription (in the company's currency). */
   subscription_amount?: number;
-
-  /** ISO date string when the current subscription started. */
   subscription_start_date?: string;
-
-  /** ISO date string when the current subscription ends. */
   subscription_end_date?: string;
-
-  /** Financial year start month (1–12). */
   financial_year_start_month?: number;
-
-  /** Grace period (days) after subscription_end_date before expiry. */
   grace_period_days?: number;
-
-  /** Trial window (ISO dates), present when subscription_status is "trial". */
   trial_start_date?: string;
   trial_end_date?: string;
-
-  /** Work center + location blocks (present when configured). */
   work_center?: CompanyWorkCenter;
   location?: CompanyLocation;
 }
+
+// ============================================================
+// USER PHONE NUMBER (admin-facing)
+// ============================================================
+
+export interface UserPhoneResponse {
+  user_id: string;
+  phone_number: string;
+  masked_phone: string;
+  accessed_by?: string;
+  access_timestamp?: string;
+}
+
+export interface ChangeUserPhoneResponse {
+  user_id: string;
+  masked_phone: string;
+  changed_by: string;
+  reason?: string;
+  change_timestamp: string;
+}
+
+export const getUserPhoneNumber = async (
+  userId: string
+): Promise<UserPhoneResponse> => {
+  const response = await axiosInstance.get(
+    `/admin/user-management/${userId}/phone`
+  );
+  return response.data?.data ?? response.data;
+};
+
+export const changeUserPhone = async (
+  userId: string,
+  newPhone: string,
+  reason?: string
+): Promise<ChangeUserPhoneResponse> => {
+  const result = await idempotentPut(
+    `/admin/user-management/${userId}/phone`,
+    { new_phone: newPhone, reason },
+    'changeUserPhone'
+  );
+  return result?.data ?? result;
+};

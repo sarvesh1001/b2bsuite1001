@@ -8,13 +8,11 @@ import {
   TouchableOpacity,
   Alert,
   ActivityIndicator,
-  Platform, // ✅ ADD THIS
-
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
+import { useRoute, useNavigation, RouteProp, useFocusEffect } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { useFocusEffect } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useUserAuthStore } from '../../../../store/userAuthStore';
 import {
@@ -34,18 +32,17 @@ import {
 } from '../../../../constants/colors';
 import { RootStackParamList } from '../../../../navigation';
 
-// ✅ Correct route name (must match the one added to RootStackParamList)
 type RouteProps = RouteProp<RootStackParamList, 'LeaveRequestDetail'>;
 type NavigationProps = StackNavigationProp<RootStackParamList, 'LeaveRequestDetail'>;
 
 export default function LeaveDetail() {
   const route = useRoute<RouteProps>();
   const navigation = useNavigation<NavigationProps>();
-  const { requestId } = route.params; // now correctly typed
+  const { requestId } = route.params;
 
   const { accessToken, deviceId, companyId, user } = useUserAuthStore();
-  // ✅ Fallback: if user exists and has 'id', use it; otherwise fallback to empty string
-  const userId = user && typeof user === 'object' && 'id' in user ? (user as any).id : '';
+  const userId =
+    user && typeof user === 'object' && 'id' in user ? (user as any).id : '';
 
   const [request, setRequest] = useState<LeaveRequest | null>(null);
   const [loading, setLoading] = useState(true);
@@ -54,8 +51,9 @@ export default function LeaveDetail() {
   const fetchRequest = useCallback(async () => {
     if (!accessToken || !companyId || !deviceId || !requestId) return;
     try {
-      const res = await getLeaveRequest(companyId, requestId, deviceId, accessToken);
-      setRequest(res.data);
+      // ⚠️ Now returns LeaveRequest directly
+      const data = await getLeaveRequest(companyId, requestId, deviceId, accessToken);
+      setRequest(data);
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Failed to load request');
       navigation.goBack();
@@ -72,13 +70,11 @@ export default function LeaveDetail() {
   );
 
   const handleApprove = async () => {
-    if (!accessToken || !companyId || !deviceId || !request || !requestId || !userId) return;
+    if (!accessToken || !companyId || !deviceId || !requestId) return;
     setActionLoading(true);
     try {
-      await approveLeaveRequest(companyId, requestId, deviceId, accessToken, {
-        approved_by: userId,
-        reason: 'Approved',
-      });
+      // ⚠️ Returns LeaveRequest directly
+      await approveLeaveRequest(companyId, requestId, deviceId, accessToken, {});
       Alert.alert('Success', 'Leave request approved');
       fetchRequest();
     } catch (error: any) {
@@ -88,11 +84,23 @@ export default function LeaveDetail() {
     }
   };
 
-  // ✅ Simplified rejection: uses Alert.alert with a text input on iOS (via Alert.prompt)
-  // On Android, Alert.prompt falls back to Alert.alert (no input) – we'll keep it simple.
+  const doReject = async (reason: string) => {
+    if (!accessToken || !companyId || !deviceId || !requestId) return;
+    setActionLoading(true);
+    try {
+      await rejectLeaveRequest(companyId, requestId, deviceId, accessToken, {
+        reason,
+      });
+      Alert.alert('Success', 'Leave request rejected');
+      fetchRequest();
+    } catch (error: any) {
+      Alert.alert('Error', error?.message || 'Rejection failed');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const handleReject = () => {
-    // For cross-platform, we can use Alert.prompt (iOS only) or a custom modal.
-    // We'll use Alert.prompt – it works on iOS and does nothing extra on Android.
     if (Platform.OS === 'ios') {
       Alert.prompt(
         'Reject Reason',
@@ -101,30 +109,13 @@ export default function LeaveDetail() {
           { text: 'Cancel', style: 'cancel' },
           {
             text: 'Reject',
-            onPress: (reason?: string) => {
-              if (!accessToken || !companyId || !deviceId || !request || !requestId || !userId) return;
-              setActionLoading(true);
-              (async () => {
-                try {
-                  await rejectLeaveRequest(companyId, requestId, deviceId, accessToken, {
-                    approved_by: userId,
-                    reason: reason || 'No reason provided',
-                  });
-                  Alert.alert('Success', 'Leave request rejected');
-                  fetchRequest();
-                } catch (error: any) {
-                  Alert.alert('Error', error?.message || 'Rejection failed');
-                } finally {
-                  setActionLoading(false);
-                }
-              })();
-            },
+            style: 'destructive',
+            onPress: (reason?: string) => doReject(reason || 'No reason provided'),
           },
         ],
-        'plain-text'
+        'plain-text',
       );
     } else {
-      // Android fallback: just ask for confirmation and reject without a reason
       Alert.alert(
         'Reject Request',
         'Are you sure you want to reject this request?',
@@ -133,39 +124,24 @@ export default function LeaveDetail() {
           {
             text: 'Reject',
             style: 'destructive',
-            onPress: async () => {
-              if (!accessToken || !companyId || !deviceId || !request || !requestId || !userId) return;
-              setActionLoading(true);
-              try {
-                await rejectLeaveRequest(companyId, requestId, deviceId, accessToken, {
-                  approved_by: userId,
-                  reason: 'Rejected by approver',
-                });
-                Alert.alert('Success', 'Leave request rejected');
-                fetchRequest();
-              } catch (error: any) {
-                Alert.alert('Error', error?.message || 'Rejection failed');
-              } finally {
-                setActionLoading(false);
-              }
-            },
+            onPress: () => doReject('Rejected by approver'),
           },
-        ]
+        ],
       );
     }
   };
 
-  const handleCancel = async () => {
+  const handleCancel = () => {
     Alert.alert(
       'Cancel Request',
       'Are you sure you want to cancel this leave request?',
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: 'Keep Request', style: 'cancel' },
         {
           text: 'Cancel Request',
           style: 'destructive',
           onPress: async () => {
-            if (!accessToken || !companyId || !deviceId || !request || !requestId) return;
+            if (!accessToken || !companyId || !deviceId || !requestId) return;
             setActionLoading(true);
             try {
               await cancelLeaveRequest(companyId, requestId, deviceId, accessToken);
@@ -191,7 +167,7 @@ export default function LeaveDetail() {
     );
   }
 
-  if (!request || !requestId) {
+  if (!request) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.emptyContainer}>
@@ -204,7 +180,16 @@ export default function LeaveDetail() {
   }
 
   const isPending = request.status === 'pending';
-  const isApprover = true; // In real app, check if user is approver
+  const isApprover = true; // TODO: wire real approver check
+
+  const statusColor =
+    request.status === 'approved'
+      ? '#10b981'
+      : request.status === 'rejected'
+      ? '#ef4444'
+      : request.status === 'cancelled'
+      ? '#6b7280'
+      : '#f59e0b';
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -220,17 +205,7 @@ export default function LeaveDetail() {
         <View style={styles.card}>
           <Text style={styles.label}>
             Status:{' '}
-            <Text
-              style={{
-                fontWeight: 'bold',
-                color:
-                  request.status === 'approved'
-                    ? '#10b981'
-                    : request.status === 'rejected'
-                    ? '#ef4444'
-                    : '#f59e0b',
-              }}
-            >
+            <Text style={{ fontWeight: 'bold', color: statusColor }}>
               {request.status.toUpperCase()}
             </Text>
           </Text>
@@ -243,20 +218,23 @@ export default function LeaveDetail() {
             End Date: {new Date(request.end_date).toLocaleDateString()}
           </Text>
           <Text style={styles.detail}>Total Days: {request.total_days}</Text>
-          {request.approved_by && (
+          {request.approved_by ? (
             <Text style={styles.detail}>Approved by: {request.approved_by}</Text>
-          )}
-          {request.rejection_reason && (
-            <Text style={styles.detail}>Reason: {request.rejection_reason}</Text>
-          )}
+          ) : null}
+          {/* ⚠️ Backend has no rejection_reason field — removed */}
           <Text style={styles.detail}>
-            Created: {new Date(request.created_at).toLocaleString()}
+            Requested: {new Date(request.requested_at).toLocaleString()}
           </Text>
+          {request.approved_at ? (
+            <Text style={styles.detail}>
+              Approved At: {new Date(request.approved_at).toLocaleString()}
+            </Text>
+          ) : null}
         </View>
 
-        {isPending && (
+        {isPending ? (
           <View style={styles.actionContainer}>
-            {isApprover && (
+            {isApprover ? (
               <>
                 <TouchableOpacity
                   style={[styles.actionButton, styles.approveButton]}
@@ -281,7 +259,7 @@ export default function LeaveDetail() {
                   )}
                 </TouchableOpacity>
               </>
-            )}
+            ) : null}
             <TouchableOpacity
               style={[styles.actionButton, styles.cancelButton]}
               onPress={handleCancel}
@@ -294,7 +272,7 @@ export default function LeaveDetail() {
               )}
             </TouchableOpacity>
           </View>
-        )}
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );

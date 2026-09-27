@@ -1,3 +1,4 @@
+// apps/prayantra-b2b/src/screens/module/ModuleDetailScreen.tsx
 import React, { useMemo } from 'react';
 import {
   View,
@@ -158,12 +159,20 @@ const MODULE_CONFIG: Record<
 //
 // Ownership model (SAP-like split):
 //   - Administration = security & facilities (Roles, Locations)
-//   - HR = people + org structure + leave + contact (Phone Numbers)
+//   - HR = people + org structure + leave
 //   - AvatarManagement = top-level, reached from ModuleGridScreen header
 //
-// Legacy admin employee screens (EmployeesList, AddEmployee, EditEmployee,
-// EmployeeDetail) are still registered in the navigator for deep links
-// but are intentionally NOT surfaced here. HR owns employee CRUD.
+// Leave admin surfaces are split into four cards in the order an
+// admin actually needs them:
+//   1. Leave Types        — define the kinds of leave (AL, SL, CL...)
+//   2. Leave Policies     — bundle types into policies with rules
+//   3. Entitlements       — assign day quotas to individual employees
+//   4. Policy Resolution  — re-run the resolver (seed / bulk / debug)
+//
+// Jobs vs Positions:
+//   - Jobs      = role catalog ("Cashier", "Line Operator")
+//   - Positions = seats ("Cashier @ Mumbai Store #42, Register-3")
+//   Jobs come FIRST because a position must reference a job.
 // =========================================================
 
 const FEATURES_CONFIG: Record<
@@ -192,6 +201,10 @@ const FEATURES_CONFIG: Record<
 
   // ============================================================
   // HR MODULE FEATURES
+  //
+  // Jobs is placed BEFORE Positions because every position must
+  // reference a job. Admins need to define the role catalog first,
+  // then create seats.
   // ============================================================
   hr: [
     {
@@ -207,16 +220,10 @@ const FEATURES_CONFIG: Record<
       screen: 'HREmployeeStats',
     },
     {
-      key: 'employeeSearch',
-      label: 'Employee Search',
-      icon: 'account-search',
-      screen: 'EmployeeSearch',
-    },
-    {
-      key: 'userPhone',
-      label: 'Phone Numbers',
-      icon: 'phone',
-      screen: 'UserPhone',
+      key: 'jobs',
+      label: 'Jobs',
+      icon: 'briefcase-outline',
+      screen: 'JobsList',
     },
     {
       key: 'positions',
@@ -254,12 +261,31 @@ const FEATURES_CONFIG: Record<
       icon: 'calendar-check',
       screen: 'LeaveBalanceScreen',
     },
+    // ---- Leave administration setup order ----
     {
-      key: 'leaveAdmin',
-      label: 'Leave Admin',
-      // was 'calendar-settings' — invalid MaterialCommunityIcons name
+      key: 'leaveTypes',
+      label: 'Leave Types',
+      icon: 'calendar-multiple',
+      screen: 'LeaveTypeList',
+    },
+    {
+      key: 'leavePolicies',
+      label: 'Leave Policies',
       icon: 'calendar-cog',
       screen: 'PolicyConfigList',
+    },
+    {
+      key: 'leaveEntitlements',
+      label: 'Entitlements',
+      icon: 'account-cash',
+      screen: 'EntitlementList',
+    },
+    // ⬇️ NEW — the tester's cockpit for re-running the resolver
+    {
+      key: 'leaveResolution',
+      label: 'Policy Resolution',
+      icon: 'refresh-auto',
+      screen: 'PolicyResolution',
     },
   ],
 
@@ -397,7 +423,7 @@ export default function ModuleDetailScreen() {
     moduleName
       .charAt(0)
       .toUpperCase() +
-      moduleName.slice(1);
+    moduleName.slice(1);
 
   // =======================================================
   // RESPONSIVE CARD WIDTH

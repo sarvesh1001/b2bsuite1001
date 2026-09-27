@@ -1,15 +1,7 @@
-// apps/prayantra-b2b/src/screens/hr/org-unit/OrgUnitForm.tsx
 import React, { useEffect, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  Alert,
-  ActivityIndicator,
-  Switch,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput,
+  Alert, ActivityIndicator, Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
@@ -20,21 +12,27 @@ import { z } from 'zod';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useUserAuthStore } from '../../../store/userAuthStore';
 import { createOrgUnit, updateOrgUnit, getOrgUnit } from '@b2b/api-client';
-import { CreateOrgUnitPayload } from '@b2b/shared-types';
+import type {
+  CreateOrgUnitPayload, UpdateOrgUnitPayload, OrgUnitType,
+} from '@b2b/shared-types';
 import {
-  BACKGROUND_COLOR,
-  CARD_BACKGROUND,
-  PRIMARY_COLOR,
-  TEXT_PRIMARY,
-  TEXT_SECONDARY,
-  BORDER_COLOR,
+  BACKGROUND_COLOR, CARD_BACKGROUND, PRIMARY_COLOR,
+  TEXT_PRIMARY, TEXT_SECONDARY, BORDER_COLOR,
 } from '../../../constants/colors';
+import {
+  ORG_UNIT_TYPES, getOrgUnitTypeLabel, getOrgUnitTypeIcon, getOrgUnitTypeColor,
+} from '../../../constants/orgUnit';
 import { RootStackParamList } from '../../../navigation';
+import LocationMultiChipPicker from '../../../components/LocationMultiChipPicker';
+import { useLocations } from '../../../hooks/useLocations';
 
 const schema = z.object({
-  name: z.string().min(1, 'Name is required'),
-  org_unit_type: z.string().min(1, 'Type is required'),
+  name: z.string().min(1, 'Name is required').max(255, 'Name is too long'),
+  org_unit_type: z.enum(ORG_UNIT_TYPES, {
+    errorMap: () => ({ message: 'Please pick a type' }),
+  }),
   description: z.string().optional(),
+  home_location_ids: z.array(z.string()),
   is_active: z.boolean().optional(),
 });
 
@@ -48,25 +46,27 @@ export default function OrgUnitForm() {
   const navigation = useNavigation<NavigationProps>();
   const { orgUnitId } = route.params || {};
   const { accessToken, deviceId, companyId } = useUserAuthStore();
+  const { locations, loading: locationsLoading } = useLocations();
 
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(!!orgUnitId);
 
-  const { control, handleSubmit, setValue, formState: { errors, isSubmitting } } = useForm<FormData>({
+  const {
+    control, handleSubmit, setValue,
+    formState: { errors, isSubmitting, dirtyFields },
+  } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: {
       name: '',
-      org_unit_type: '',
+      org_unit_type: 'team' as OrgUnitType,
       description: '',
+      home_location_ids: [],
       is_active: true,
     },
   });
 
   useEffect(() => {
-    if (!orgUnitId) {
-      setFetching(false);
-      return;
-    }
+    if (!orgUnitId) { setFetching(false); return; }
     const fetch = async () => {
       if (!accessToken || !companyId || !deviceId) return;
       try {
@@ -74,9 +74,11 @@ export default function OrgUnitForm() {
         const data = res.data;
         setValue('name', data.name);
         setValue('org_unit_type', data.org_unit_type);
-        setValue('description', data.description || '');
+        setValue('description', data.description ?? '');
+        // NEW: array, defaults to [] if missing
+        setValue('home_location_ids', data.home_location_ids ?? []);
         setValue('is_active', data.is_active);
-      } catch (error) {
+      } catch {
         Alert.alert('Error', 'Failed to load org unit');
         navigation.goBack();
       } finally {
@@ -93,22 +95,41 @@ export default function OrgUnitForm() {
     }
     setLoading(true);
     try {
-      const payload: CreateOrgUnitPayload = {
-        name: data.name,
-        org_unit_type: data.org_unit_type,
-        description: data.description,
-        is_active: data.is_active,
-      };
       if (orgUnitId) {
+        // Replace semantics:
+        //   undefined → no change
+        //   []        → make universal
+        //   [...]     → bind to exactly these
+        // We only include the field if the user actually touched the picker.
+        const payload: UpdateOrgUnitPayload = {
+          name: data.name,
+          description: data.description,
+          is_active: data.is_active,
+        };
+        if (dirtyFields.home_location_ids) {
+          payload.home_location_ids = data.home_location_ids;
+        }
         await updateOrgUnit(companyId, orgUnitId, deviceId, accessToken, payload);
         Alert.alert('Success', 'Org unit updated');
       } else {
+        const payload: CreateOrgUnitPayload = {
+          name: data.name,
+          org_unit_type: data.org_unit_type as OrgUnitType,
+          description: data.description,
+          home_location_ids: data.home_location_ids,
+          is_active: data.is_active,
+        };
         await createOrgUnit(companyId, deviceId, accessToken, payload);
         Alert.alert('Success', 'Org unit created');
       }
       navigation.goBack();
     } catch (error: any) {
-      Alert.alert('Error', error?.message || 'Operation failed');
+      const msg =
+        error?.response?.data?.error ||
+        error?.response?.data?.message ||
+        error?.message ||
+        'Operation failed';
+      Alert.alert('Error', msg);
     } finally {
       setLoading(false);
     }
@@ -135,6 +156,7 @@ export default function OrgUnitForm() {
 
       <ScrollView contentContainerStyle={styles.formContainer}>
         <View style={styles.card}>
+          {/* Name */}
           <Controller
             control={control}
             name="name"
@@ -154,26 +176,76 @@ export default function OrgUnitForm() {
             )}
           />
 
+          {/* Type */}
           <Controller
             control={control}
             name="org_unit_type"
-            render={({ field: { onChange, onBlur, value } }) => (
+            render={({ field: { onChange, value } }) => (
               <View style={styles.fieldContainer}>
                 <Text style={styles.fieldLabel}>Type *</Text>
-                <TextInput
-                  style={[styles.input, errors.org_unit_type && styles.inputError]}
-                  placeholder="department, team, division, branch"
-                  placeholderTextColor={TEXT_SECONDARY}
-                  value={value}
-                  onChangeText={onChange}
-                  onBlur={onBlur}
-                  autoCapitalize="none"
-                />
-                {errors.org_unit_type && <Text style={styles.errorText}>{errors.org_unit_type.message}</Text>}
+                <View style={styles.typeGrid}>
+                  {ORG_UNIT_TYPES.map((t) => {
+                    const selected = value === t;
+                    const color = getOrgUnitTypeColor(t);
+                    const disabled = !!orgUnitId;
+                    return (
+                      <TouchableOpacity
+                        key={t}
+                        disabled={disabled}
+                        style={[
+                          styles.typeChip,
+                          { borderColor: color },
+                          selected && { backgroundColor: color },
+                          disabled && !selected && styles.typeChipDisabled,
+                        ]}
+                        onPress={() => onChange(t as OrgUnitType)}
+                        activeOpacity={0.7}
+                      >
+                        <Icon name={getOrgUnitTypeIcon(t)} size={18}
+                          color={selected ? '#fff' : color} />
+                        <Text style={[styles.typeChipText, { color: selected ? '#fff' : color }]}>
+                          {getOrgUnitTypeLabel(t)}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                {orgUnitId && (
+                  <Text style={styles.hintText}>Type cannot be changed after creation.</Text>
+                )}
+                {errors.org_unit_type && (
+                  <Text style={styles.errorText}>{errors.org_unit_type.message}</Text>
+                )}
               </View>
             )}
           />
 
+          {/* Home Locations — multi-select */}
+          <Controller
+            control={control}
+            name="home_location_ids"
+            render={({ field: { onChange, value } }) => (
+              <View style={styles.fieldContainer}>
+                <Text style={styles.fieldLabel}>Home Locations</Text>
+                <Text style={styles.hintText}>
+                  Leave empty for universal access — anyone from any location can
+                  be added. Pick one or more locations to restrict membership to
+                  users authorized for at least one of them.
+                </Text>
+                <View style={{ marginTop: 8 }}>
+                  <LocationMultiChipPicker
+                    locations={locations}
+                    value={value ?? []}
+                    onChange={onChange}
+                    loading={locationsLoading}
+                    emptyHint="Universal — any location is allowed."
+                  />
+                </View>
+              </View>
+            )}
+          />
+
+          {/* Description */}
           <Controller
             control={control}
             name="description"
@@ -187,33 +259,36 @@ export default function OrgUnitForm() {
                   value={value}
                   onChangeText={onChange}
                   onBlur={onBlur}
-                  multiline
-                  numberOfLines={3}
-                  textAlignVertical="top"
+                  multiline numberOfLines={3} textAlignVertical="top"
                 />
-                {errors.description && <Text style={styles.errorText}>{errors.description.message}</Text>}
               </View>
             )}
           />
 
+          {/* Active */}
           <Controller
             control={control}
             name="is_active"
             render={({ field: { onChange, value } }) => (
               <View style={styles.switchContainer}>
                 <Text style={styles.fieldLabel}>Active</Text>
-                <Switch value={value} onValueChange={onChange} trackColor={{ false: '#ccc', true: PRIMARY_COLOR }} />
+                <Switch value={value} onValueChange={onChange}
+                  trackColor={{ false: '#ccc', true: PRIMARY_COLOR }} />
               </View>
             )}
           />
         </View>
 
         <TouchableOpacity
-          style={[styles.submitButton, isSubmitting && styles.disabledButton]}
+          style={[styles.submitButton, (isSubmitting || loading) && styles.disabledButton]}
           onPress={handleSubmit(onSubmit)}
-          disabled={isSubmitting}
+          disabled={isSubmitting || loading}
         >
-          {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.submitText}>{orgUnitId ? 'Update' : 'Create'}</Text>}
+          {loading ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <Text style={styles.submitText}>{orgUnitId ? 'Update' : 'Create'}</Text>
+          )}
         </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
@@ -225,47 +300,44 @@ const styles = StyleSheet.create({
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: BACKGROUND_COLOR },
   loadingText: { marginTop: 12, color: TEXT_SECONDARY, fontSize: 14 },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 16, paddingVertical: 12,
     backgroundColor: CARD_BACKGROUND,
-    borderBottomWidth: 1,
-    borderBottomColor: BORDER_COLOR,
+    borderBottomWidth: 1, borderBottomColor: BORDER_COLOR,
   },
   backButton: { padding: 4 },
   headerTitle: { flex: 1, fontSize: 18, fontWeight: '700', color: TEXT_PRIMARY, marginLeft: 10 },
   formContainer: { padding: 16, paddingBottom: 40 },
   card: {
-    backgroundColor: CARD_BACKGROUND,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: BORDER_COLOR,
+    backgroundColor: CARD_BACKGROUND, borderRadius: 12, padding: 16,
+    borderWidth: 1, borderColor: BORDER_COLOR,
   },
   fieldContainer: { marginBottom: 16 },
   fieldLabel: { fontSize: 13, fontWeight: '600', color: TEXT_PRIMARY, marginBottom: 6 },
   input: {
-    borderWidth: 1,
-    borderColor: BORDER_COLOR,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: TEXT_PRIMARY,
-    backgroundColor: '#fff',
+    borderWidth: 1, borderColor: BORDER_COLOR, borderRadius: 8,
+    paddingHorizontal: 12, paddingVertical: 10,
+    fontSize: 14, color: TEXT_PRIMARY, backgroundColor: '#fff',
   },
   inputError: { borderColor: '#ef4444' },
   textArea: { minHeight: 80, paddingTop: 10 },
   errorText: { fontSize: 12, color: '#ef4444', marginTop: 4 },
-  switchContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
+  hintText: { fontSize: 11, color: TEXT_SECONDARY, marginTop: 4, fontStyle: 'italic' },
+  typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  typeChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 8, borderWidth: 1, backgroundColor: '#fff',
+  },
+  typeChipDisabled: { opacity: 0.4 },
+  typeChipText: { fontSize: 13, fontWeight: '600' },
+  switchContainer: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'center', marginTop: 8,
+  },
   submitButton: {
-    backgroundColor: PRIMARY_COLOR,
-    paddingVertical: 14,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 20,
+    backgroundColor: PRIMARY_COLOR, paddingVertical: 14, borderRadius: 10,
+    alignItems: 'center', justifyContent: 'center', marginTop: 20,
   },
   disabledButton: { opacity: 0.6 },
   submitText: { color: '#fff', fontSize: 16, fontWeight: '600' },

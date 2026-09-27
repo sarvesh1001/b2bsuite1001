@@ -55,7 +55,6 @@ const TIMEZONES = [
   'Asia/Dubai',
 ];
 
-// ---- Owner HR profile enums (must match backend validation) ----
 const GENDERS = [
   { label: 'Male', value: 'male' },
   { label: 'Female', value: 'female' },
@@ -89,48 +88,57 @@ const EMPLOYMENT_STATUSES = [
   { label: 'Resigned', value: 'resigned' },
 ];
 
-// Departments that must never be assigned during company creation
 const EXCLUDED_DEPARTMENTS = ['Administration', 'Super Admin Management'];
 
-// Convert YYYY-MM-DD → RFC3339 UTC, or return null if unparseable/empty.
 const toRFC3339 = (value: string): string | null => {
   const v = value.trim();
   if (!v) return null;
-  // Accept both YYYY-MM-DD and full RFC3339.
   const iso = /^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T00:00:00Z` : v;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString();
 };
 
+// Slug helper for the auto-derived job code. Matches the backend's
+// slugifyJobCode() — uppercase, non-alphanumerics → underscore.
+const slugifyJobCode = (title: string): string => {
+  const out = title
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/__+/g, '_');
+  return out;
+};
+
 export default function CompanyCreateScreen() {
   const navigation = useNavigation();
 
   const [form, setForm] = useState({
-    // Company + owner
     company_name: '',
     owner_phone: '',
     owner_username: '',
     owner_full_name: '',
     owner_position_title: 'CEO',
+    owner_job_code: '',           // NEW — optional; falls back to slug of title
 
-    // ---- Owner HR profile (all optional) ----
+    // Owner HR profile (all optional)
     owner_email: '',
-    owner_date_of_birth: '',          // YYYY-MM-DD
+    owner_date_of_birth: '',
     owner_gender: '',
     owner_marital_status: '',
     owner_nationality: '',
     owner_employment_type: '',
     owner_employment_status: 'active',
-    owner_probation_end_date: '',     // YYYY-MM-DD
-    owner_confirmation_date: '',      // YYYY-MM-DD
+    owner_probation_end_date: '',
+    owner_confirmation_date: '',
     owner_grade: '',
     owner_tax_id: '',
     owner_social_security_id: '',
-    owner_cost_center: '',            // nullable text
-    owner_cost_center_id: '',         // nullable UUID (text)
+    owner_cost_center: '',
+    owner_cost_center_id: '',
 
-    // Subscription — defaults are 0 = "no subscription yet".
+    // Subscription
     subscription_tier: '',
     subscription_plan_code: '',
     max_employees: 100,
@@ -172,15 +180,11 @@ export default function CompanyCreateScreen() {
   const [regionModalVisible, setRegionModalVisible] = useState(false);
   const [timezoneModalVisible, setTimezoneModalVisible] = useState(false);
 
-  // Owner profile enum pickers
   const [genderModalVisible, setGenderModalVisible] = useState(false);
   const [maritalModalVisible, setMaritalModalVisible] = useState(false);
   const [employmentTypeModalVisible, setEmploymentTypeModalVisible] = useState(false);
   const [employmentStatusModalVisible, setEmploymentStatusModalVisible] = useState(false);
 
-  // ---------------------------------------------------------
-  // Load system departments + active subscription plans
-  // ---------------------------------------------------------
   useEffect(() => {
     const fetchDepts = async () => {
       try {
@@ -220,11 +224,7 @@ export default function CompanyCreateScreen() {
     );
   };
 
-  // ---------------------------------------------------------
-  // Validation + submit
-  // ---------------------------------------------------------
   const handleCreate = async () => {
-    // Required fields only — subscription fields are optional.
     if (!form.company_name.trim())
       return Alert.alert('Error', 'Company name is required');
     if (!form.owner_phone.trim() || form.owner_phone.length < 10)
@@ -244,7 +244,6 @@ export default function CompanyCreateScreen() {
     if (!form.city.trim() || !form.country.trim())
       return Alert.alert('Error', 'City and country are required');
 
-    // ⚠️ 0 is allowed and meaningful — it means "do not open a subscription".
     if (form.subscription_months < 0 || form.subscription_months > 36)
       return Alert.alert('Error', 'Subscription months must be between 0 and 36');
     if (form.subscription_days < 0 || form.subscription_days > 30)
@@ -252,7 +251,6 @@ export default function CompanyCreateScreen() {
     if (form.trial_days < 0)
       return Alert.alert('Error', 'Trial days cannot be negative');
 
-    // ---- Owner profile soft validation ----
     if (form.owner_email.trim() && !/^\S+@\S+\.\S+$/.test(form.owner_email.trim()))
       return Alert.alert('Error', 'Owner email looks invalid');
     if (form.owner_date_of_birth.trim() && !toRFC3339(form.owner_date_of_birth))
@@ -264,8 +262,6 @@ export default function CompanyCreateScreen() {
 
     setLoading(true);
     try {
-      // Build payload without empty optional strings — backend treats them
-      // as "not supplied".
       const payload: any = {
         ...form,
         departments: selectedDepts.filter(
@@ -273,11 +269,9 @@ export default function CompanyCreateScreen() {
         ),
       };
 
-      // Optional subscription fields — omit when blank.
       if (!form.subscription_plan_code) delete payload.subscription_plan_code;
       if (!form.subscription_tier) delete payload.subscription_tier;
 
-      // Optional location / work-center strings.
       [
         'address_line1',
         'address_line2',
@@ -288,12 +282,19 @@ export default function CompanyCreateScreen() {
         if (!payload[k]) delete payload[k];
       });
 
-      // ---- Owner HR profile: convert dates, drop blanks, keep cost_center nullable.
+      // Owner job code — send only if non-blank. Backend falls back to
+      // a slug of owner_position_title otherwise.
+      const trimmedJobCode = form.owner_job_code.trim();
+      if (trimmedJobCode) {
+        payload.owner_job_code = slugifyJobCode(trimmedJobCode);
+      } else {
+        delete payload.owner_job_code;
+      }
+
       const dob = toRFC3339(form.owner_date_of_birth);
       const probationEnd = toRFC3339(form.owner_probation_end_date);
       const confirmation = toRFC3339(form.owner_confirmation_date);
 
-      // Remove the raw text versions — the API expects the *owner_* names below.
       delete payload.owner_date_of_birth;
       delete payload.owner_probation_end_date;
       delete payload.owner_confirmation_date;
@@ -311,22 +312,18 @@ export default function CompanyCreateScreen() {
         owner_tax_id: form.owner_tax_id.trim() || null,
         owner_social_security_id: form.owner_social_security_id.trim() || null,
         owner_email: form.owner_email.trim() || null,
-        // Cost center is intentionally nullable — send null when blank.
         owner_cost_center: form.owner_cost_center.trim() || null,
         owner_cost_center_id: form.owner_cost_center_id.trim() || null,
       };
 
-      // Strip the raw owner_* text fields from the spread; we set them explicitly.
       Object.keys(ownerProfile).forEach((k) => {
         delete payload[k];
       });
 
-      // Merge the cleaned owner profile back in.
       Object.assign(payload, ownerProfile);
 
       const result = await createCompany(payload);
 
-      // Reflect the real subscription outcome in the success alert.
       const status: string = result?.subscription_status ?? 'pending';
       let message: string;
       switch (status) {
@@ -362,9 +359,6 @@ export default function CompanyCreateScreen() {
     }
   };
 
-  // ---------------------------------------------------------
-  // Generic modal picker
-  // ---------------------------------------------------------
   const renderPickerModal = (
     visible: boolean,
     setVisible: (v: boolean) => void,
@@ -477,7 +471,6 @@ export default function CompanyCreateScreen() {
     );
   };
 
-  // Build plan dropdown options with an explicit "None" entry.
   const planOptions = [
     { label: 'None (extend later)', value: '' },
     ...plans.map((p) => ({
@@ -486,10 +479,8 @@ export default function CompanyCreateScreen() {
     })),
   ];
 
-  // Tier options include a "None" entry too.
   const tierOptions = [{ label: 'None (default)', value: '' }, ...TIERS];
 
-  // Owner profile enum dropdown options (all with an explicit "Not set" entry).
   const genderOptions = [{ label: 'Not set', value: '' }, ...GENDERS];
   const maritalOptions = [{ label: 'Not set', value: '' }, ...MARITAL_STATUSES];
   const employmentTypeOptions = [
@@ -525,7 +516,6 @@ export default function CompanyCreateScreen() {
     EMPLOYMENT_STATUSES.find((s) => s.value === form.owner_employment_status)
       ?.label || 'Not set';
 
-  // Helper text describing the "0/0/0 = no subscription" rule.
   const subscriptionMode: 'pending' | 'trial' | 'active' =
     form.trial_days > 0
       ? 'trial'
@@ -540,9 +530,11 @@ export default function CompanyCreateScreen() {
       ? `Subscription window: +${form.subscription_months} month(s) +${form.subscription_days} day(s).`
       : 'No subscription will be created. The owner can extend it later after payment.';
 
-  // ---------------------------------------------------------
-  // Render
-  // ---------------------------------------------------------
+  // Preview what job code the backend will use.
+  const previewJobCode = form.owner_job_code.trim()
+    ? slugifyJobCode(form.owner_job_code)
+    : slugifyJobCode(form.owner_position_title) || 'CEO';
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <KeyboardAvoidingView
@@ -564,7 +556,7 @@ export default function CompanyCreateScreen() {
           </View>
 
           <View style={styles.form}>
-            {/* ---------- COMPANY + OWNER ---------- */}
+            {/* COMPANY + OWNER */}
             <Text variant="titleSmall" style={styles.sectionTitle}>
               Company & Owner
             </Text>
@@ -612,8 +604,22 @@ export default function CompanyCreateScreen() {
               style={styles.input}
               theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
             />
+            <TextInput
+              mode="outlined"
+              label="Position Job Code (optional)"
+              value={form.owner_job_code}
+              onChangeText={(text) => setForm({ ...form, owner_job_code: text })}
+              autoCapitalize="characters"
+              placeholder="CEO"
+              style={styles.input}
+              theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
+            />
+            <Text style={styles.hint}>
+              Job code will be saved as: <Text style={{ fontWeight: '600' }}>{previewJobCode}</Text>
+              {' — it identifies the role catalog entry ("Cashier", "CEO"). Leave blank to auto-derive from the title.'}
+            </Text>
 
-            {/* ---------- OWNER HR PROFILE (OPTIONAL) ---------- */}
+            {/* OWNER HR PROFILE (OPTIONAL) */}
             <Text variant="titleSmall" style={styles.sectionTitle}>
               Owner Profile (optional)
             </Text>
@@ -766,7 +772,6 @@ export default function CompanyCreateScreen() {
               theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
             />
 
-            {/* Cost center is intentionally nullable — leaving it blank sends null. */}
             <View style={styles.row}>
               <View style={styles.halfInput}>
                 <TextInput
@@ -795,7 +800,7 @@ export default function CompanyCreateScreen() {
               </View>
             </View>
 
-            {/* ---------- SUBSCRIPTION ---------- */}
+            {/* SUBSCRIPTION */}
             <Text variant="titleSmall" style={styles.sectionTitle}>
               Subscription (optional)
             </Text>
@@ -804,7 +809,6 @@ export default function CompanyCreateScreen() {
               subscription. The owner extends it later after payment.
             </Text>
 
-            {/* Plan dropdown */}
             <TouchableOpacity
               style={styles.dropdown}
               onPress={() => setPlanModalVisible(true)}
@@ -826,7 +830,6 @@ export default function CompanyCreateScreen() {
               </View>
             </TouchableOpacity>
 
-            {/* Tier dropdown */}
             <TouchableOpacity
               style={styles.dropdown}
               onPress={() => setTierModalVisible(true)}
@@ -930,7 +933,6 @@ export default function CompanyCreateScreen() {
               </View>
             </View>
 
-            {/* Live hint about what will happen */}
             <View
               style={[
                 styles.hintBox,
@@ -971,7 +973,7 @@ export default function CompanyCreateScreen() {
               theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
             />
 
-            {/* ---------- WORK CENTER ---------- */}
+            {/* WORK CENTER */}
             <Text variant="titleSmall" style={styles.sectionTitle}>
               Work Center
             </Text>
@@ -1030,7 +1032,7 @@ export default function CompanyCreateScreen() {
               />
             </View>
 
-            {/* ---------- LOCATION ---------- */}
+            {/* LOCATION */}
             <Text variant="titleSmall" style={styles.sectionTitle}>
               Location
             </Text>
@@ -1129,7 +1131,7 @@ export default function CompanyCreateScreen() {
               </View>
             </View>
 
-            {/* ---------- DEPARTMENTS ---------- */}
+            {/* DEPARTMENTS */}
             <Text variant="titleSmall" style={styles.sectionTitle}>
               Departments *
             </Text>
@@ -1145,7 +1147,7 @@ export default function CompanyCreateScreen() {
               </View>
             )}
 
-            {/* ---------- SUBMIT ---------- */}
+            {/* SUBMIT */}
             <TouchableOpacity
               onPress={handleCreate}
               disabled={loading}

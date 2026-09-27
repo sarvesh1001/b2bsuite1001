@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 
 import {
   View,
@@ -89,15 +89,11 @@ function logError(...args: any[]) {
  * Normalize the upload URL returned by the backend.
  *
  * The backend may return either:
- *   - an absolute URL:  "http://host:port/avatars/upload"  (dev)
- *   - a relative path:  "/avatars/upload"                  (prod, same-origin)
+ *   - an absolute URL:  "http://host:port/avatars/me/upload"  (dev)
+ *   - a relative path:  "/avatars/me/upload"                  (prod, same-origin)
  *
  * If it's absolute we must NOT prepend the API baseURL, otherwise axios
- * concatenates them and produces garbage like:
- *   "https://api.example.com/api/v1http://localhost:8080/avatars/upload"
- *
- * This helper detects the case and returns the URL as-is for absolute
- * URLs, or wrapped through `uploadAvatarFile` for relative ones.
+ * concatenates them and produces garbage.
  */
 function isAbsoluteUrl(url: string): boolean {
   return /^https?:\/\//i.test(url);
@@ -181,6 +177,15 @@ export default function AvatarManagementScreen() {
   };
 
   const queryClient = useQueryClient();
+
+  // 👇 Invalidates BOTH this screen's list queries and every UserAvatar
+  //    query across the app (`['avatar', userId]` in useAvatar.ts).
+  //    Without the second key, the profile screen's hero avatar won't
+  //    pick up uploads / deletes / set-primary until app restart.
+  const invalidateAvatarCaches = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['myAvatars'] });
+    queryClient.invalidateQueries({ queryKey: ['avatar'] });
+  }, [queryClient]);
 
   const [uploading, setUploading] =
     useState(false);
@@ -364,9 +369,7 @@ export default function AvatarManagementScreen() {
 
         log('setAvatarPrimary success');
 
-        queryClient.invalidateQueries({
-          queryKey: ['myAvatars'],
-        });
+        invalidateAvatarCaches();          // 👈 changed
 
         Alert.alert(
           'Avatar Updated',
@@ -417,9 +420,7 @@ export default function AvatarManagementScreen() {
 
         log('deleteAvatar success');
 
-        queryClient.invalidateQueries({
-          queryKey: ['myAvatars'],
-        });
+        invalidateAvatarCaches();          // 👈 changed
 
         setDialogVisible(false);
 
@@ -477,9 +478,7 @@ export default function AvatarManagementScreen() {
 
         log('reactivateAvatar success', variables);
 
-        queryClient.invalidateQueries({
-          queryKey: ['myAvatars'],
-        });
+        invalidateAvatarCaches();          // 👈 changed
 
         Alert.alert(
           'Avatar Restored',
@@ -600,7 +599,7 @@ export default function AvatarManagementScreen() {
         asset.mimeType ||
         'image/jpeg';
 
-      log('step 2: POST /avatars/upload-url', { mimeType });
+      log('step 2: POST /avatars/me/upload-url', { mimeType });
 
       let uploadUrl: string;
       let fileKey: string;
@@ -700,7 +699,7 @@ export default function AvatarManagementScreen() {
       const idempotencyKey =
         `confirm-${Date.now()}`;
 
-      log('step 4: POST /avatars/confirm', { fileKey, mimeType, idempotencyKey });
+      log('step 4: POST /avatars/me/confirm', { fileKey, mimeType, idempotencyKey });
 
       try {
         await confirmAvatarUpload(
@@ -731,9 +730,7 @@ export default function AvatarManagementScreen() {
 
       log('step 5: invalidating avatar queries');
 
-      await queryClient.invalidateQueries({
-        queryKey: ['myAvatars'],
-      });
+      invalidateAvatarCaches();          // 👈 changed
 
       log('===== UPLOAD FLOW END (SUCCESS) =====');
 
@@ -1871,410 +1868,248 @@ export default function AvatarManagementScreen() {
 
 const styles = StyleSheet.create({
 
-  // =======================================================
-  // PAGE
-  // =======================================================
-
   safeArea: {
     flex: 1,
-    backgroundColor:
-      BACKGROUND_COLOR,
+    backgroundColor: BACKGROUND_COLOR,
   },
 
   listContent: {
     paddingBottom: 105,
   },
 
-  // =======================================================
-  // HERO
-  // =======================================================
-
   hero: {
     paddingHorizontal: 20,
     paddingTop: 16,
     paddingBottom: 18,
-
     borderBottomLeftRadius: 24,
     borderBottomRightRadius: 24,
-
     shadowColor: '#000',
-
-    shadowOffset: {
-      width: 0,
-      height: 5,
-    },
-
+    shadowOffset: { width: 0, height: 5 },
     shadowOpacity: 0.12,
-
     shadowRadius: 12,
-
     elevation: 5,
   },
 
   heroTop: {
     flexDirection: 'row',
-
     alignItems: 'center',
-
-    justifyContent:
-      'space-between',
+    justifyContent: 'space-between',
   },
 
   heroEyebrow: {
-    color:
-      'rgba(255,255,255,0.62)',
-
+    color: 'rgba(255,255,255,0.62)',
     fontSize: 9,
-
     fontWeight: '700',
-
     letterSpacing: 1.1,
   },
 
   heroTitle: {
     marginTop: 3,
-
     color: '#FFFFFF',
-
     fontSize: 26,
-
     fontWeight: '700',
-
     letterSpacing: -0.5,
   },
 
   heroSubtitle: {
     marginTop: 4,
-
-    color:
-      'rgba(255,255,255,0.70)',
-
+    color: 'rgba(255,255,255,0.70)',
     fontSize: 10,
-
     fontWeight: '500',
   },
 
   heroIcon: {
     width: 54,
     height: 54,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 16,
-
-    backgroundColor:
-      'rgba(255,255,255,0.13)',
-
+    backgroundColor: 'rgba(255,255,255,0.13)',
     borderWidth: 1,
-
-    borderColor:
-      'rgba(255,255,255,0.18)',
+    borderColor: 'rgba(255,255,255,0.18)',
   },
 
   heroStats: {
     marginTop: 18,
-
     flexDirection: 'row',
-
     alignItems: 'center',
-
     paddingVertical: 10,
     paddingHorizontal: 13,
-
     borderRadius: 13,
-
-    backgroundColor:
-      'rgba(255,255,255,0.11)',
-
+    backgroundColor: 'rgba(255,255,255,0.11)',
     borderWidth: 1,
-
-    borderColor:
-      'rgba(255,255,255,0.13)',
+    borderColor: 'rgba(255,255,255,0.13)',
   },
 
   heroStat: {
     flexDirection: 'row',
-
     alignItems: 'center',
-
     flex: 1,
   },
 
   heroStatNumber: {
     color: '#FFFFFF',
-
     fontSize: 18,
-
     fontWeight: '700',
   },
 
   heroStatLabel: {
     marginLeft: 7,
-
-    color:
-      'rgba(255,255,255,0.72)',
-
+    color: 'rgba(255,255,255,0.72)',
     fontSize: 10,
-
     fontWeight: '600',
   },
 
   heroDivider: {
     width: 1,
     height: 24,
-
-    backgroundColor:
-      'rgba(255,255,255,0.18)',
-
+    backgroundColor: 'rgba(255,255,255,0.18)',
     marginHorizontal: 12,
   },
 
   heroStatusDot: {
     width: 8,
     height: 8,
-
     borderRadius: 4,
-
     backgroundColor: '#86EFAC',
-
     shadowColor: '#86EFAC',
-
     shadowOpacity: 0.5,
-
     shadowRadius: 4,
   },
 
-  // =======================================================
-  // TABS
-  // =======================================================
-
   tabsContainer: {
     marginHorizontal: 20,
-
     marginTop: 18,
-
     padding: 4,
-
     flexDirection: 'row',
-
     borderRadius: 12,
-
     backgroundColor: '#EEF1F5',
-
     borderWidth: 1,
-
     borderColor: '#E2E7ED',
   },
 
   tab: {
     flex: 1,
-
     minHeight: 40,
-
     flexDirection: 'row',
-
     alignItems: 'center',
-
     justifyContent: 'center',
-
     gap: 6,
-
     borderRadius: 9,
   },
 
   activeTab: {
-    backgroundColor:
-      CARD_BACKGROUND,
-
+    backgroundColor: CARD_BACKGROUND,
     shadowColor: '#000',
-
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.05,
-
     shadowRadius: 5,
-
     elevation: 1,
   },
 
   tabText: {
-    color:
-      TEXT_SECONDARY,
-
+    color: TEXT_SECONDARY,
     fontSize: 11,
-
     fontWeight: '600',
   },
 
   activeTabText: {
-    color:
-      PRIMARY_COLOR,
-
+    color: PRIMARY_COLOR,
     fontWeight: '700',
   },
 
-  // =======================================================
-  // SECTION
-  // =======================================================
-
   sectionHeader: {
     marginHorizontal: 20,
-
     marginTop: 23,
-
     marginBottom: 13,
-
     flexDirection: 'row',
-
     alignItems: 'center',
-
-    justifyContent:
-      'space-between',
+    justifyContent: 'space-between',
   },
 
   sectionTitle: {
-    color:
-      TEXT_PRIMARY,
-
+    color: TEXT_PRIMARY,
     fontSize: 17,
-
     fontWeight: '700',
   },
 
   sectionSubtitle: {
     marginTop: 3,
-
-    color:
-      TEXT_SECONDARY,
-
+    color: TEXT_SECONDARY,
     fontSize: 9,
-
     fontWeight: '500',
   },
 
   countBadge: {
     minWidth: 29,
     height: 29,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     paddingHorizontal: 7,
-
     borderRadius: 9,
-
-    backgroundColor:
-      `${PRIMARY_COLOR}12`,
+    backgroundColor: `${PRIMARY_COLOR}12`,
   },
 
   countBadgeText: {
-    color:
-      PRIMARY_COLOR,
-
+    color: PRIMARY_COLOR,
     fontSize: 11,
-
     fontWeight: '700',
   },
 
-  // =======================================================
-  // CARD
-  // =======================================================
-
   card: {
     position: 'relative',
-
     marginHorizontal: 20,
-
     marginBottom: 12,
-
     overflow: 'hidden',
-
     borderRadius: 16,
-
-    backgroundColor:
-      CARD_BACKGROUND,
-
+    backgroundColor: CARD_BACKGROUND,
     borderWidth: 1,
-
-    borderColor:
-      BORDER_COLOR,
-
+    borderColor: BORDER_COLOR,
     shadowColor: '#000',
-
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.045,
-
     shadowRadius: 8,
-
     elevation: 2,
   },
 
   cardAccent: {
     position: 'absolute',
-
     top: 0,
     left: 0,
     bottom: 0,
-
     width: 3,
   },
 
   cardInner: {
     minHeight: 102,
-
     padding: 14,
-
     paddingLeft: 17,
-
     flexDirection: 'row',
-
     alignItems: 'center',
   },
 
-  // =======================================================
-  // AVATAR
-  // =======================================================
-
   avatarContainer: {
     position: 'relative',
-
     marginRight: 13,
   },
 
   avatarRing: {
     width: 64,
     height: 64,
-
     padding: 2,
-
     borderRadius: 32,
-
-    backgroundColor:
-      '#E8ECF2',
+    backgroundColor: '#E8ECF2',
   },
 
   primaryAvatarRing: {
-    backgroundColor:
-      PRIMARY_COLOR,
+    backgroundColor: PRIMARY_COLOR,
   },
 
   avatarClip: {
     flex: 1,
-
     overflow: 'hidden',
-
     borderRadius: 30,
-
-    backgroundColor:
-      '#F1F5F9',
+    backgroundColor: '#F1F5F9',
   },
 
   avatarImage: {
@@ -2285,503 +2120,314 @@ const styles = StyleSheet.create({
 
   avatarPlaceholder: {
     flex: 1,
-
     alignItems: 'center',
     justifyContent: 'center',
-
-    backgroundColor:
-      '#F1F5F9',
+    backgroundColor: '#F1F5F9',
   },
 
   avatarPlaceholderLarge: {
     width: 64,
     height: 64,
-
     borderRadius: 32,
   },
 
   primaryStar: {
     position: 'absolute',
-
     right: -2,
     bottom: -1,
-
     width: 23,
     height: 23,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 12,
-
-    backgroundColor:
-      '#F59E0B',
-
+    backgroundColor: '#F59E0B',
     borderWidth: 2,
-
-    borderColor:
-      CARD_BACKGROUND,
+    borderColor: CARD_BACKGROUND,
   },
-
-  // =======================================================
-  // INFO
-  // =======================================================
 
   info: {
     flex: 1,
-
     minWidth: 0,
   },
 
   titleRow: {
     flexDirection: 'row',
-
     alignItems: 'center',
-
-    justifyContent:
-      'space-between',
+    justifyContent: 'space-between',
   },
 
   avatarType: {
     flex: 1,
-
-    color:
-      TEXT_PRIMARY,
-
+    color: TEXT_PRIMARY,
     fontSize: 14,
-
     fontWeight: '700',
   },
 
   avatarNumber: {
     marginLeft: 5,
-
-    color:
-      '#CBD5E1',
-
+    color: '#CBD5E1',
     fontSize: 9,
-
     fontWeight: '800',
-
     letterSpacing: 0.5,
   },
 
   dateRow: {
     flexDirection: 'row',
-
     alignItems: 'center',
-
     marginTop: 6,
-
     gap: 4,
   },
 
   dateText: {
-    color:
-      TEXT_SECONDARY,
-
+    color: TEXT_SECONDARY,
     fontSize: 9,
-
     fontWeight: '500',
   },
 
   statusRow: {
     flexDirection: 'row',
-
     alignItems: 'center',
-
     marginTop: 7,
   },
 
   primaryBadge: {
     flexDirection: 'row',
-
     alignItems: 'center',
-
     paddingHorizontal: 7,
     paddingVertical: 4,
-
     borderRadius: 6,
-
-    backgroundColor:
-      '#FFF7E6',
+    backgroundColor: '#FFF7E6',
   },
 
   primaryLabel: {
     marginLeft: 4,
-
     color: '#B45309',
-
     fontSize: 8,
-
     fontWeight: '700',
   },
 
   deletedBadge: {
     flexDirection: 'row',
-
     alignItems: 'center',
-
     paddingHorizontal: 7,
     paddingVertical: 4,
-
     borderRadius: 6,
-
-    backgroundColor:
-      '#FEF2F2',
+    backgroundColor: '#FEF2F2',
   },
 
   deletedLabel: {
     marginLeft: 4,
-
     color: '#DC2626',
-
     fontSize: 8,
-
     fontWeight: '700',
   },
 
-  // =======================================================
-  // ACTIONS
-  // =======================================================
-
   actions: {
     marginLeft: 8,
-
     flexDirection: 'row',
-
     alignItems: 'center',
-
     gap: 6,
   },
 
   smallAction: {
     width: 38,
     height: 38,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 10,
-
-    backgroundColor:
-      `${PRIMARY_COLOR}10`,
+    backgroundColor: `${PRIMARY_COLOR}10`,
   },
 
   deleteAction: {
-    backgroundColor:
-      '#FEF2F2',
+    backgroundColor: '#FEF2F2',
   },
 
   restoreAction: {
     height: 38,
-
     paddingHorizontal: 10,
-
     flexDirection: 'row',
-
     alignItems: 'center',
-
     gap: 5,
-
     borderRadius: 10,
-
-    backgroundColor:
-      `${PRIMARY_COLOR}10`,
+    backgroundColor: `${PRIMARY_COLOR}10`,
   },
 
   restoreText: {
-    color:
-      PRIMARY_COLOR,
-
+    color: PRIMARY_COLOR,
     fontSize: 9,
-
     fontWeight: '700',
   },
 
   restorePrimaryAction: {
     width: 38,
     height: 38,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 10,
-
-    backgroundColor:
-      PRIMARY_COLOR,
+    backgroundColor: PRIMARY_COLOR,
   },
-
-  // =======================================================
-  // UPLOAD BUTTON
-  // =======================================================
 
   uploadButton: {
     position: 'absolute',
-
     left: 20,
     right: 20,
     bottom: 17,
-
     borderRadius: 16,
-
     overflow: 'hidden',
-
-    shadowColor:
-      '#5B2A97',
-
-    shadowOffset: {
-      width: 0,
-      height: 7,
-    },
-
+    shadowColor: '#5B2A97',
+    shadowOffset: { width: 0, height: 7 },
     shadowOpacity: 0.25,
-
     shadowRadius: 12,
-
     elevation: 8,
   },
 
   uploadGradient: {
     height: 56,
-
     flexDirection: 'row',
-
     alignItems: 'center',
-
     justifyContent: 'center',
-
     gap: 8,
   },
 
   uploadText: {
     color: '#FFFFFF',
-
     fontSize: 13,
-
     fontWeight: '700',
   },
 
-  // =======================================================
-  // EMPTY
-  // =======================================================
-
   emptyContainer: {
     marginHorizontal: 20,
-
     marginTop: 15,
-
     paddingVertical: 48,
     paddingHorizontal: 24,
-
     alignItems: 'center',
-
     borderRadius: 16,
-
     borderWidth: 1,
-
     borderStyle: 'dashed',
-
-    borderColor:
-      '#DCE2EA',
-
-    backgroundColor:
-      'rgba(255,255,255,0.65)',
+    borderColor: '#DCE2EA',
+    backgroundColor: 'rgba(255,255,255,0.65)',
   },
 
   emptyIcon: {
     width: 68,
     height: 68,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 19,
-
-    backgroundColor:
-      `${PRIMARY_COLOR}12`,
+    backgroundColor: `${PRIMARY_COLOR}12`,
   },
 
   emptyTitle: {
     marginTop: 16,
-
-    color:
-      TEXT_PRIMARY,
-
+    color: TEXT_PRIMARY,
     fontSize: 17,
-
     fontWeight: '700',
   },
 
   emptyDescription: {
     marginTop: 7,
-
     maxWidth: 300,
-
-    color:
-      TEXT_SECONDARY,
-
+    color: TEXT_SECONDARY,
     fontSize: 10,
-
     lineHeight: 16,
-
     textAlign: 'center',
   },
 
   emptyUploadButton: {
     marginTop: 19,
-
     paddingHorizontal: 15,
     paddingVertical: 10,
-
     flexDirection: 'row',
-
     alignItems: 'center',
-
     gap: 7,
-
     borderRadius: 9,
-
-    backgroundColor:
-      PRIMARY_COLOR,
+    backgroundColor: PRIMARY_COLOR,
   },
 
   emptyUploadText: {
     color: '#FFFFFF',
-
     fontSize: 10,
-
     fontWeight: '700',
   },
 
-  // =======================================================
-  // LOADING
-  // =======================================================
-
   loadingScreen: {
     flex: 1,
-
     alignItems: 'center',
-
     justifyContent: 'center',
-
     paddingHorizontal: 30,
   },
 
   loadingIcon: {
     width: 68,
     height: 68,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 19,
-
-    backgroundColor:
-      `${PRIMARY_COLOR}12`,
+    backgroundColor: `${PRIMARY_COLOR}12`,
   },
 
   loadingTitle: {
     marginTop: 14,
-
-    color:
-      TEXT_PRIMARY,
-
+    color: TEXT_PRIMARY,
     fontSize: 17,
-
     fontWeight: '700',
   },
 
   loadingSubtitle: {
     marginTop: 5,
-
-    color:
-      TEXT_SECONDARY,
-
+    color: TEXT_SECONDARY,
     fontSize: 10,
   },
 
-  // =======================================================
-  // STATES
-  // =======================================================
-
   stateScreen: {
     flex: 1,
-
     alignItems: 'center',
-
     justifyContent: 'center',
-
     paddingHorizontal: 30,
   },
 
   stateIcon: {
     width: 72,
     height: 72,
-
     alignItems: 'center',
     justifyContent: 'center',
-
     borderRadius: 20,
   },
 
   authIcon: {
-    backgroundColor:
-      `${PRIMARY_COLOR}12`,
+    backgroundColor: `${PRIMARY_COLOR}12`,
   },
 
   stateTitle: {
     marginTop: 20,
-
-    color:
-      TEXT_PRIMARY,
-
+    color: TEXT_PRIMARY,
     fontSize: 20,
-
     fontWeight: '700',
-
     textAlign: 'center',
   },
 
   stateDescription: {
     marginTop: 8,
-
     maxWidth: 320,
-
-    color:
-      TEXT_SECONDARY,
-
+    color: TEXT_SECONDARY,
     fontSize: 12,
-
     lineHeight: 18,
-
     textAlign: 'center',
   },
 
-  // =======================================================
-  // DIALOG
-  // =======================================================
-
   dialog: {
     borderRadius: 18,
-
-    backgroundColor:
-      CARD_BACKGROUND,
+    backgroundColor: CARD_BACKGROUND,
   },
 
   dialogTitle: {
-    color:
-      TEXT_PRIMARY,
-
+    color: TEXT_PRIMARY,
     fontWeight: '700',
   },
 
   dialogText: {
-    color:
-      TEXT_SECONDARY,
-
+    color: TEXT_SECONDARY,
     fontSize: 13,
-
     lineHeight: 20,
   },
 });

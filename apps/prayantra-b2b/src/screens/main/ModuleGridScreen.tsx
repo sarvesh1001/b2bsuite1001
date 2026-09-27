@@ -29,6 +29,10 @@ import {
 
 import { useUserAuthStore } from '../../store/userAuthStore';
 
+// 👇 NEW: same component used by EmployeeSearchScreen / HREmployeeDetail.
+// Renders the primary avatar photo, falls back to initials when none.
+import { UserAvatar } from '../../components/UserAvatar';
+
 import {
   PRIMARY_COLOR,
   SECONDARY_COLOR,
@@ -92,19 +96,14 @@ type RootStackParamList = {
   QRScanner: undefined;
   PhoneInput: undefined;
   LocationSelection: { nextRoute?: string };
-  AvatarManagement: undefined; // 👈 added — reached from the user avatar chip
+  // 👇 User self-service hub — reached from the avatar chip below.
+  //    From MyProfile the user can reach AvatarManagement, edit their
+  //    name/username, etc.
+  MyProfile: undefined;
+  AvatarManagement: undefined;
 };
 
 type NavigationProp = StackNavigationProp<RootStackParamList, 'ModuleDetail'>;
-
-// =========================================================
-// HELPERS
-// =========================================================
-
-const getInitial = (name?: string | null) => {
-  if (!name) return 'U';
-  return name.trim().charAt(0).toUpperCase();
-};
 
 // =========================================================
 // SCREEN
@@ -273,6 +272,12 @@ export default function ModuleGridScreen() {
     navigation.navigate('ModuleDetail', { moduleName });
   };
 
+  // 👇 Avatar chip now opens the profile hub. From MyProfile the user
+  //    can navigate to AvatarManagement, edit their name/username, etc.
+  const handleProfilePress = () => {
+    navigation.navigate('MyProfile');
+  };
+
   // =======================================================
   // USER NAME
   // =======================================================
@@ -280,9 +285,6 @@ export default function ModuleGridScreen() {
   const userName =
     user?.full_name || user?.username || user?.phone || 'User';
   const firstName = userName.split(' ')[0] || 'User';
-  const userInitial = getInitial(
-    user?.full_name || user?.username || user?.phone
-  );
 
   // =======================================================
   // LOADING
@@ -620,17 +622,26 @@ export default function ModuleGridScreen() {
                 </View>
               </View>
 
-              {/* 👇 Avatar chip — tap to manage avatars (moved from Administration) */}
+              {/* 👇 Avatar chip — real photo pulled from
+                     /avatars/users/{userId}/primary. Falls back to
+                     initials when none is set. Tap → MyProfile, where
+                     the user can reach AvatarManagement, edit name,
+                     etc. */}
               <TouchableOpacity
-                style={styles.userAvatar}
-                onPress={() => navigation.navigate('AvatarManagement')}
-                activeOpacity={0.8}
+                style={styles.userAvatarWrap}
+                onPress={handleProfilePress}
+                activeOpacity={0.85}
                 accessibilityRole="button"
-                accessibilityLabel="Manage your avatars"
+                accessibilityLabel="Open your profile"
               >
-                <Text style={styles.userAvatarText}>{userInitial}</Text>
+                <UserAvatar
+                  userId={user?.user_id}
+                  username={user?.username}
+                  fullName={user?.full_name}
+                  size={51}
+                />
                 <View style={styles.userAvatarBadge}>
-                  <Icon name="camera-outline" size={11} color="#FFFFFF" />
+                  <Icon name="account-edit-outline" size={11} color="#FFFFFF" />
                 </View>
               </TouchableOpacity>
             </View>
@@ -923,30 +934,19 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
 
-  userAvatar: {
-    width: 51,
-    height: 51,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 16,
-    backgroundColor: `${PRIMARY_COLOR}12`,
-    borderWidth: 1,
-    borderColor: `${PRIMARY_COLOR}22`,
+  // ---- Avatar chip (photo + camera badge) ----
+
+  // Wrapper only positions the badge overlay. `UserAvatar` renders
+  // the circular photo (or initials fallback) inside.
+  userAvatarWrap: {
+    position: 'relative',
     flexShrink: 0,
-    position: 'relative', // 👈 required for the badge overlay
   },
 
-  userAvatarText: {
-    color: PRIMARY_COLOR,
-    fontSize: 18,
-    fontWeight: '700',
-  },
-
-  // 👇 small camera badge on the avatar chip
   userAvatarBadge: {
     position: 'absolute',
-    right: -4,
-    bottom: -4,
+    right: -3,
+    bottom: -3,
     width: 20,
     height: 20,
     alignItems: 'center',
@@ -1280,3 +1280,4 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
+

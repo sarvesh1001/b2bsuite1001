@@ -1,10 +1,11 @@
 // apps/prayantra-b2b/src/screens/hr/HREmployeeForm.tsx
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   ScrollView,
   Alert,
   TouchableOpacity,
+  Pressable,
   ActivityIndicator,
   Modal,
   FlatList,
@@ -12,6 +13,7 @@ import {
   TextInput as RNTextInput,
   KeyboardAvoidingView,
   Platform,
+  Clipboard,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, Switch } from 'react-native-paper';
@@ -26,30 +28,30 @@ import DateTimePickerModal from 'react-native-modal-datetime-picker';
 
 import {
   createEmployee,
-  updateEmployeeProfile,
-  getEmployeeProfile,
-  listRoles,
-  listPositions,
-  listLocations,
+  updateMember,
+  getEmployeeDetailsByIDs,
   listCostCenters,
-  listWorkCenters,
-  findEmployeeByUsername,
+  searchEmployeesTypeahead,
+  getEmployeeFormOptions,
 } from '@b2b/api-client';
 
 import { useUserAuthStore } from '../../store/userAuthStore';
 import type {
-  Role,
-  Position,
-  CompanyEmployee,
   AccessibleLocation,
   LocationAccessScope,
   LocationAccessLevel,
   AddMemberPayload,
+  UpdateMemberRequest,
   CostCenter,
-  WorkCenter,
+  DecryptedEmployeeDetails,
+  EmployeeFormOptions,
+  RoleWithDepartments,
+  FormPositionView,
+  FormWorkCenterView,
 } from '@b2b/shared-types';
 import { RootStackParamList } from '../../navigation';
 import { UserAvatar } from '../../components/UserAvatar';
+
 import {
   BACKGROUND_COLOR,
   CARD_BACKGROUND,
@@ -64,10 +66,119 @@ import {
 } from '../../constants/colors';
 
 // =========================================================
+// DEV LOGGER
+// =========================================================
+const LOG_TAG = '[HREmployeeForm]';
+const DEBOUNCE_MS = 300;
+const REPORTS_TO_PAGE_SIZE = 20;
+
+function logInfo(label: string, payload?: unknown) {
+  if (__DEV__) {
+    // eslint-disable-next-line no-console
+    console.log(`${LOG_TAG} ${label}`, payload ?? '');
+  }
+}
+function logWarn(label: string, payload?: unknown) {
+  if (__DEV__) {
+    // eslint-disable-next-line no-console
+    console.warn(`${LOG_TAG} ${label}`, payload ?? '');
+  }
+}
+function logError(label: string, payload?: unknown) {
+  // eslint-disable-next-line no-console
+  console.error(`${LOG_TAG} ${label}`, payload ?? '');
+}
+
+function safeStringify(v: unknown, max = 4000): string {
+  if (v === undefined) return 'undefined';
+  try {
+    const s = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+    return s.length > max ? s.slice(0, max) + '\n… (truncated)' : s;
+  } catch {
+    return String(v);
+  }
+}
+
+// =========================================================
+// ON-SCREEN API LOGGER
+// =========================================================
+type ApiLogEntry = {
+  id: string;
+  ts: number;
+  label: string;
+  method?: string;
+  url?: string;
+  request?: unknown;
+  status?: number | string;
+  ok?: boolean;
+  durationMs?: number;
+  response?: unknown;
+  error?: unknown;
+};
+
+const apiLogsStore: ApiLogEntry[] = [];
+let apiLogListeners: ((logs: ApiLogEntry[]) => void)[] = [];
+
+function notifyApiLogs() {
+  apiLogListeners.forEach((l) => l([...apiLogsStore]));
+}
+
+function pushApiLog(entry: Omit<ApiLogEntry, 'id' | 'ts'>) {
+  const full: ApiLogEntry = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    ts: Date.now(),
+    ...entry,
+  };
+  apiLogsStore.unshift(full);
+  if (apiLogsStore.length > 200) apiLogsStore.length = 200;
+  // eslint-disable-next-line no-console
+  console.log(`${LOG_TAG} API ${full.label}`, full);
+  notifyApiLogs();
+}
+
+function clearApiLogs() {
+  apiLogsStore.length = 0;
+  notifyApiLogs();
+}
+
+async function loggedApi<T>(
+  label: string,
+  request: unknown,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const started = Date.now();
+  try {
+    const res = await fn();
+    pushApiLog({
+      label,
+      request,
+      response: res,
+      ok: true,
+      durationMs: Date.now() - started,
+    });
+    return res;
+  } catch (err: any) {
+    pushApiLog({
+      label,
+      request,
+      error: {
+        message: err?.message,
+        status: err?.response?.status,
+        url: err?.config?.url,
+        method: err?.config?.method,
+        data: err?.response?.data,
+      },
+      ok: false,
+      durationMs: Date.now() - started,
+    });
+    throw err;
+  }
+}
+
+// =========================================================
 // SCHEMA
 // =========================================================
 const schema = z.object({
-  // identity (create-only)
   phone: z.string().optional(),
   username: z
     .string()
@@ -75,14 +186,15 @@ const schema = z.object({
     .refine((v) => !v || /^[a-zA-Z0-9]+$/.test(v), 'Letters and digits only'),
   full_name: z.string().optional(),
 
-  // roster
   employee_id: z.string().optional(),
   role_id: z.string().min(1, 'Role is required'),
   reports_to: z.string().optional(),
   position_id: z.string().optional(),
+
+  work_center_code: z.string().nullable().optional(),
+
   is_manager: z.boolean(),
 
-  // profile
   email: z.string().email('Invalid email').optional().or(z.literal('')),
   date_of_birth: z.string().nullable().optional(),
   gender: z.enum(['male', 'female', 'other']).nullable().optional(),
@@ -96,13 +208,13 @@ const schema = z.object({
     .nullable()
     .optional(),
   employment_status: z
-    .enum(['active', 'inactive', 'probation', 'terminated'])
+    .enum(['active', 'probation', 'notice', 'on_hold', 'terminated'])
     .nullable()
     .optional(),
   probation_end_date: z.string().nullable().optional(),
   confirmation_date: z.string().nullable().optional(),
   grade: z.string().max(20).nullable().optional(),
-  cost_center_id: z.string().uuid().nullable().optional(),  // 👈 FK to accounting.cost_centers
+  cost_center_id: z.string().uuid().nullable().optional(),
   tax_id: z.string().max(50).nullable().optional(),
   social_security_id: z.string().max(50).nullable().optional(),
 });
@@ -117,26 +229,22 @@ type SelectedLocationEntry = {
   access_level: LocationAccessLevel;
 };
 
+type WCSource = 'position' | 'user' | null;
+
 const DEFAULT_ACCESS_LEVEL: LocationAccessLevel = 'VIEW';
 type DateField = 'date_of_birth' | 'probation_end_date' | 'confirmation_date';
 
-// Sensible starting dates so the picker doesn't open on "today" for
-// every field. Saves the user from scrolling 30 years back for DOB.
 function defaultPickerDate(field: DateField): Date {
   const now = new Date();
   switch (field) {
-    case 'date_of_birth': {
-      // Open on Jan 1, 1990 — typical working-age midpoint.
+    case 'date_of_birth':
       return new Date(1990, 0, 1);
-    }
     case 'probation_end_date': {
-      // Default: 3 months from today (most common probation length).
       const d = new Date(now);
       d.setMonth(d.getMonth() + 3);
       return d;
     }
     case 'confirmation_date': {
-      // Default: 6 months from today.
       const d = new Date(now);
       d.setMonth(d.getMonth() + 6);
       return d;
@@ -147,6 +255,41 @@ function defaultPickerDate(field: DateField): Date {
 }
 
 // =========================================================
+// Typeahead helpers
+// =========================================================
+const pickVal = <T = any>(row: any, snake: string, pascal: string): T | undefined =>
+  row?.[snake] ?? row?.[pascal];
+
+const normalizeTypeaheadRow = (raw: any) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const uid = pickVal<string>(raw, 'user_id', 'UserID');
+  if (!uid) return null;
+  return {
+    user_id: uid,
+    username: pickVal<string>(raw, 'username', 'Username') ?? '',
+    full_name: pickVal<string | null>(raw, 'full_name', 'FullName') ?? null,
+    employee_id: pickVal<string>(raw, 'employee_id', 'EmployeeID') ?? '',
+    role_name: pickVal<string>(raw, 'role_name', 'RoleName') ?? '',
+    job_title: pickVal<string | null>(raw, 'job_title', 'JobTitle') ?? null,
+    position_title: pickVal<string | null>(raw, 'position_title', 'PositionTitle') ?? null,
+    department_name: pickVal<string | null>(raw, 'department_name', 'DepartmentName') ?? null,
+    primary_location_name:
+      pickVal<string | null>(raw, 'primary_location_name', 'PrimaryLocationName') ?? null,
+  };
+};
+
+const extractTypeaheadRows = (res: any): DecryptedEmployeeDetails[] => {
+  if (!res) return [];
+  const data = res.data ?? res?.data?.data ?? [];
+  if (!Array.isArray(data)) return [];
+  return data.map(normalizeTypeaheadRow).filter(Boolean) as DecryptedEmployeeDetails[];
+};
+
+// ---- Position display helper (FormPositionView from the prefetch) ----
+const positionDisplayTitle = (p: FormPositionView): string =>
+  p.title_override || p.job_title || '—';
+
+// =========================================================
 // SCREEN
 // =========================================================
 export default function HREmployeeForm() {
@@ -155,17 +298,33 @@ export default function HREmployeeForm() {
   const { employeeId } = route.params || {};
   const isEdit = !!employeeId;
 
-  const { accessToken, deviceId, companyId } = useUserAuthStore();
+  const { accessToken, deviceId, companyId, locationId, primaryLocationId } =
+    useUserAuthStore() as any;
 
   // ---- state ----
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(isEdit);
 
-  const [roles, setRoles] = useState<Role[]>([]);
-  const [positions, setPositions] = useState<Position[]>([]);
+  // ---- on-screen API logger ----
+  const [apiLogs, setApiLogs] = useState<ApiLogEntry[]>([...apiLogsStore]);
+  const [showApiLogs, setShowApiLogs] = useState(false);
+
+  useEffect(() => {
+    const listener = (logs: ApiLogEntry[]) => setApiLogs(logs);
+    apiLogListeners.push(listener);
+    return () => {
+      apiLogListeners = apiLogListeners.filter((l) => l !== listener);
+    };
+  }, []);
+
+  // ---- prefetch state (single-call bootstrap) ----
+  const [roles, setRoles] = useState<RoleWithDepartments[]>([]);
+  const [positions, setPositions] = useState<FormPositionView[]>([]);
   const [locations, setLocations] = useState<AccessibleLocation[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenter[]>([]);
-  const [workCenters, setWorkCenters] = useState<WorkCenter[]>([]);
+  const [workCenters, setWorkCenters] = useState<FormWorkCenterView[]>([]);
+  const [callerLocationScope, setCallerLocationScope] =
+    useState<LocationAccessScope | ''>('');
   const [loadingOptions, setLoadingOptions] = useState(true);
 
   const [roleModal, setRoleModal] = useState(false);
@@ -174,14 +333,19 @@ export default function HREmployeeForm() {
   const [primaryLocationModal, setPrimaryLocationModal] = useState(false);
   const [selectedLocationsModal, setSelectedLocationsModal] = useState(false);
   const [costCenterModal, setCostCenterModal] = useState(false);
+  const [workCenterModal, setWorkCenterModal] = useState(false);
 
+  // ---- reports-to (typeahead) ----
   const [reportsToSearch, setReportsToSearch] = useState('');
-  const [reportsToResult, setReportsToResult] = useState<CompanyEmployee | null>(null);
+  const [reportsToActiveQuery, setReportsToActiveQuery] = useState('');
+  const [reportsToResults, setReportsToResults] = useState<DecryptedEmployeeDetails[]>([]);
   const [reportsToSearched, setReportsToSearched] = useState(false);
   const [loadingReportsTo, setLoadingReportsTo] = useState(false);
+  const [reportsToError, setReportsToError] = useState<string | null>(null);
   const [selectedReportsToName, setSelectedReportsToName] = useState('');
+  const reportsToDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const [primaryLocationId, setPrimaryLocationId] = useState('');
+  const [primaryLocationIdState, setPrimaryLocationId] = useState('');
   const [locationScope, setLocationScope] = useState<LocationAccessScope | ''>('');
   const [selectedLocations, setSelectedLocations] = useState<SelectedLocationEntry[]>([]);
 
@@ -203,6 +367,7 @@ export default function HREmployeeForm() {
       employee_id: '',
       role_id: '',
       position_id: '',
+      work_center_code: null,
       reports_to: '',
       is_manager: false,
       email: '',
@@ -223,80 +388,134 @@ export default function HREmployeeForm() {
 
   const selectedRoleId = watch('role_id');
   const selectedPositionId = watch('position_id');
+  const selectedWorkCenterCode = watch('work_center_code');
   const selectedCostCenterId = watch('cost_center_id');
   const isManager = watch('is_manager');
   const reportsToId = watch('reports_to');
 
-  // ---- fetch picker options ----
+  // ---- mount log ----
+  useEffect(() => {
+    logInfo('mounted', {
+      isEdit,
+      employeeId: employeeId ?? null,
+      hasToken: !!accessToken,
+      hasDeviceId: !!deviceId,
+      companyId: companyId ?? null,
+    });
+  }, [isEdit, employeeId, accessToken, deviceId, companyId]);
+
+  // ---- fetch picker options (single-call prefetch) ----
   useEffect(() => {
     const fetchOptions = async () => {
       if (!accessToken || !companyId || !deviceId) {
+        logWarn('options fetch skipped — missing auth context', {
+          hasToken: !!accessToken,
+          hasDeviceId: !!deviceId,
+          companyId: companyId ?? null,
+        });
         setLoadingOptions(false);
         return;
       }
       try {
         setLoadingOptions(true);
-        const [
-          rolesRes,
-          positionsRes,
-          locationsRes,
-          costCentersRes,
-          workCentersRes,
-        ] = await Promise.all([
-          listRoles(companyId, deviceId, { page: 1, limit: 100 }, accessToken),
-          listPositions(companyId, deviceId, { limit: 100, offset: 0 }, accessToken),
-          listLocations(companyId, 1, 100).catch(
-            () => ({ data: { locations: [] } } as any),
+        logInfo('fetching form options…', { companyId, deviceId });
+
+        const [opts, costCentersRes] = await Promise.all([
+          loggedApi(
+            'getEmployeeFormOptions',
+            { companyId, deviceId },
+            () => getEmployeeFormOptions(companyId, deviceId, accessToken),
           ),
-          listCostCenters(
-            companyId,
-            deviceId,
-            { limit: 200, offset: 0 },
-            accessToken,
-          ).catch(() => ({ data: { items: [] } } as any)),
-          listWorkCenters(
-            companyId,
-            deviceId,
-            { page: 1, page_size: 200 },
-            accessToken,
-          ).catch(() => ({ data: [] } as any)),
+          loggedApi(
+            'listCostCenters',
+            { companyId, deviceId, params: { limit: 200, offset: 0 } },
+            () =>
+              listCostCenters(companyId, deviceId, { limit: 200, offset: 0 }, accessToken).catch(
+                (e) => {
+                  logWarn('listCostCenters failed, defaulting to []', e?.message || e);
+                  return { data: { items: [] } } as any;
+                },
+              ),
+          ),
         ]);
 
-        setRoles(rolesRes.data?.roles || []);
-        setPositions(positionsRes.data?.positions || []);
+        const options: EmployeeFormOptions =
+          (opts as any)?.data ?? (opts as any);
 
-        const raw =
-          (locationsRes as any)?.locations ||
-          (locationsRes as any)?.data?.locations ||
-          (Array.isArray(locationsRes) ? locationsRes : []);
-        setLocations(
-          (raw || []).filter((l: AccessibleLocation) => l?.is_active !== false),
-        );
+        setRoles(options.roles ?? []);
+        setPositions(options.positions ?? []);
+        setWorkCenters(options.work_centers ?? []);
+        setLocations(options.allowed_locations ?? []);
+        setCallerLocationScope(options.location_scope ?? '');
 
-        // Cost centers — flat list, filter active
+        if (!isEdit && options.primary_location_id && !primaryLocationIdState) {
+          setPrimaryLocationId(options.primary_location_id);
+        }
+
         const ccItems: CostCenter[] =
-          (costCentersRes as any)?.data?.items ||
-          (costCentersRes as any)?.items ||
-          [];
+          (costCentersRes as any)?.data?.items || (costCentersRes as any)?.items || [];
         setCostCenters(ccItems.filter((c) => c.is_active !== false));
 
-        // Work centers — flat list, filter active
-        const wcItems: WorkCenter[] =
-          (workCentersRes as any)?.data ||
-          (workCentersRes as any)?.items ||
-          [];
-        setWorkCenters(wcItems.filter((w) => w.is_active !== false));
+        logInfo('parsed options counts', {
+          scope: options.location_scope,
+          roles: options.roles?.length ?? 0,
+          positions: options.positions?.length ?? 0,
+          locations: options.allowed_locations?.length ?? 0,
+          costCenters: ccItems.length,
+          workCenters: options.work_centers?.length ?? 0,
+        });
+
+        logInfo(
+          'ROLES ▶',
+          (options.roles ?? []).map(
+            (r) =>
+              `${r.role_name} (lvl ${r.role_level}) → [${r.departments
+                .map((d) => d.department_name)
+                .join(', ')}]`,
+          ),
+        );
+        logInfo(
+          'POSITIONS ▶',
+          (options.positions ?? []).map((p) => {
+            const t = p.title_override ?? p.job_title ?? '—';
+            const wc = p.work_center_code ? ` @ ${p.work_center_code}` : '';
+            const loc = p.location_id
+              ? ` · ${p.location_name ?? p.location_id}`
+              : ' · universal';
+            return `${t}${wc}${loc}`;
+          }),
+        );
+        logInfo(
+          'LOCATIONS ▶',
+          (options.allowed_locations ?? []).map(
+            (l) =>
+              `${l.location_name} (${l.location_code ?? '—'})${
+                l.access_level ? ` · ${l.access_level}` : ''
+              }`,
+          ),
+        );
+        logInfo(
+          'WORK CENTERS ▶',
+          (options.work_centers ?? []).map(
+            (w) =>
+              `${w.work_center_code} — ${w.name}${
+                w.is_universal ? ' · universal' : w.location_id ? ` · ${w.location_id}` : ''
+              }`,
+          ),
+        );
       } catch (err) {
-        console.error('[HREmployeeForm] options fetch failed', err);
+        logError('options fetch failed', err);
         Alert.alert(
           'Unable to Load',
-          'Failed to load roles, positions, and locations. Please try again.',
+          'Failed to load form options. Please try again.',
         );
       } finally {
         setLoadingOptions(false);
+        logInfo('options fetch done');
       }
     };
     fetchOptions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken, companyId, deviceId]);
 
   // ---- load existing (edit mode) ----
@@ -306,18 +525,29 @@ export default function HREmployeeForm() {
       return;
     }
     const load = async () => {
-      if (!accessToken || !companyId || !deviceId) return;
+      if (!accessToken || !companyId || !deviceId) {
+        logWarn('profile load skipped — missing auth context');
+        setFetching(false);
+        return;
+      }
       try {
-        const res = await getEmployeeProfile(companyId, employeeId, deviceId, accessToken);
-        const data: any = res.data || {};
+        logInfo('loading employee details', { userId: employeeId });
+        const res = await loggedApi(
+          'getEmployeeDetailsByIDs',
+          { companyId, deviceId, body: { user_ids: [employeeId] } },
+          () =>
+            getEmployeeDetailsByIDs(companyId, deviceId, accessToken, {
+              user_ids: [employeeId],
+            }),
+        );
+        const data: any = (res as any)?.data?.[0] ?? {};
+        logInfo('employee data', data);
 
-        // identity
-        setValue('phone', data.phone || '');
+        setValue('phone', data.phone_number || '');
         setValue('username', data.username || '');
         setValue('full_name', data.full_name || '');
         setValue('employee_id', data.employee_id || '');
 
-        // roster
         if (data.role_id) setValue('role_id', data.role_id);
         if (data.position_id) setValue('position_id', data.position_id);
         if (data.reports_to) {
@@ -325,30 +555,26 @@ export default function HREmployeeForm() {
           setSelectedReportsToName(data.reports_to_name || '');
         }
 
-        // location
         if (data.primary_location_id) setPrimaryLocationId(data.primary_location_id);
         if (data.location_access_scope) setLocationScope(data.location_access_scope);
 
-        // profile
         if (data.email) setValue('email', data.email);
         if (data.date_of_birth) setValue('date_of_birth', data.date_of_birth);
         if (data.gender) setValue('gender', data.gender);
         if (data.marital_status) setValue('marital_status', data.marital_status);
         if (data.nationality) setValue('nationality', data.nationality);
         if (data.employment_type) setValue('employment_type', data.employment_type);
-        if (data.employment_status)
-          setValue('employment_status', data.employment_status);
-        if (data.probation_end_date)
-          setValue('probation_end_date', data.probation_end_date);
-        if (data.confirmation_date)
-          setValue('confirmation_date', data.confirmation_date);
+        if (data.employment_status) setValue('employment_status', data.employment_status);
+        if (data.probation_end_date) setValue('probation_end_date', data.probation_end_date);
+        if (data.confirmation_date) setValue('confirmation_date', data.confirmation_date);
         if (data.grade) setValue('grade', data.grade);
-        if (data.cost_center_id) setValue('cost_center_id', data.cost_center_id); // 👈 FK
+        if (data.cost_center_id) setValue('cost_center_id', data.cost_center_id);
         if (data.tax_id) setValue('tax_id', data.tax_id);
-        if (data.social_security_id)
-          setValue('social_security_id', data.social_security_id);
+        if (data.social_security_id) setValue('social_security_id', data.social_security_id);
+
+        logInfo('employee hydration done');
       } catch (err) {
-        console.error('[HREmployeeForm] load failed', err);
+        logError('employee load failed', err);
         Alert.alert('Error', 'Failed to load employee data');
         navigation.goBack();
       } finally {
@@ -356,42 +582,103 @@ export default function HREmployeeForm() {
       }
     };
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEdit, employeeId, accessToken, companyId, deviceId, setValue, navigation]);
 
-  // ---- reports-to reset on close ----
+  // ---- reports-to: reset when modal closes ----
   useEffect(() => {
     if (!reportsToModal) {
+      if (reportsToDebounceRef.current) clearTimeout(reportsToDebounceRef.current);
       setReportsToSearch('');
-      setReportsToResult(null);
+      setReportsToActiveQuery('');
+      setReportsToResults([]);
       setReportsToSearched(false);
+      setReportsToError(null);
+      setLoadingReportsTo(false);
     }
   }, [reportsToModal]);
 
-  // ---- reports-to lookup ----
-  const handleReportsToLookup = async () => {
-    const uname = reportsToSearch.trim();
-    if (!uname || !accessToken || !companyId || !deviceId) return;
-    setLoadingReportsTo(true);
-    setReportsToResult(null);
-    setReportsToSearched(true);
-    try {
-      const res = await findEmployeeByUsername(companyId, deviceId, uname, accessToken);
-      setReportsToResult((res.data as any)?.employee || null);
-    } catch (err: any) {
-      if (err?.response?.status === 404) setReportsToResult(null);
-      else Alert.alert('Search Failed', 'Could not search for the employee.');
-    } finally {
-      setLoadingReportsTo(false);
+  const fetchReportsToTypeahead = React.useCallback(
+    async (q: string) => {
+      if (!accessToken || !companyId || !deviceId) return;
+      setLoadingReportsTo(true);
+      setReportsToError(null);
+      try {
+        const res: any = await loggedApi(
+          'searchEmployeesTypeahead',
+          { companyId, deviceId, q, page: 1, page_size: REPORTS_TO_PAGE_SIZE },
+          () =>
+            searchEmployeesTypeahead(
+              companyId,
+              deviceId,
+              accessToken,
+              { q, page: 1, page_size: REPORTS_TO_PAGE_SIZE },
+              false,
+            ),
+        );
+        const rows = extractTypeaheadRows(res);
+        const filtered = employeeId
+          ? rows.filter((r) => r.user_id !== employeeId)
+          : rows;
+        setReportsToResults(filtered);
+        setReportsToSearched(true);
+      } catch (err: any) {
+        const info = {
+          message: err?.message,
+          status: err?.response?.status,
+          url: err?.config?.url,
+          responseData: err?.response?.data,
+        };
+        logError('reports-to typeahead failed', JSON.stringify(info, null, 2));
+        setReportsToError(
+          err?.response?.data?.error ||
+            err?.response?.data?.message ||
+            err?.message ||
+            'Failed to search users',
+        );
+        setReportsToResults([]);
+      } finally {
+        setLoadingReportsTo(false);
+      }
+    },
+    [accessToken, companyId, deviceId, employeeId],
+  );
+
+  useEffect(() => {
+    if (reportsToModal) {
+      fetchReportsToTypeahead('');
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportsToModal]);
+
+  useEffect(() => {
+    if (!reportsToModal) return;
+    if (reportsToDebounceRef.current) clearTimeout(reportsToDebounceRef.current);
+
+    reportsToDebounceRef.current = setTimeout(() => {
+      const q = reportsToSearch.trim();
+      if (q === reportsToActiveQuery) return;
+      setReportsToActiveQuery(q);
+      fetchReportsToTypeahead(q);
+    }, DEBOUNCE_MS);
+
+    return () => {
+      if (reportsToDebounceRef.current) clearTimeout(reportsToDebounceRef.current);
+    };
+  }, [reportsToSearch, reportsToModal, reportsToActiveQuery, fetchReportsToTypeahead]);
 
   const clearReportsToLookup = () => {
+    if (reportsToDebounceRef.current) clearTimeout(reportsToDebounceRef.current);
     setReportsToSearch('');
-    setReportsToResult(null);
+    setReportsToActiveQuery('');
+    setReportsToResults([]);
     setReportsToSearched(false);
+    setReportsToError(null);
+    setLoadingReportsTo(false);
+    fetchReportsToTypeahead('');
   };
 
-  const selectReportsTo = (emp: CompanyEmployee) => {
+  const selectReportsTo = (emp: DecryptedEmployeeDetails) => {
     setValue('reports_to', emp.user_id, { shouldValidate: true });
     setSelectedReportsToName(emp.full_name || emp.username || emp.user_id);
     setReportsToModal(false);
@@ -399,8 +686,8 @@ export default function HREmployeeForm() {
 
   // ---- location helpers ----
   const primaryLocation = useMemo(
-    () => locations.find((l) => l.location_id === primaryLocationId),
-    [locations, primaryLocationId],
+    () => locations.find((l) => l.location_id === primaryLocationIdState),
+    [locations, primaryLocationIdState],
   );
 
   const selectedLocationObjects = useMemo(() => {
@@ -410,7 +697,8 @@ export default function HREmployeeForm() {
         return loc ? { ...entry, location: loc } : null;
       })
       .filter(
-        (x): x is SelectedLocationEntry & { location: AccessibleLocation } => !!x,
+        (x): x is SelectedLocationEntry & { location: AccessibleLocation } =>
+          !!x,
       );
   }, [locations, selectedLocations]);
 
@@ -431,31 +719,100 @@ export default function HREmployeeForm() {
 
   const setLocationAccessLevel = (id: string, level: LocationAccessLevel) => {
     setSelectedLocations((prev) =>
-      prev.map((sl) => (sl.location_id === id ? { ...sl, access_level: level } : sl)),
+      prev.map((sl) =>
+        sl.location_id === id ? { ...sl, access_level: level } : sl,
+      ),
     );
   };
 
   useEffect(() => {
-    if (locationScope === 'SELECTED' && !primaryLocationId && selectedLocations.length > 0) {
+    if (
+      locationScope === 'SELECTED' &&
+      !primaryLocationIdState &&
+      selectedLocations.length > 0
+    ) {
       setPrimaryLocationId(selectedLocations[0].location_id);
     }
-  }, [locationScope, primaryLocationId, selectedLocations]);
+  }, [locationScope, primaryLocationIdState, selectedLocations]);
 
-  // ---- derived: cost center + work center ----
+  // ---- derived ----
   const selectedCostCenter = useMemo(
     () => costCenters.find((c) => c.cost_center_id === selectedCostCenterId),
     [costCenters, selectedCostCenterId],
   );
 
-  // Work center is not stored on the employee — it comes from the position.
-  // The DB trigger `sync_work_center_assignment` writes the actual attendance
-  // assignment row; this is just for display.
-  const derivedWorkCenter = useMemo(() => {
-    const pos = positions.find((p) => p.position_id === selectedPositionId);
-    const code = pos ? (pos as any).work_center_code : null;
-    if (!code) return null;
-    return workCenters.find((w) => w.work_center_code === code) ?? null;
-  }, [positions, selectedPositionId, workCenters]);
+  // ---- Role-filtered positions ----------------------------------------
+  const roleDeptIds = useMemo(() => {
+    const role = roles.find((r) => r.role_id === selectedRoleId);
+    return new Set((role?.departments ?? []).map((d) => d.department_id));
+  }, [roles, selectedRoleId]);
+
+  const visiblePositions = useMemo(() => {
+    if (isEdit) return positions;
+    if (roleDeptIds.size === 0) return positions;
+    return positions.filter((p) => roleDeptIds.has(p.department_id));
+  }, [positions, roleDeptIds, isEdit]);
+
+  // ---------------------------------------------------------
+  // Effective work center resolution.
+  //
+  // Priority (highest first):
+  //   1. Existing position → its own WC, locked
+  //   2. User's manual pick → when the position has no WC
+  // ---------------------------------------------------------
+  const effectiveWorkCenter = useMemo(() => {
+    const pos = visiblePositions.find((p) => p.position_id === selectedPositionId);
+    const code = pos?.work_center_code ?? null;
+    if (code) {
+      const wc = workCenters.find((w) => w.work_center_code === code) ?? null;
+      return { code, wc, source: 'position' as WCSource, locked: true };
+    }
+
+    if (selectedWorkCenterCode) {
+      const wc =
+        workCenters.find((w) => w.work_center_code === selectedWorkCenterCode) ??
+        null;
+      return {
+        code: selectedWorkCenterCode,
+        wc,
+        source: 'user' as WCSource,
+        locked: false,
+      };
+    }
+
+    return { code: null, wc: null, source: null as WCSource, locked: false };
+  }, [
+    visiblePositions,
+    selectedPositionId,
+    selectedWorkCenterCode,
+    workCenters,
+  ]);
+
+  const derivedWorkCenter = effectiveWorkCenter.wc;
+
+  // ---------------------------------------------------------
+  // Seat-required location.
+  //
+  // When the resolved work center is bound to a single location,
+  // surface that location so the user can set it as the primary
+  // without leaving the Location Access section.
+  // ---------------------------------------------------------
+  const seatRequiredLocation = useMemo<AccessibleLocation | null>(() => {
+    const wcLocId = effectiveWorkCenter.wc?.location_id;
+    if (!wcLocId) return null;
+    return locations.find((l) => l.location_id === wcLocId) ?? null;
+  }, [effectiveWorkCenter.wc, locations]);
+
+  const wcDisplayLabel = (code: string, wc: FormWorkCenterView | null) => {
+    if (wc) {
+      return wc.work_center_code ? `${wc.name} (${wc.work_center_code})` : wc.name;
+    }
+    return code;
+  };
+
+  const clearWorkCenter = () => {
+    setValue('work_center_code', null, { shouldValidate: true });
+  };
 
   // ---- submit ----
   const onSubmit = async (data: FormData) => {
@@ -464,69 +821,93 @@ export default function HREmployeeForm() {
       return;
     }
 
-    // create-mode required checks
     if (!isEdit) {
       const missing: string[] = [];
       if (!data.phone?.trim()) missing.push('Phone Number');
       if (!data.username?.trim()) missing.push('Username');
       if (!data.full_name?.trim()) missing.push('Full Name');
       if (!data.role_id) missing.push('Role');
+      if (!data.position_id) missing.push('Position');
       if (missing.length) {
         Alert.alert('Missing fields', `Please fill: ${missing.join(', ')}`);
         return;
       }
     }
 
-    // location validation
-    if (locationScope === 'PRIMARY' && !primaryLocationId) {
-      Alert.alert('Location Required', 'Pick a primary location or change the scope.');
-      return;
-    }
-    if (locationScope === 'SELECTED' && selectedLocations.length === 0) {
-      Alert.alert('Locations Required', 'Select at least one location for SELECTED scope.');
-      return;
-    }
-
-    // =============== EDIT MODE ================
+    // =============== EDIT MODE ===============
     if (isEdit && employeeId) {
-      const profilePayload: Record<string, any> = {};
-      const profileKeys: Array<keyof FormData> = [
-        'email',
-        'date_of_birth',
-        'gender',
-        'marital_status',
-        'nationality',
-        'employment_type',
-        'employment_status',
-        'probation_end_date',
-        'confirmation_date',
-        'grade',
-        'cost_center_id',   // 👈 FK, replaces legacy cost_center string
-        'tax_id',
-        'social_security_id',
-      ];
-      profileKeys.forEach((k) => {
-        const v = data[k];
-        if (v !== undefined && v !== null && v !== '') profilePayload[k] = v;
+      const payload: UpdateMemberRequest = {};
+
+      if (data.username?.trim()) payload.username = data.username.trim();
+      if (data.full_name?.trim()) payload.full_name = data.full_name.trim();
+
+      if (data.role_id) payload.role_id = data.role_id;
+      if (data.position_id) payload.position_id = data.position_id;
+      if (data.reports_to) payload.reports_to = data.reports_to;
+
+      if (data.email) payload.email = data.email;
+      if (data.date_of_birth) payload.date_of_birth = data.date_of_birth;
+      if (data.gender) payload.gender = data.gender as any;
+      if (data.marital_status)
+        payload.marital_status = data.marital_status as any;
+      if (data.nationality) payload.nationality = data.nationality;
+      if (data.employment_type)
+        payload.employment_type = data.employment_type as any;
+      if (data.employment_status)
+        payload.employment_status = data.employment_status as any;
+      if (data.probation_end_date)
+        payload.probation_end_date = data.probation_end_date;
+      if (data.confirmation_date)
+        payload.confirmation_date = data.confirmation_date;
+      if (data.grade) payload.grade = data.grade;
+      if (data.cost_center_id)
+        payload.cost_center_id = data.cost_center_id;
+      if (data.tax_id) payload.tax_id = data.tax_id;
+      if (data.social_security_id)
+        payload.social_security_id = data.social_security_id;
+
+      if (Object.keys(payload).length === 0) {
+        Alert.alert('Nothing to Update', 'No changes were detected.');
+        return;
+      }
+
+      const writeLocationId =
+        locationId && locationId !== 'ALL'
+          ? locationId
+          : primaryLocationId || undefined;
+
+      logInfo('submitting UpdateMember payload', {
+        userId: employeeId,
+        payload,
+        writeLocationId,
       });
 
       setLoading(true);
       try {
-        await updateEmployeeProfile(
-          companyId,
-          employeeId,
-          deviceId,
-          accessToken,
-          profilePayload,
+        await loggedApi(
+          'updateMember',
+          { companyId, employeeId, payload, writeLocationId },
+          () =>
+            updateMember(
+              companyId,
+              employeeId,
+              payload,
+              deviceId,
+              accessToken,
+              writeLocationId,
+            ),
         );
         Alert.alert('Success', 'Employee updated', [
           { text: 'Done', onPress: () => navigation.goBack() },
         ]);
       } catch (err: any) {
-        console.error('[HREmployeeForm] update failed', err);
+        logError('updateMember failed', err);
         Alert.alert(
           'Unable to Update',
-          err?.response?.data?.message || err?.message || 'Update failed',
+          err?.response?.data?.error ||
+            err?.response?.data?.message ||
+            err?.message ||
+            'Update failed',
         );
       } finally {
         setLoading(false);
@@ -539,20 +920,22 @@ export default function HREmployeeForm() {
 
     const locationBlock: Record<string, unknown> = {};
     const hasLocationInput =
-      !!primaryLocationId || !!locationScope || selectedLocations.length > 0;
+      !!primaryLocationIdState || !!locationScope || selectedLocations.length > 0;
 
     if (hasLocationInput) {
-      if (primaryLocationId) locationBlock.primary_location_id = primaryLocationId;
+      if (primaryLocationIdState)
+        locationBlock.primary_location_id = primaryLocationIdState;
 
       let effectiveScope: LocationAccessScope =
         (locationScope as LocationAccessScope) ||
         (selectedLocations.length > 0
           ? 'SELECTED'
-          : primaryLocationId
+          : primaryLocationIdState
           ? 'PRIMARY'
           : 'ALL');
 
-      if (effectiveScope === 'PRIMARY' && !primaryLocationId) effectiveScope = 'ALL';
+      if (effectiveScope === 'PRIMARY' && !primaryLocationIdState)
+        effectiveScope = 'ALL';
       locationBlock.location_access_scope = effectiveScope;
 
       if (effectiveScope === 'SELECTED' && selectedLocations.length > 0) {
@@ -563,50 +946,48 @@ export default function HREmployeeForm() {
       }
     }
 
-    const payload: AddMemberPayload = {
+    const basePayload: AddMemberPayload = {
       member_type: isManager ? 'manager' : 'employee',
       phone: cleanPhone,
       username: data.username!.trim(),
       full_name: data.full_name!.trim(),
       employee_id: data.employee_id?.trim() || undefined,
       role_id: data.role_id,
+      position_id: data.position_id,
       reports_to: data.reports_to || undefined,
-      position_id: data.position_id || undefined,
       ...locationBlock,
-      // profile fields
       ...(data.email ? { email: data.email } : {}),
       ...(data.date_of_birth ? { date_of_birth: data.date_of_birth } : {}),
       ...(data.gender ? { gender: data.gender } : {}),
       ...(data.marital_status ? { marital_status: data.marital_status } : {}),
       ...(data.nationality ? { nationality: data.nationality } : {}),
       ...(data.employment_type ? { employment_type: data.employment_type } : {}),
-      ...(data.employment_status
-        ? { employment_status: data.employment_status }
-        : {}),
-      ...(data.probation_end_date
-        ? { probation_end_date: data.probation_end_date }
-        : {}),
-      ...(data.confirmation_date
-        ? { confirmation_date: data.confirmation_date }
-        : {}),
+      ...(data.employment_status ? { employment_status: data.employment_status } : {}),
+      ...(data.probation_end_date ? { probation_end_date: data.probation_end_date } : {}),
+      ...(data.confirmation_date ? { confirmation_date: data.confirmation_date } : {}),
       ...(data.grade ? { grade: data.grade } : {}),
-      ...(data.cost_center_id ? { cost_center_id: data.cost_center_id } : {}), // 👈
+      ...(data.cost_center_id ? { cost_center_id: data.cost_center_id } : {}),
       ...(data.tax_id ? { tax_id: data.tax_id } : {}),
-      ...(data.social_security_id
-        ? { social_security_id: data.social_security_id }
-        : {}),
+      ...(data.social_security_id ? { social_security_id: data.social_security_id } : {}),
     } as AddMemberPayload;
+
+    logInfo('submitting CREATE payload', basePayload);
 
     setLoading(true);
     try {
-      await createEmployee(companyId, deviceId, accessToken, payload);
+      const res = await loggedApi(
+        'createEmployee',
+        { companyId, deviceId, payload: basePayload },
+        () => createEmployee(companyId, deviceId, accessToken, basePayload),
+      );
+      logInfo('RAW create response', res);
       Alert.alert(
         'Success',
         `${isManager ? 'Manager' : 'Employee'} added successfully.`,
         [{ text: 'Done', onPress: () => navigation.goBack() }],
       );
     } catch (err: any) {
-      console.error('[HREmployeeForm] create failed', err);
+      logError('create failed', err);
       Alert.alert(
         'Unable to Add',
         err?.response?.data?.error ||
@@ -620,7 +1001,9 @@ export default function HREmployeeForm() {
   };
 
   const selectedRole = roles.find((r) => r.role_id === selectedRoleId);
-  const selectedPosition = positions.find((p) => p.position_id === selectedPositionId);
+  const selectedPosition = positions.find(
+    (p) => p.position_id === selectedPositionId,
+  );
 
   // ---- loading ----
   if (loadingOptions || fetching) {
@@ -634,7 +1017,11 @@ export default function HREmployeeForm() {
               color={PRIMARY_COLOR}
             />
           </View>
-          <ActivityIndicator size="small" color={PRIMARY_COLOR} style={{ marginTop: 18 }} />
+          <ActivityIndicator
+            size="small"
+            color={PRIMARY_COLOR}
+            style={{ marginTop: 18 }}
+          />
           <Text style={styles.loadingTitle}>
             {isEdit ? 'Loading employee' : 'Preparing employee form'}
           </Text>
@@ -716,7 +1103,11 @@ export default function HREmployeeForm() {
                 control={control}
                 name="is_manager"
                 render={({ field: { onChange, value } }) => (
-                  <Switch value={value} onValueChange={onChange} color={PRIMARY_COLOR} />
+                  <Switch
+                    value={value}
+                    onValueChange={onChange}
+                    color={PRIMARY_COLOR}
+                  />
                 )}
               />
             </View>
@@ -799,6 +1190,50 @@ export default function HREmployeeForm() {
             </>
           )}
 
+          {/* ACCOUNT — edit only */}
+          {isEdit && (
+            <>
+              <SectionHeader
+                icon="account-outline"
+                title="Account"
+                subtitle="Display name and login handle"
+              />
+              <View style={styles.formCard}>
+                <Controller
+                  control={control}
+                  name="full_name"
+                  render={({ field: { onChange, onBlur, value } }) => (
+                    <FormInput
+                      label="Full Name"
+                      placeholder="Enter employee name"
+                      icon="account-outline"
+                      value={value || ''}
+                      onChangeText={onChange}
+                      onBlur={onBlur}
+                      error={errors.full_name?.message as string}
+                    />
+                  )}
+                />
+                <Controller
+                  control={control}
+                  name="username"
+                  render={({ field: { onChange, onBlur, value } }) => (
+                    <FormInput
+                      label="Username"
+                      placeholder="Alphanumeric, 3–100"
+                      icon="at"
+                      value={value || ''}
+                      onChangeText={onChange}
+                      onBlur={onBlur}
+                      error={errors.username?.message as string}
+                      isLast
+                    />
+                  )}
+                />
+              </View>
+            </>
+          )}
+
           {/* ORGANIZATION */}
           <SectionHeader
             icon="office-building-outline"
@@ -806,6 +1241,7 @@ export default function HREmployeeForm() {
             subtitle="Role, position, and cost center"
           />
           <View style={styles.formCard}>
+            {/* Role */}
             <SelectField
               label="Role"
               required
@@ -813,41 +1249,111 @@ export default function HREmployeeForm() {
               value={selectedRole?.role_name || ''}
               placeholder="Select a role"
               error={errors.role_id?.message as string}
-              disabled={isEdit}
-              onPress={() => !isEdit && setRoleModal(true)}
+              onPress={() => setRoleModal(true)}
             />
+
+            {/* Position picker — always visible */}
             <SelectField
               label="Position"
+              required
               icon="briefcase-outline"
-              value={selectedPosition?.title || ''}
-              placeholder="Select a position"
-              disabled={isEdit}
-              onPress={() => !isEdit && setPositionModal(true)}
-            />
-            {/* Work Center — read-only, derived from position's work_center_code */}
-            <SelectField
-              label="Work Center (from position)"
-              icon="factory"
               value={
-                derivedWorkCenter
-                  ? derivedWorkCenter.name
-                  : selectedPositionId
-                  ? '—'
-                  : ''
+                selectedPosition ? positionDisplayTitle(selectedPosition) : ''
               }
-              placeholder="Set by the position's work center"
-              disabled
-              onPress={() => {}}
+              placeholder="Select a position"
+              onPress={() => setPositionModal(true)}
             />
-            {/* Cost Center — dropdown from accounting.cost_centers */}
-            <SelectField
-              label="Cost Center"
-              icon="currency-usd"
-              value={selectedCostCenter?.cost_center_name || ''}
-              placeholder="Select a cost center"
-              onPress={() => setCostCenterModal(true)}
-              isLast
-            />
+
+            {/* Work center — inherited from position, or manually picked
+                when the position has no WC of its own */}
+            {(selectedPositionId || effectiveWorkCenter.code) && (
+              <View style={styles.jobSubField}>
+                <Text style={styles.fieldLabelInline}>
+                  Work center{' '}
+                  {effectiveWorkCenter.locked ? (
+                    <Text style={styles.optionalHint}>
+                      (inherited from position — locked)
+                    </Text>
+                  ) : (
+                    <Text style={styles.optionalHint}>(optional)</Text>
+                  )}
+                </Text>
+
+                {effectiveWorkCenter.locked ? (
+                  <View
+                    style={[styles.selectFieldInline, styles.lockedField]}
+                  >
+                    <Text numberOfLines={1} style={styles.selectValue}>
+                      {wcDisplayLabel(
+                        effectiveWorkCenter.code!,
+                        effectiveWorkCenter.wc,
+                      )}
+                    </Text>
+                    <Icon
+                      name="lock-outline"
+                      size={18}
+                      color={TEXT_SECONDARY}
+                    />
+                  </View>
+                ) : (
+                  <View style={styles.workCenterFieldRow}>
+                    <TouchableOpacity
+                      style={[
+                        styles.selectFieldInline,
+                        styles.workCenterSelect,
+                      ]}
+                      onPress={() => setWorkCenterModal(true)}
+                      activeOpacity={0.75}
+                    >
+                      <Text
+                        numberOfLines={1}
+                        style={[
+                          styles.selectValue,
+                          !selectedWorkCenterCode &&
+                            styles.placeholderText,
+                        ]}
+                      >
+                        {derivedWorkCenter
+                          ? wcDisplayLabel(
+                              selectedWorkCenterCode ?? '',
+                              derivedWorkCenter,
+                            )
+                          : 'Select a work center'}
+                      </Text>
+                      <Icon
+                        name="chevron-down"
+                        size={20}
+                        color={TEXT_SECONDARY}
+                      />
+                    </TouchableOpacity>
+
+                    {!!selectedWorkCenterCode && (
+                      <TouchableOpacity
+                        style={styles.workCenterClear}
+                        onPress={clearWorkCenter}
+                        activeOpacity={0.75}
+                        accessibilityRole="button"
+                        accessibilityLabel="Clear work center"
+                      >
+                        <Icon name="close" size={18} color={ERROR_COLOR} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* Cost Center — hidden when caller has no permission (list empty) */}
+            {costCenters.length > 0 && (
+              <SelectField
+                label="Cost Center"
+                icon="currency-usd"
+                value={selectedCostCenter?.cost_center_name || ''}
+                placeholder="Select a cost center"
+                onPress={() => setCostCenterModal(true)}
+                isLast
+              />
+            )}
           </View>
 
           {/* REPORTING */}
@@ -859,9 +1365,8 @@ export default function HREmployeeForm() {
           <View style={styles.formCard}>
             <TouchableOpacity
               style={styles.reportsField}
-              onPress={() => !isEdit && setReportsToModal(true)}
-              activeOpacity={isEdit ? 1 : 0.75}
-              disabled={isEdit}
+              onPress={() => setReportsToModal(true)}
+              activeOpacity={0.75}
             >
               <View style={styles.fieldIcon}>
                 <Icon
@@ -877,20 +1382,16 @@ export default function HREmployeeForm() {
                     <Text numberOfLines={1} style={styles.selectedValue}>
                       {selectedReportsToName || 'Selected manager'}
                     </Text>
-                    {!isEdit && <Text style={styles.selectedHint}>Tap to change</Text>}
+                    <Text style={styles.selectedHint}>Tap to change</Text>
                   </>
                 ) : (
-                  <Text style={styles.placeholderText}>
-                    {isEdit ? 'Not set' : 'Search for manager by username'}
-                  </Text>
+                  <Text style={styles.placeholderText}>Search for a manager</Text>
                 )}
               </View>
-              {!isEdit && (
-                <Icon name="chevron-right" size={22} color={TEXT_SECONDARY} />
-              )}
+              <Icon name="chevron-right" size={22} color={TEXT_SECONDARY} />
             </TouchableOpacity>
 
-            {!isEdit && reportsToId && (
+            {reportsToId && (
               <TouchableOpacity
                 style={styles.removeManager}
                 onPress={() => {
@@ -898,65 +1399,141 @@ export default function HREmployeeForm() {
                   setSelectedReportsToName('');
                 }}
               >
-                <Icon name="close-circle-outline" size={15} color={ERROR_COLOR} />
-                <Text style={styles.removeManagerText}>Remove reporting manager</Text>
+                <Icon
+                  name="close-circle-outline"
+                  size={15}
+                  color={ERROR_COLOR}
+                />
+                <Text style={styles.removeManagerText}>
+                  Remove reporting manager
+                </Text>
               </TouchableOpacity>
             )}
           </View>
 
-          {/* LOCATION ACCESS */}
-          <SectionHeader
-            icon="map-marker-outline"
-            title="Location Access"
-            subtitle={
-              isEdit ? 'Read-only here — managed by admin' : 'Optional — primary & allowed'
-            }
-          />
-          <View style={styles.formCard}>
-            <TouchableOpacity
-              style={[styles.reportsField, styles.inputDivider]}
-              onPress={() => !isEdit && setPrimaryLocationModal(true)}
-              activeOpacity={isEdit ? 1 : 0.75}
-              disabled={isEdit}
-            >
-              <View style={styles.fieldIcon}>
-                <Icon name="map-marker-outline" size={21} color={PRIMARY_COLOR} />
-              </View>
-              <View style={styles.reportsContent}>
-                <Text style={styles.fieldLabel}>Primary Location</Text>
-                {primaryLocation ? (
-                  <>
-                    <Text numberOfLines={1} style={styles.selectedValue}>
-                      {primaryLocation.location_name}
-                      {primaryLocation.location_code
-                        ? ` (${primaryLocation.location_code})`
+          {/* LOCATION ACCESS — create only */}
+          {!isEdit && (
+            <>
+              {/* Seat-location reminder — shown whenever the resolved
+                  work center is bound to a concrete location. */}
+              {seatRequiredLocation && (
+                <View style={styles.locationReminder}>
+                  <View style={styles.locationReminderIcon}>
+                    <Icon
+                      name="map-marker-alert-outline"
+                      size={18}
+                      color="#B45309"
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.locationReminderTitle}>
+                      Seat is at {seatRequiredLocation.location_name}
+                      {seatRequiredLocation.location_code
+                        ? ` (${seatRequiredLocation.location_code})`
                         : ''}
                     </Text>
-                    {!isEdit && <Text style={styles.selectedHint}>Tap to change</Text>}
-                  </>
-                ) : (
-                  <Text style={styles.placeholderText}>
-                    {isEdit ? 'Not set' : 'Select a primary location'}
-                  </Text>
-                )}
-              </View>
-              {!isEdit && (
-                <Icon name="chevron-right" size={22} color={TEXT_SECONDARY} />
+                    <Text style={styles.locationReminderText}>
+                      The selected seat's work center is tied to this
+                      location. Set it as the primary so the roster matches.
+                    </Text>
+                    {primaryLocationIdState !==
+                      seatRequiredLocation.location_id && (
+                      <TouchableOpacity
+                        style={styles.locationReminderCta}
+                        onPress={() => {
+                          setPrimaryLocationId(
+                            seatRequiredLocation.location_id,
+                          );
+                          logInfo('primary location set from reminder', {
+                            location_id: seatRequiredLocation.location_id,
+                            location_name:
+                              seatRequiredLocation.location_name,
+                          });
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <Icon
+                          name="check-circle-outline"
+                          size={14}
+                          color="#FFFFFF"
+                        />
+                        <Text style={styles.locationReminderCtaText}>
+                          Use as primary location
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                    {primaryLocationIdState ===
+                      seatRequiredLocation.location_id && (
+                      <View style={styles.locationReminderDone}>
+                        <Icon
+                          name="check-circle"
+                          size={14}
+                          color="#059669"
+                        />
+                        <Text style={styles.locationReminderDoneText}>
+                          Already set as primary
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
               )}
-            </TouchableOpacity>
 
-            {!isEdit && primaryLocationId && (
-              <TouchableOpacity
-                style={styles.removeManager}
-                onPress={() => setPrimaryLocationId('')}
-              >
-                <Icon name="close-circle-outline" size={15} color={ERROR_COLOR} />
-                <Text style={styles.removeManagerText}>Clear primary location</Text>
-              </TouchableOpacity>
-            )}
+              <SectionHeader
+                icon="map-marker-outline"
+                title="Location Access"
+                subtitle="Optional — primary & allowed"
+              />
+              <View style={styles.formCard}>
+                <TouchableOpacity
+                  style={[styles.reportsField, styles.inputDivider]}
+                  onPress={() => setPrimaryLocationModal(true)}
+                  activeOpacity={0.75}
+                >
+                  <View style={styles.fieldIcon}>
+                    <Icon
+                      name="map-marker-outline"
+                      size={21}
+                      color={PRIMARY_COLOR}
+                    />
+                  </View>
+                  <View style={styles.reportsContent}>
+                    <Text style={styles.fieldLabel}>Primary Location</Text>
+                    {primaryLocation ? (
+                      <>
+                        <Text numberOfLines={1} style={styles.selectedValue}>
+                          {primaryLocation.location_name}
+                          {primaryLocation.location_code
+                            ? ` (${primaryLocation.location_code})`
+                            : ''}
+                        </Text>
+                        <Text style={styles.selectedHint}>Tap to change</Text>
+                      </>
+                    ) : (
+                      <Text style={styles.placeholderText}>
+                        Select a primary location
+                      </Text>
+                    )}
+                  </View>
+                  <Icon name="chevron-right" size={22} color={TEXT_SECONDARY} />
+                </TouchableOpacity>
 
-            {!isEdit && (
-              <>
+                {primaryLocationIdState && (
+                  <TouchableOpacity
+                    style={styles.removeManager}
+                    onPress={() => setPrimaryLocationId('')}
+                  >
+                    <Icon
+                      name="close-circle-outline"
+                      size={15}
+                      color={ERROR_COLOR}
+                    />
+                    <Text style={styles.removeManagerText}>
+                      Clear primary location
+                    </Text>
+                  </TouchableOpacity>
+                )}
+
                 <View style={styles.scopeBlock}>
                   <Text style={styles.scopeLabel}>Location Access Scope</Text>
                   <View style={styles.scopeRow}>
@@ -1018,7 +1595,9 @@ export default function HREmployeeForm() {
                       />
                     </View>
                     <View style={styles.reportsContent}>
-                      <Text style={styles.fieldLabel}>Selected Locations</Text>
+                      <Text style={styles.fieldLabel}>
+                        Selected Locations
+                      </Text>
                       {selectedLocations.length > 0 ? (
                         <>
                           <Text numberOfLines={2} style={styles.selectedValue}>
@@ -1026,14 +1605,17 @@ export default function HREmployeeForm() {
                               .map(
                                 (sl) =>
                                   `${sl.location.location_name} · ${
-                                    sl.access_level === 'MANAGE' ? 'Manage' : 'View'
+                                    sl.access_level === 'MANAGE'
+                                      ? 'Manage'
+                                      : 'View'
                                   }`,
                               )
                               .join(', ')}
                           </Text>
                           <Text style={styles.selectedHint}>
                             {selectedLocations.length} location
-                            {selectedLocations.length === 1 ? '' : 's'} · tap to edit
+                            {selectedLocations.length === 1 ? '' : 's'} · tap
+                            to edit
                           </Text>
                         </>
                       ) : (
@@ -1042,12 +1624,16 @@ export default function HREmployeeForm() {
                         </Text>
                       )}
                     </View>
-                    <Icon name="chevron-right" size={22} color={TEXT_SECONDARY} />
+                    <Icon
+                      name="chevron-right"
+                      size={22}
+                      color={TEXT_SECONDARY}
+                    />
                   </TouchableOpacity>
                 )}
-              </>
-            )}
-          </View>
+              </View>
+            </>
+          )}
 
           {/* PERSONAL INFORMATION */}
           <SectionHeader
@@ -1135,7 +1721,8 @@ export default function HREmployeeForm() {
               options={[
                 { label: 'Active', value: 'active' },
                 { label: 'Probation', value: 'probation' },
-                { label: 'Inactive', value: 'inactive' },
+                { label: 'Notice', value: 'notice' },
+                { label: 'On Hold', value: 'on_hold' },
                 { label: 'Terminated', value: 'terminated' },
               ]}
               value={watch('employment_status') || ''}
@@ -1207,7 +1794,9 @@ export default function HREmployeeForm() {
           <View style={styles.summaryCard}>
             <View style={styles.summaryIcon}>
               <Icon
-                name={isEdit ? 'account-edit-outline' : 'account-check-outline'}
+                name={
+                  isEdit ? 'account-edit-outline' : 'account-check-outline'
+                }
                 size={22}
                 color={PRIMARY_COLOR}
               />
@@ -1218,17 +1807,35 @@ export default function HREmployeeForm() {
               </Text>
               <Text style={styles.summaryText}>
                 {isEdit
-                  ? 'Profile fields will be updated.'
+                  ? `${
+                      selectedRole ? `${selectedRole.role_name}` : 'Employee'
+                    }${
+                      selectedPosition
+                        ? ` • ${positionDisplayTitle(selectedPosition)}`
+                        : ''
+                    }`
                   : `${isManager ? 'Manager' : 'Employee'}${
                       selectedRole ? ` • ${selectedRole.role_name}` : ''
-                    }${selectedPosition ? ` • ${selectedPosition.title}` : ''}${
-                      derivedWorkCenter ? ` • 🏭 ${derivedWorkCenter.name}` : ''
+                    }${
+                      selectedPosition
+                        ? ` • ${positionDisplayTitle(selectedPosition)}`
+                        : ''
+                    }${
+                      effectiveWorkCenter.code
+                        ? ` • 🏭 ${
+                            effectiveWorkCenter.wc
+                              ? effectiveWorkCenter.wc.name
+                              : effectiveWorkCenter.code
+                          }`
+                        : ''
                     }${
                       selectedCostCenter
                         ? ` • 💰 ${selectedCostCenter.cost_center_code}`
                         : ''
                     }${
-                      primaryLocation ? ` • 📍 ${primaryLocation.location_name}` : ''
+                      primaryLocation
+                        ? ` • 📍 ${primaryLocation.location_name}`
+                        : ''
                     }${
                       selectedLocations.length > 0
                         ? ` • ${selectedLocations.length} location${
@@ -1242,7 +1849,9 @@ export default function HREmployeeForm() {
 
           {/* SUBMIT */}
           <TouchableOpacity
-            onPress={handleSubmit(onSubmit)}
+            onPress={handleSubmit(onSubmit, (errs) =>
+              logWarn('form validation errors', errs),
+            )}
             disabled={loading}
             activeOpacity={0.85}
             style={styles.submitWrapper}
@@ -1258,12 +1867,20 @@ export default function HREmployeeForm() {
               ) : (
                 <>
                   <Icon
-                    name={isEdit ? 'content-save-outline' : isManager ? 'account-tie-outline' : 'account-plus-outline'}
+                    name={
+                      isEdit
+                        ? 'content-save-outline'
+                        : isManager
+                        ? 'account-tie-outline'
+                        : 'account-plus-outline'
+                    }
                     size={21}
                     color="#FFFFFF"
                   />
                   <Text style={styles.submitText}>
-                    {isEdit ? 'Update Employee' : `Add ${isManager ? 'Manager' : 'Employee'}`}
+                    {isEdit
+                      ? 'Update Employee'
+                      : `Add ${isManager ? 'Manager' : 'Employee'}`}
                   </Text>
                   <Icon name="arrow-right" size={20} color="#FFFFFF" />
                 </>
@@ -1273,7 +1890,7 @@ export default function HREmployeeForm() {
 
           <Text style={styles.footerHint}>
             {isEdit
-              ? 'Only profile fields are editable here. Roster changes are managed by Admin.'
+              ? 'Account, roster, and dossier fields are editable here. Location grants are managed from the Location Access screen.'
               : 'Profile can be enriched later from the employee detail screen.'}
           </Text>
         </ScrollView>
@@ -1287,27 +1904,76 @@ export default function HREmployeeForm() {
         data={roles}
         selectedId={selectedRoleId}
         getId={(item) => item.role_id}
-        renderLabel={(item) => `${item.role_name} • Level ${item.role_level}`}
+        renderLabel={(item) =>
+          `${item.role_name} • Level ${item.role_level}${
+            item.departments?.length
+              ? ` • ${item.departments.map((d) => d.department_name).join(', ')}`
+              : ''
+          }`
+        }
         onClose={() => setRoleModal(false)}
         onSelect={(item) => {
           setValue('role_id', item.role_id, { shouldValidate: true });
+          // Clear position when role changes: the new role may not
+          // cover the previously-chosen seat's department.
+          setValue('position_id', '', { shouldValidate: false });
+          setPositionModal(false);
           setRoleModal(false);
         }}
       />
 
-      {/* POSITION MODAL */}
+      {/* POSITION MODAL — filtered to the selected role's departments */}
       <SelectionModal
         visible={positionModal}
         title="Select Position"
         icon="briefcase-outline"
-        data={positions}
+        data={visiblePositions}
         selectedId={selectedPositionId}
         getId={(item) => item.position_id}
-        renderLabel={(item) => item.title}
+        renderLabel={(item) => {
+          const t = positionDisplayTitle(item);
+          const dept = item.department_name ? ` • ${item.department_name}` : '';
+          const loc = item.location_id
+            ? ` • ${item.location_name ?? 'located'}`
+            : ' • Universal';
+          const wc = item.work_center_code ? ` • 🏭 ${item.work_center_code}` : '';
+          return `${t}${dept}${loc}${wc}`;
+        }}
         onClose={() => setPositionModal(false)}
         onSelect={(item) => {
-          setValue('position_id', item.position_id);
+          setValue('position_id', item.position_id, { shouldValidate: true });
           setPositionModal(false);
+        }}
+      />
+
+      {/* WORK CENTER MODAL — only reachable when the position has no WC
+          of its own (i.e. `effectiveWorkCenter.locked === false`) */}
+      <SelectionModal
+        visible={workCenterModal}
+        title="Select Work Center"
+        icon="factory"
+        data={workCenters}
+        selectedId={selectedWorkCenterCode ?? ''}
+        getId={(item) => item.work_center_code}
+        renderLabel={(item) =>
+          item.work_center_code
+            ? `${item.name} (${item.work_center_code})${
+                item.is_universal ? ' • Universal' : ''
+              }`
+            : item.name
+        }
+        onClose={() => setWorkCenterModal(false)}
+        onSelect={(item) => {
+          setValue('work_center_code', item.work_center_code, {
+            shouldValidate: true,
+          });
+          setWorkCenterModal(false);
+        }}
+        allowClear
+        clearLabel="No work center"
+        onClear={() => {
+          clearWorkCenter();
+          setWorkCenterModal(false);
         }}
       />
 
@@ -1337,7 +2003,7 @@ export default function HREmployeeForm() {
         title="Select Primary Location"
         icon="map-marker-outline"
         data={locations}
-        selectedId={primaryLocationId}
+        selectedId={primaryLocationIdState}
         getId={(item) => item.location_id}
         renderLabel={(item) =>
           item.location_code
@@ -1363,7 +2029,11 @@ export default function HREmployeeForm() {
             <View style={styles.modalHeader}>
               <View style={styles.modalTitleContainer}>
                 <View style={styles.modalTitleIcon}>
-                  <Icon name="format-list-bulleted" size={20} color={PRIMARY_COLOR} />
+                  <Icon
+                    name="format-list-bulleted"
+                    size={20}
+                    color={PRIMARY_COLOR}
+                  />
                 </View>
                 <View>
                   <Text style={styles.modalTitle}>Select Locations</Text>
@@ -1403,7 +2073,9 @@ export default function HREmployeeForm() {
                       <View
                         style={[
                           styles.selectionIcon,
-                          active && { backgroundColor: `${PRIMARY_COLOR}15` },
+                          active && {
+                            backgroundColor: `${PRIMARY_COLOR}15`,
+                          },
                         ]}
                       >
                         <Icon
@@ -1420,7 +2092,9 @@ export default function HREmployeeForm() {
                         ]}
                       >
                         {item.location_name}
-                        {item.location_code ? ` (${item.location_code})` : ''}
+                        {item.location_code
+                          ? ` (${item.location_code})`
+                          : ''}
                       </Text>
                       {active && (
                         <View style={styles.checkCircle}>
@@ -1442,15 +2116,29 @@ export default function HREmployeeForm() {
                             <TouchableOpacity
                               key={opt.key}
                               onPress={() =>
-                                setLocationAccessLevel(item.location_id, opt.key)
+                                setLocationAccessLevel(
+                                  item.location_id,
+                                  opt.key,
+                                )
                               }
-                              style={[styles.levelChip, chipActive && styles.levelChipActive]}
+                              style={[
+                                styles.levelChip,
+                                chipActive && styles.levelChipActive,
+                              ]}
                               activeOpacity={0.75}
                             >
                               <Icon
-                                name={opt.key === 'MANAGE' ? 'shield-edit-outline' : 'eye-outline'}
+                                name={
+                                  opt.key === 'MANAGE'
+                                    ? 'shield-edit-outline'
+                                    : 'eye-outline'
+                                }
                                 size={13}
-                                color={chipActive ? PRIMARY_COLOR : TEXT_SECONDARY}
+                                color={
+                                  chipActive
+                                    ? PRIMARY_COLOR
+                                    : TEXT_SECONDARY
+                                }
                               />
                               <Text
                                 style={[
@@ -1471,9 +2159,15 @@ export default function HREmployeeForm() {
               ListEmptyComponent={
                 <View style={styles.modalEmpty}>
                   <View style={styles.modalEmptyIcon}>
-                    <Icon name="map-marker-off-outline" size={26} color={PRIMARY_COLOR} />
+                    <Icon
+                      name="map-marker-off-outline"
+                      size={26}
+                      color={PRIMARY_COLOR}
+                    />
                   </View>
-                  <Text style={styles.modalEmptyTitle}>No locations available</Text>
+                  <Text style={styles.modalEmptyTitle}>
+                    No locations available
+                  </Text>
                   <Text style={styles.modalEmptyText}>
                     Create a location first from Company Settings.
                   </Text>
@@ -1491,16 +2185,25 @@ export default function HREmployeeForm() {
         animationType="slide"
         onRequestClose={() => setReportsToModal(false)}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
           <View style={[styles.modalContent, styles.reportsModal]}>
             <View style={styles.modalHeader}>
               <View style={styles.modalTitleContainer}>
                 <View style={styles.modalTitleIcon}>
-                  <Icon name="account-supervisor-outline" size={20} color={PRIMARY_COLOR} />
+                  <Icon
+                    name="account-supervisor-outline"
+                    size={20}
+                    color={PRIMARY_COLOR}
+                  />
                 </View>
                 <View>
                   <Text style={styles.modalTitle}>Select Manager</Text>
-                  <Text style={styles.modalSubtitle}>Search by exact username</Text>
+                  <Text style={styles.modalSubtitle}>
+                    Search by name, username, or employee ID
+                  </Text>
                 </View>
               </View>
               <TouchableOpacity
@@ -1512,115 +2215,171 @@ export default function HREmployeeForm() {
             </View>
 
             <View style={styles.searchContainer}>
-              <Icon name="account-outline" size={21} color={TEXT_SECONDARY} />
+              <Icon name="magnify" size={21} color={TEXT_SECONDARY} />
               <RNTextInput
                 style={styles.searchInput}
-                placeholder="Enter username"
+                placeholder="Search employee…"
                 placeholderTextColor="#9AA4B2"
                 value={reportsToSearch}
                 onChangeText={setReportsToSearch}
-                onSubmitEditing={handleReportsToLookup}
                 returnKeyType="search"
                 autoCapitalize="none"
                 autoCorrect={false}
-                editable={!loadingReportsTo}
                 autoFocus
               />
-              {reportsToSearch.length > 0 && (
+              {loadingReportsTo && reportsToResults.length === 0 ? (
+                <ActivityIndicator size="small" color={PRIMARY_COLOR} />
+              ) : reportsToSearch.length > 0 ? (
                 <TouchableOpacity onPress={clearReportsToLookup}>
                   <Icon name="close-circle" size={19} color="#9AA4B2" />
                 </TouchableOpacity>
-              )}
+              ) : null}
             </View>
-
-            <TouchableOpacity
-              style={[
-                styles.searchLookupButton,
-                (!reportsToSearch.trim() || loadingReportsTo) &&
-                  styles.searchLookupButtonDisabled,
-              ]}
-              onPress={handleReportsToLookup}
-              disabled={!reportsToSearch.trim() || loadingReportsTo}
-              activeOpacity={0.85}
-            >
-              {loadingReportsTo ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <>
-                  <Icon name="magnify" size={18} color="#FFFFFF" />
-                  <Text style={styles.searchLookupButtonText}>Search Employee</Text>
-                </>
-              )}
-            </TouchableOpacity>
 
             <View style={styles.searchHintRow}>
               <Icon name="information-outline" size={14} color="#94A3B8" />
               <Text style={styles.searchHintText}>
-                Enter the exact employee username.
+                Results appear as you type. Tap a card to set as manager.
               </Text>
             </View>
 
-            {loadingReportsTo ? null : reportsToResult ? (
-              <TouchableOpacity
-                style={styles.employeeResult}
-                onPress={() => selectReportsTo(reportsToResult)}
-                activeOpacity={0.75}
-              >
-                <UserAvatar
-                  userId={reportsToResult.user_id}
-                  username={reportsToResult.username}
-                  fullName={reportsToResult.full_name}
-                  size={46}
-                  style={styles.avatar}
-                />
-                <View style={styles.employeeResultInfo}>
-                  <Text numberOfLines={1} style={styles.employeeName}>
-                    {reportsToResult.full_name ||
-                      reportsToResult.username ||
-                      reportsToResult.user_id}
-                  </Text>
-                  {reportsToResult.username && reportsToResult.full_name && (
-                    <Text style={styles.employeeMeta}>@{reportsToResult.username}</Text>
-                  )}
-                  <View style={styles.employeeMetaRow}>
-                    {reportsToResult.employee_id && (
-                      <Text style={styles.employeeMeta}>
-                        ID: {reportsToResult.employee_id}
-                      </Text>
-                    )}
-                    {reportsToResult.role_name && (
-                      <Text style={styles.employeeRole}>{reportsToResult.role_name}</Text>
-                    )}
-                  </View>
+            {reportsToError ? (
+              <View style={styles.modalEmpty}>
+                <View style={styles.modalEmptyIcon}>
+                  <Icon
+                    name="alert-circle-outline"
+                    size={27}
+                    color="#ef4444"
+                  />
                 </View>
-                <Icon name="chevron-right" size={20} color="#B4BCC8" />
-              </TouchableOpacity>
+                <Text style={styles.modalEmptyTitle}>Search failed</Text>
+                <Text style={styles.modalEmptyText}>{reportsToError}</Text>
+                <TouchableOpacity
+                  style={styles.retryBtn}
+                  onPress={() => fetchReportsToTypeahead(reportsToActiveQuery)}
+                >
+                  <Text style={styles.retryText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            ) : loadingReportsTo && reportsToResults.length === 0 ? (
+              <View style={styles.modalEmpty}>
+                <ActivityIndicator size="small" color={PRIMARY_COLOR} />
+                <Text style={[styles.modalEmptyTitle, { marginTop: 12 }]}>
+                  Searching…
+                </Text>
+              </View>
+            ) : reportsToResults.length > 0 ? (
+              <FlatList
+                data={reportsToResults}
+                keyExtractor={(item) => item.user_id}
+                contentContainerStyle={styles.modalList}
+                keyboardShouldPersistTaps="handled"
+                renderItem={({ item }) => {
+                  const displayName =
+                    item.full_name || item.username || item.user_id;
+                  const subtitle =
+                    item.job_title ||
+                    item.position_title ||
+                    item.role_name ||
+                    null;
+                  return (
+                    <TouchableOpacity
+                      style={styles.selectionItem}
+                      onPress={() => selectReportsTo(item)}
+                      activeOpacity={0.75}
+                    >
+                      <UserAvatar
+                        userId={item.user_id}
+                        username={item.username}
+                        fullName={item.full_name ?? undefined}
+                        size={44}
+                      />
+                      <View style={styles.employeeResultInfo}>
+                        <Text numberOfLines={1} style={styles.employeeName}>
+                          {displayName}
+                        </Text>
+                        {item.username ? (
+                          <View style={styles.employeeMetaRow}>
+                            <Icon name="at" size={11} color={TEXT_SECONDARY} />
+                            <Text
+                              style={styles.employeeMeta}
+                              numberOfLines={1}
+                            >
+                              {item.username}
+                            </Text>
+                          </View>
+                        ) : null}
+                        {(subtitle || item.department_name) && (
+                          <View style={styles.employeeMetaRow}>
+                            {item.employee_id ? (
+                              <Text style={styles.employeeMeta}>
+                                ID: {item.employee_id}
+                              </Text>
+                            ) : null}
+                            {subtitle ? (
+                              <Text
+                                style={styles.employeeRole}
+                                numberOfLines={1}
+                              >
+                                {subtitle}
+                              </Text>
+                            ) : null}
+                            {item.department_name ? (
+                              <Text
+                                style={styles.employeeMeta}
+                                numberOfLines={1}
+                              >
+                                {item.department_name}
+                              </Text>
+                            ) : null}
+                          </View>
+                        )}
+                      </View>
+                      <Icon name="chevron-right" size={20} color="#B4BCC8" />
+                    </TouchableOpacity>
+                  );
+                }}
+              />
             ) : reportsToSearched ? (
               <View style={styles.modalEmpty}>
                 <View style={styles.modalEmptyIcon}>
-                  <Icon name="account-search-outline" size={27} color={PRIMARY_COLOR} />
+                  <Icon
+                    name="account-search-outline"
+                    size={27}
+                    color={PRIMARY_COLOR}
+                  />
                 </View>
-                <Text style={styles.modalEmptyTitle}>No employee found</Text>
+                <Text style={styles.modalEmptyTitle}>
+                  No employees found
+                </Text>
                 <Text style={styles.modalEmptyText}>
-                  No employee matches that username. Try a different one.
+                  No employee matches "{reportsToActiveQuery}". Try a
+                  different term.
                 </Text>
               </View>
             ) : (
               <View style={styles.modalEmpty}>
                 <View style={styles.modalEmptyIcon}>
-                  <Icon name="text-search" size={27} color={PRIMARY_COLOR} />
+                  <Icon
+                    name="account-search-outline"
+                    size={27}
+                    color={PRIMARY_COLOR}
+                  />
                 </View>
-                <Text style={styles.modalEmptyTitle}>Search for a manager</Text>
+                <Text style={styles.modalEmptyTitle}>
+                  Search for a manager
+                </Text>
                 <Text style={styles.modalEmptyText}>
-                  Type the username and tap Search Employee.
+                  Start typing a name or username to see matching
+                  employees.
                 </Text>
               </View>
             )}
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
-      {/* DATE PICKER — spinner shows an explicit year column */}
+      {/* DATE PICKER */}
       <DateTimePickerModal
         isVisible={!!showDatePicker}
         mode="date"
@@ -1638,6 +2397,136 @@ export default function HREmployeeForm() {
         }}
         onCancel={() => setShowDatePicker(null)}
       />
+
+      {/* FLOATING API LOG BUTTON */}
+      {__DEV__ && (
+        <Pressable
+          style={styles.apiLogFab}
+          onPress={() => setShowApiLogs(true)}
+          accessibilityLabel="Open API logs"
+        >
+          <Icon name="bug-outline" size={22} color="#FFFFFF" />
+          {apiLogs.length > 0 && (
+            <View style={styles.apiLogBadge}>
+              <Text style={styles.apiLogBadgeText}>
+                {apiLogs.length > 99 ? '99+' : apiLogs.length}
+              </Text>
+            </View>
+          )}
+        </Pressable>
+      )}
+
+      {/* API LOG MODAL */}
+      <Modal
+        visible={showApiLogs}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowApiLogs(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '88%' }]}>
+            <View style={styles.modalHeader}>
+              <View style={styles.modalTitleContainer}>
+                <View style={styles.modalTitleIcon}>
+                  <Icon name="bug-outline" size={20} color={PRIMARY_COLOR} />
+                </View>
+                <View>
+                  <Text style={styles.modalTitle}>API Logs</Text>
+                  <Text style={styles.modalSubtitle}>
+                    {apiLogs.length} call{apiLogs.length === 1 ? '' : 's'} ·
+                    tap a row to copy JSON
+                  </Text>
+                </View>
+              </View>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TouchableOpacity
+                  onPress={clearApiLogs}
+                  style={styles.modalClose}
+                >
+                  <Icon name="delete-outline" size={19} color={ERROR_COLOR} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setShowApiLogs(false)}
+                  style={styles.modalClose}
+                >
+                  <Icon name="close" size={20} color={TEXT_SECONDARY} />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <FlatList
+              data={apiLogs}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={{ padding: 12, paddingBottom: 30 }}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    Clipboard.setString(JSON.stringify(item, null, 2));
+                    Alert.alert('Copied', 'Log entry copied to clipboard.');
+                  }}
+                  style={[
+                    styles.apiLogRow,
+                    { borderLeftColor: item.ok ? '#10b981' : '#ef4444' },
+                  ]}
+                >
+                  <View style={styles.apiLogHead}>
+                    <Text style={styles.apiLogLabel} numberOfLines={1}>
+                      {item.label}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.apiLogStatus,
+                        { color: item.ok ? '#10b981' : '#ef4444' },
+                      ]}
+                    >
+                      {item.ok ? 'OK' : 'ERR'}
+                      {item.durationMs != null ? ` · ${item.durationMs}ms` : ''}
+                    </Text>
+                  </View>
+                  <Text style={styles.apiLogTime}>
+                    {new Date(item.ts).toLocaleTimeString()}
+                  </Text>
+
+                  <Text style={styles.apiLogSection}>REQUEST</Text>
+                  <Text style={styles.apiLogJson} numberOfLines={8}>
+                    {safeStringify(item.request)}
+                  </Text>
+
+                  {item.ok ? (
+                    <>
+                      <Text style={styles.apiLogSection}>RESPONSE</Text>
+                      <Text style={styles.apiLogJson} numberOfLines={12}>
+                        {safeStringify(item.response)}
+                      </Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={[styles.apiLogSection, { color: ERROR_COLOR }]}>
+                        ERROR
+                      </Text>
+                      <Text style={styles.apiLogJson} numberOfLines={12}>
+                        {safeStringify(item.error)}
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                <View style={styles.modalEmpty}>
+                  <View style={styles.modalEmptyIcon}>
+                    <Icon name="bug-outline" size={26} color={PRIMARY_COLOR} />
+                  </View>
+                  <Text style={styles.modalEmptyTitle}>No API calls yet</Text>
+                  <Text style={styles.modalEmptyText}>
+                    Every request/response will appear here.
+                  </Text>
+                </View>
+              }
+            />
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1769,7 +2658,9 @@ function SelectField({
         </Text>
         {error && <Text style={styles.errorText}>{error}</Text>}
       </View>
-      {!disabled && <Icon name="chevron-down" size={21} color={TEXT_SECONDARY} />}
+      {!disabled && (
+        <Icon name="chevron-down" size={21} color={TEXT_SECONDARY} />
+      )}
     </TouchableOpacity>
   );
 }
@@ -1788,7 +2679,9 @@ function DateField({
   value?: string | null;
   onPress: () => void;
 }) {
-  const display = value ? new Date(value).toLocaleDateString() : 'Select date';
+  const display = value
+    ? new Date(value).toLocaleDateString()
+    : 'Select date';
   return (
     <TouchableOpacity
       style={[styles.selectField, styles.inputDivider]}
@@ -1868,6 +2761,9 @@ function SelectionModal<T>({
   renderLabel,
   onClose,
   onSelect,
+  allowClear = false,
+  clearLabel = 'None',
+  onClear,
 }: {
   visible: boolean;
   title: string;
@@ -1878,15 +2774,39 @@ function SelectionModal<T>({
   renderLabel: (item: T) => string;
   onClose: () => void;
   onSelect: (item: T) => void;
+  allowClear?: boolean;
+  clearLabel?: string;
+  onClear?: () => void;
 }) {
+  const SAFE_ICONS = new Set([
+    'briefcase-outline',
+    'map-marker-outline',
+    'currency-usd',
+    'factory',
+    'shield-account-outline',
+  ]);
+  const safeIcon = SAFE_ICONS.has(icon) ? icon : 'shield-account-outline';
+
+  const hasSelection = !!selectedId;
+
+  const handleClear = () => {
+    onClear?.();
+    onClose();
+  };
+
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
       <View style={styles.modalOverlay}>
         <View style={styles.modalContent}>
           <View style={styles.modalHeader}>
             <View style={styles.modalTitleContainer}>
               <View style={styles.modalTitleIcon}>
-                <Icon name={icon} size={20} color={PRIMARY_COLOR} />
+                <Icon name={safeIcon} size={20} color={PRIMARY_COLOR} />
               </View>
               <View>
                 <Text style={styles.modalTitle}>{title}</Text>
@@ -1902,40 +2822,84 @@ function SelectionModal<T>({
             data={data}
             keyExtractor={(item) => getId(item)}
             contentContainerStyle={styles.modalList}
-            renderItem={({ item }) => {
-              const id = getId(item);
-              const selected = selectedId === id;
-              return (
+            ListHeaderComponent={
+              allowClear ? (
                 <TouchableOpacity
-                  style={[styles.selectionItem, selected && styles.selectionItemSelected]}
-                  onPress={() => onSelect(item)}
+                  style={[
+                    styles.selectionItem,
+                    !hasSelection && styles.selectionItemSelected,
+                  ]}
+                  onPress={handleClear}
                   activeOpacity={0.75}
                 >
                   <View
                     style={[
                       styles.selectionIcon,
-                      selected && { backgroundColor: `${PRIMARY_COLOR}15` },
+                      !hasSelection && {
+                        backgroundColor: `${PRIMARY_COLOR}15`,
+                      },
                     ]}
                   >
                     <Icon
-                      name={
-                        icon === 'briefcase-outline'
-                          ? 'briefcase-outline'
-                          : icon === 'map-marker-outline'
-                          ? 'map-marker-outline'
-                          : icon === 'currency-usd'
-                          ? 'currency-usd'
-                          : icon === 'factory'
-                          ? 'factory'
-                          : 'shield-account-outline'
-                      }
+                      name="close-circle-outline"
+                      size={18}
+                      color={!hasSelection ? PRIMARY_COLOR : '#7D8794'}
+                    />
+                  </View>
+                  <Text
+                    style={[
+                      styles.selectionText,
+                      !hasSelection && styles.selectionTextSelected,
+                    ]}
+                  >
+                    {clearLabel}
+                  </Text>
+                  {!hasSelection && (
+                    <View style={styles.checkCircle}>
+                      <Icon name="check" size={15} color="#FFFFFF" />
+                    </View>
+                  )}
+                </TouchableOpacity>
+              ) : null
+            }
+            renderItem={({ item }) => {
+              const id = getId(item);
+              const selected = selectedId === id;
+              return (
+                <TouchableOpacity
+                  style={[
+                    styles.selectionItem,
+                    selected && styles.selectionItemSelected,
+                  ]}
+                  onPress={() => {
+                    if (allowClear && selected) {
+                      handleClear();
+                      return;
+                    }
+                    onSelect(item);
+                  }}
+                  activeOpacity={0.75}
+                >
+                  <View
+                    style={[
+                      styles.selectionIcon,
+                      selected && {
+                        backgroundColor: `${PRIMARY_COLOR}15`,
+                      },
+                    ]}
+                  >
+                    <Icon
+                      name={safeIcon}
                       size={18}
                       color={selected ? PRIMARY_COLOR : '#7D8794'}
                     />
                   </View>
                   <Text
                     numberOfLines={2}
-                    style={[styles.selectionText, selected && styles.selectionTextSelected]}
+                    style={[
+                      styles.selectionText,
+                      selected && styles.selectionTextSelected,
+                    ]}
                   >
                     {renderLabel(item)}
                   </Text>
@@ -1950,9 +2914,15 @@ function SelectionModal<T>({
             ListEmptyComponent={
               <View style={styles.modalEmpty}>
                 <View style={styles.modalEmptyIcon}>
-                  <Icon name="database-off-outline" size={26} color={PRIMARY_COLOR} />
+                  <Icon
+                    name="database-off-outline"
+                    size={26}
+                    color={PRIMARY_COLOR}
+                  />
                 </View>
-                <Text style={styles.modalEmptyTitle}>Nothing available</Text>
+                <Text style={styles.modalEmptyTitle}>
+                  Nothing available
+                </Text>
                 <Text style={styles.modalEmptyText}>
                   No options are currently available.
                 </Text>
@@ -2065,7 +3035,11 @@ const styles = StyleSheet.create({
     backgroundColor: `${PRIMARY_COLOR}10`,
   },
   sectionHeaderText: { marginLeft: 10, flex: 1 },
-  sectionHeaderTitle: { color: TEXT_PRIMARY, fontSize: 15, fontWeight: '700' },
+  sectionHeaderTitle: {
+    color: TEXT_PRIMARY,
+    fontSize: 15,
+    fontWeight: '700',
+  },
   sectionHeaderSubtitle: {
     marginTop: 2,
     color: TEXT_SECONDARY,
@@ -2091,10 +3065,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     paddingVertical: 13,
   },
-  inputDivider: {
-    borderBottomWidth: 1,
-    borderBottomColor: '#EDF0F4',
-  },
+  inputDivider: { borderBottomWidth: 1, borderBottomColor: '#EDF0F4' },
   inputIcon: {
     width: 37,
     height: 37,
@@ -2106,6 +3077,12 @@ const styles = StyleSheet.create({
   },
   inputContent: { flex: 1, marginLeft: 11 },
   fieldLabel: { color: TEXT_PRIMARY, fontSize: 10, fontWeight: '600' },
+  fieldLabelInline: {
+    color: TEXT_PRIMARY,
+    fontSize: 11,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
   required: { color: ERROR_COLOR },
   nativeInput: {
     minHeight: 38,
@@ -2131,6 +3108,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 11,
   },
+  selectFieldInline: {
+    minHeight: 46,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: '#E1E6ED',
+    borderRadius: 10,
+    backgroundColor: '#F8FAFC',
+  },
   selectContent: { flex: 1, marginLeft: 11, marginRight: 8 },
   selectValue: {
     marginTop: 5,
@@ -2140,6 +3128,31 @@ const styles = StyleSheet.create({
   },
   placeholderText: { color: '#A0A8B5', fontWeight: '400' },
   disabledField: { opacity: 0.55 },
+
+  workCenterFieldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  workCenterSelect: {
+    flex: 1,
+    marginTop: 0,
+  },
+  workCenterClear: {
+    width: 46,
+    height: 46,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: `${ERROR_COLOR}33`,
+    borderRadius: 10,
+    backgroundColor: `${ERROR_COLOR}0D`,
+  },
+  lockedField: {
+    opacity: 0.75,
+    backgroundColor: '#EEF2F7',
+    borderColor: '#D9E0E8',
+  },
 
   chipField: { paddingVertical: 13 },
   chipFieldLabel: {
@@ -2222,6 +3235,68 @@ const styles = StyleSheet.create({
     color: TEXT_SECONDARY,
     fontSize: 9,
     lineHeight: 13,
+  },
+
+  jobSubField: { marginTop: 14 },
+  optionalHint: { color: '#94A3B8', fontSize: 9, fontWeight: '500' },
+
+  locationReminder: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginTop: 22,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  locationReminderIcon: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    backgroundColor: '#FEF3C7',
+  },
+  locationReminderTitle: {
+    color: '#78350F',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  locationReminderText: {
+    marginTop: 2,
+    color: '#92400E',
+    fontSize: 10,
+    lineHeight: 14,
+  },
+  locationReminderCta: {
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: '#F59E0B',
+  },
+  locationReminderCtaText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  locationReminderDone: {
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  locationReminderDoneText: {
+    color: '#059669',
+    fontSize: 10,
+    fontWeight: '700',
   },
 
   summaryCard: {
@@ -2312,7 +3387,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 23,
     paddingBottom: 20,
   },
-  reportsModal: { maxHeight: '84%' },
+  reportsModal: { maxHeight: '85%' },
   modalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2434,59 +3509,56 @@ const styles = StyleSheet.create({
     borderColor: '#E1E6ED',
     borderRadius: 11,
     backgroundColor: '#F8FAFC',
+    gap: 8,
   },
   searchInput: {
     flex: 1,
     height: 43,
-    marginLeft: 8,
     paddingVertical: 0,
     color: TEXT_PRIMARY,
     fontSize: 13,
   },
-  searchLookupButton: {
-    minHeight: 46,
-    marginHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 7,
-    borderRadius: 11,
-    backgroundColor: PRIMARY_COLOR,
-  },
-  searchLookupButtonDisabled: { opacity: 0.45 },
-  searchLookupButtonText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
   searchHintRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
     marginHorizontal: 18,
-    marginTop: 10,
+    marginTop: 2,
     marginBottom: 4,
   },
   searchHintText: { color: '#94A3B8', fontSize: 9, fontWeight: '500' },
-  employeeResult: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginHorizontal: 14,
-    marginTop: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: `${PRIMARY_COLOR}22`,
-    backgroundColor: `${PRIMARY_COLOR}06`,
-  },
   employeeResultInfo: { flex: 1, marginLeft: 11, marginRight: 8 },
-  employeeName: { color: TEXT_PRIMARY, fontSize: 12, fontWeight: '700' },
+  employeeName: {
+    color: TEXT_PRIMARY,
+    fontSize: 12,
+    fontWeight: '700',
+  },
   employeeMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
     marginTop: 3,
+    flexWrap: 'wrap',
   },
-  employeeMeta: { color: TEXT_SECONDARY, fontSize: 9, fontWeight: '500' },
-  employeeRole: { color: PRIMARY_COLOR, fontSize: 9, fontWeight: '600' },
-  avatar: { marginRight: 1 },
+  employeeMeta: {
+    color: TEXT_SECONDARY,
+    fontSize: 10,
+    fontWeight: '500',
+  },
+  employeeRole: {
+    color: PRIMARY_COLOR,
+    fontSize: 10,
+    fontWeight: '600',
+  },
+
+  retryBtn: {
+    marginTop: 14,
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    backgroundColor: PRIMARY_COLOR,
+    borderRadius: 8,
+  },
+  retryText: { color: '#fff', fontSize: 13, fontWeight: '600' },
 
   modalEmpty: {
     alignItems: 'center',
@@ -2514,5 +3586,80 @@ const styles = StyleSheet.create({
     fontSize: 10,
     textAlign: 'center',
     lineHeight: 15,
+  },
+
+  apiLogFab: {
+    position: 'absolute',
+    right: 16,
+    bottom: 24,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#111827',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    elevation: 8,
+    zIndex: 999,
+  },
+  apiLogBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: 5,
+    borderRadius: 10,
+    backgroundColor: ERROR_COLOR,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  apiLogBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: '700' },
+
+  apiLogRow: {
+    padding: 10,
+    marginBottom: 8,
+    borderRadius: 8,
+    backgroundColor: '#F8FAFC',
+    borderLeftWidth: 3,
+  },
+  apiLogHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  apiLogLabel: {
+    flex: 1,
+    color: TEXT_PRIMARY,
+    fontSize: 12,
+    fontWeight: '700',
+    marginRight: 8,
+  },
+  apiLogStatus: { fontSize: 10, fontWeight: '700' },
+  apiLogTime: {
+    marginTop: 2,
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    fontWeight: '500',
+  },
+  apiLogSection: {
+    marginTop: 8,
+    color: '#475569',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  apiLogJson: {
+    marginTop: 3,
+    padding: 8,
+    borderRadius: 6,
+    backgroundColor: '#0F172A',
+    color: '#E2E8F0',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 10,
+    lineHeight: 14,
   },
 });

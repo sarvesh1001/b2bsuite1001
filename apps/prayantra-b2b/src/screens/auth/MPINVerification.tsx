@@ -91,6 +91,11 @@ type MPINVerificationScreenRouteProp =
     'MPINVerification'
   >;
 
+interface Company {
+  company_id: string;
+  company_name: string;
+}
+
 // =========================================================
 // CONSTANTS
 // =========================================================
@@ -167,10 +172,20 @@ export default function MPINVerificationScreen() {
     savedUserId ??
     '';
 
-  const companyId =
-    routeParams?.companyId ??
-    storeCompanyId ??
-    undefined;
+  // ✅ Companies passed from PhoneInput (inline picker source)
+  const companies: Company[] =
+    routeParams?.companies ?? [];
+
+  // ✅ Local selection state — initialized from route, synced with store
+  const [selectedCompanyId, setSelectedCompanyId] =
+    useState<string | undefined>(
+      routeParams?.companyId ??
+        storeCompanyId ??
+        undefined
+    );
+
+  // ✅ Effective company id used for the API call
+  const companyId = selectedCompanyId;
 
   // =======================================================
   // REFS
@@ -183,6 +198,20 @@ export default function MPINVerificationScreen() {
     useRef<ReturnType<typeof setInterval> | null>(
       null
     );
+
+  // =======================================================
+  // SYNC: store companyId → local selectedCompanyId
+  // (needed when user returns from "Switch company" flow)
+  // =======================================================
+
+  useEffect(() => {
+    if (
+      storeCompanyId &&
+      storeCompanyId !== selectedCompanyId
+    ) {
+      setSelectedCompanyId(storeCompanyId);
+    }
+  }, [storeCompanyId]);
 
   // =======================================================
   // KEYBOARD LISTENERS
@@ -419,15 +448,24 @@ export default function MPINVerificationScreen() {
     }
 
     // --- Guard: company is required ---
+    // (Only fires if user has multiple companies and hasn't picked one yet,
+    //  OR if the route/store had no companies at all.)
     if (!companyId) {
-      Alert.alert(
-        'Company Required',
-        'Please select a company before verifying your MPIN.',
-        [
-          { text: 'Select Company', onPress: handleSwitchCompany },
-          { text: 'Cancel', style: 'cancel' },
-        ]
-      );
+      if (companies.length > 1) {
+        Alert.alert(
+          'Select a Company',
+          'Please choose a company before verifying your MPIN.'
+        );
+      } else {
+        Alert.alert(
+          'Company Required',
+          'Please select a company before verifying your MPIN.',
+          [
+            { text: 'Select Company', onPress: handleSwitchCompany },
+            { text: 'Cancel', style: 'cancel' },
+          ]
+        );
+      }
       return;
     }
 
@@ -823,6 +861,12 @@ export default function MPINVerificationScreen() {
   })();
 
   // =======================================================
+  // SHOULD SHOW COMPANY PICKER?
+  // =======================================================
+
+  const showCompanyPicker = companies.length > 1;
+
+  // =======================================================
   // UI
   // =======================================================
 
@@ -974,6 +1018,87 @@ export default function MPINVerificationScreen() {
             </View>
 
             {/* =================================================
+                COMPANY PICKER (only when multiple companies)
+            ================================================= */}
+
+            {showCompanyPicker && (
+              <View style={styles.companySection}>
+                <View style={styles.companySectionHeader}>
+                  <Icon
+                    name="office-building-outline"
+                    size={14}
+                    color={PRIMARY_COLOR}
+                  />
+
+                  <Text style={styles.companySectionLabel}>
+                    Select company
+                  </Text>
+                </View>
+
+                {companies.map((c) => {
+                  const active =
+                    selectedCompanyId ===
+                    c.company_id;
+
+                  return (
+                    <TouchableOpacity
+                      key={c.company_id}
+                      activeOpacity={0.85}
+                      disabled={loading}
+                      onPress={() =>
+                        setSelectedCompanyId(
+                          c.company_id
+                        )
+                      }
+                      style={[
+                        styles.companyRow,
+                        active &&
+                          styles.companyRowActive,
+                      ]}
+                    >
+                      <View
+                        style={[
+                          styles.companyRowIcon,
+                          active &&
+                            styles.companyRowIconActive,
+                        ]}
+                      >
+                        <Icon
+                          name="office-building"
+                          size={16}
+                          color={
+                            active
+                              ? PRIMARY_COLOR
+                              : TEXT_SECONDARY
+                          }
+                        />
+                      </View>
+
+                      <Text
+                        numberOfLines={1}
+                        style={[
+                          styles.companyRowName,
+                          active &&
+                            styles.companyRowNameActive,
+                        ]}
+                      >
+                        {c.company_name}
+                      </Text>
+
+                      {active && (
+                        <Icon
+                          name="check-circle"
+                          size={18}
+                          color={PRIMARY_COLOR}
+                        />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+
+            {/* =================================================
                 MPIN INPUT
             ================================================= */}
 
@@ -1098,7 +1223,8 @@ export default function MPINVerificationScreen() {
               disabled={
                 loading ||
                 cooldownSeconds >
-                  0
+                  0 ||
+                (!companyId && companies.length > 1)
               }
               activeOpacity={0.88}
               style={
@@ -1119,7 +1245,8 @@ export default function MPINVerificationScreen() {
                   styles.buttonGradient,
                   (loading ||
                     cooldownSeconds >
-                      0) &&
+                      0 ||
+                    (!companyId && companies.length > 1)) &&
                     styles.buttonDisabled,
                 ]}
               >
@@ -1221,7 +1348,7 @@ export default function MPINVerificationScreen() {
                 }
               />
 
-              {/* --- NEW: Switch Company --- */}
+              {/* --- Switch Company --- */}
               <TouchableOpacity
                 onPress={handleSwitchCompany}
                 disabled={loading}
@@ -1492,6 +1619,74 @@ const styles = StyleSheet.create({
   },
 
   // =======================================================
+  // COMPANY PICKER
+  // =======================================================
+
+  companySection: {
+    width: '100%',
+    marginBottom: 20,
+  },
+
+  companySectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+    paddingHorizontal: 2,
+  },
+
+  companySectionLabel: {
+    marginLeft: 6,
+    color: TEXT_SECONDARY,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
+
+  companyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5EAF1',
+    marginBottom: 8,
+  },
+
+  companyRowActive: {
+    borderColor: PRIMARY_COLOR,
+    backgroundColor: '#FBF7FF',
+  },
+
+  companyRowIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F1F5F9',
+    marginRight: 10,
+  },
+
+  companyRowIconActive: {
+    backgroundColor: '#F1EAFE',
+  },
+
+  companyRowName: {
+    flex: 1,
+    color: TEXT_PRIMARY,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+
+  companyRowNameActive: {
+    color: PRIMARY_COLOR,
+    fontWeight: '700',
+  },
+
+  // =======================================================
   // MPIN
   // =======================================================
 
@@ -1629,7 +1824,7 @@ const styles = StyleSheet.create({
     justifyContent:
       'center',
 
-    flexWrap: 'wrap', // allow wrapping on small screens
+    flexWrap: 'wrap',
   },
 
   forgotButton: {
@@ -1648,7 +1843,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 
-  // NEW style for "Switch company"
   switchCompanyText: {
     color: PRIMARY_COLOR,
     fontSize: 12,
@@ -1667,10 +1861,11 @@ const styles = StyleSheet.create({
   },
 
   changePhoneText: {
-    color: PRIMARY_COLOR,        // was: TEXT_SECONDARY
-    fontSize: 12,                // was: 11
-    fontWeight: '700',           // was: '600'
+    color: PRIMARY_COLOR,
+    fontSize: 12,
+    fontWeight: '700',
   },
+
   // =======================================================
   // FOOTER
   // =======================================================

@@ -22,6 +22,9 @@ export * from './locations';   // getMyLocations, setEmployeeLocations, CRUD
 export * from './costCenter'
 // ✅ Idempotency helpers
 export * from './idempotency';
+export * from './users';
+export * from './hr';
+export * from './jobs';        // 👈 NEW
 
 // ✅ Axios instance + auth/context setters
 export {

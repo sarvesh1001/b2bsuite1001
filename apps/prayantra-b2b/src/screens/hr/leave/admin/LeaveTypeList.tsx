@@ -37,77 +37,97 @@ export default function LeaveTypeList() {
   const [refreshing, setRefreshing] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const fetchTypes = useCallback(async (showRefresh = false) => {
-    if (!accessToken || !companyId || !deviceId) return;
-    if (showRefresh) setRefreshing(true);
-    else setLoading(true);
-    try {
-      const res = await listLeaveTypes(companyId, deviceId, accessToken);
-      setTypes(res.data || []);
-    } catch (error: any) {
-      Alert.alert('Error', error?.message || 'Failed to load leave types');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [accessToken, companyId, deviceId]);
+  const fetchTypes = useCallback(
+    async (showRefresh = false) => {
+      if (!accessToken || !companyId || !deviceId) return;
+      if (showRefresh) setRefreshing(true);
+      else setLoading(true);
+      try {
+        const data = await listLeaveTypes(companyId, deviceId, accessToken);
+        setTypes(data.leave_types);
+      } catch (error: any) {
+        Alert.alert('Error', error?.message || 'Failed to load leave types');
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [accessToken, companyId, deviceId],
+  );
 
-  useFocusEffect(useCallback(() => { fetchTypes(); }, [fetchTypes]));
+  useFocusEffect(
+    useCallback(() => {
+      fetchTypes();
+    }, [fetchTypes]),
+  );
 
-  const handleDelete = (id: string, name: string) => {
-    Alert.alert(
-      'Delete Leave Type',
-      `Delete "${name}"?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            if (!accessToken || !companyId || !deviceId) return;
-            setDeletingId(id);
-            try {
-              await deleteLeaveType(companyId, id, deviceId, accessToken);
-              setTypes((prev) => prev.filter((t) => t.id !== id));
-            } catch (error: any) {
-              Alert.alert('Error', error?.message || 'Delete failed');
-            } finally {
-              setDeletingId(null);
-            }
-          },
+  const handleDelete = (leaveTypeId: string, name: string) => {
+    Alert.alert('Delete Leave Type', `Delete "${name}"?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          if (!accessToken || !companyId || !deviceId) return;
+          setDeletingId(leaveTypeId);
+          try {
+            await deleteLeaveType(companyId, leaveTypeId, deviceId, accessToken);
+            setTypes((prev) => prev.filter((t) => t.leave_type_id !== leaveTypeId));
+          } catch (error: any) {
+            Alert.alert('Error', error?.message || 'Delete failed');
+          } finally {
+            setDeletingId(null);
+          }
         },
-      ]
-    );
+      },
+    ]);
   };
 
   const renderItem = ({ item }: { item: LeaveType }) => (
     <TouchableOpacity
       style={styles.card}
-      onPress={() => navigation.navigate('LeaveTypeForm', { leaveTypeId: item.id })}
+      onPress={() =>
+        navigation.navigate('LeaveTypeForm', { leaveTypeId: item.leave_type_id })
+      }
     >
       <View style={styles.cardHeader}>
         <Text style={styles.name}>{item.name}</Text>
-        <View style={[styles.badge, item.is_active ? styles.activeBadge : styles.inactiveBadge]}>
-          <Text style={styles.badgeText}>{item.is_active ? 'Active' : 'Inactive'}</Text>
+        <View style={styles.codePill}>
+          <Text style={styles.codePillText}>{item.code}</Text>
         </View>
       </View>
-      <Text style={styles.detail}>Code: {item.code}</Text>
-      <Text style={styles.detail}>Paid: {item.is_paid ? 'Yes' : 'No'}</Text>
-      <Text style={styles.detail}>Requires Approval: {item.requires_approval ? 'Yes' : 'No'}</Text>
-      <Text style={styles.detail}>Accrual: {item.accrual_method}</Text>
+
+      <View style={styles.badgeRow}>
+        <View style={[styles.badge, item.is_paid ? styles.badgeGreen : styles.badgeGray]}>
+          <Text style={styles.badgeText}>{item.is_paid ? 'Paid' : 'Unpaid'}</Text>
+        </View>
+        <View
+          style={[
+            styles.badge,
+            item.requires_approval ? styles.badgeBlue : styles.badgeGray,
+          ]}
+        >
+          <Text style={styles.badgeText}>
+            {item.requires_approval ? 'Needs Approval' : 'Auto-Approved'}
+          </Text>
+        </View>
+      </View>
+
       <View style={styles.actions}>
         <TouchableOpacity
           style={styles.editButton}
-          onPress={() => navigation.navigate('LeaveTypeForm', { leaveTypeId: item.id })}
+          onPress={() =>
+            navigation.navigate('LeaveTypeForm', { leaveTypeId: item.leave_type_id })
+          }
         >
           <Icon name="pencil" size={18} color={PRIMARY_COLOR} />
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.deleteButton}
-          onPress={() => handleDelete(item.id, item.name)}
-          disabled={deletingId === item.id}
+          onPress={() => handleDelete(item.leave_type_id, item.name)}
+          disabled={deletingId === item.leave_type_id}
         >
-          {deletingId === item.id ? (
+          {deletingId === item.leave_type_id ? (
             <ActivityIndicator size="small" color="#ef4444" />
           ) : (
             <Icon name="delete" size={18} color="#ef4444" />
@@ -135,7 +155,7 @@ export default function LeaveTypeList() {
         <Text style={styles.headerTitle}>Leave Types</Text>
         <TouchableOpacity
           style={styles.addButton}
-          onPress={() => navigation.navigate('LeaveTypeForm', {})} // ✅ Fixed: pass empty object
+          onPress={() => navigation.navigate('LeaveTypeForm', {})}
         >
           <Icon name="plus" size={24} color="#fff" />
         </TouchableOpacity>
@@ -143,7 +163,7 @@ export default function LeaveTypeList() {
 
       <FlatList
         data={types}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item) => item.leave_type_id}
         renderItem={renderItem}
         contentContainerStyle={styles.listContent}
         refreshControl={
@@ -162,21 +182,14 @@ export default function LeaveTypeList() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: BACKGROUND_COLOR,
-  },
+  container: { flex: 1, backgroundColor: BACKGROUND_COLOR },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: BACKGROUND_COLOR,
   },
-  loadingText: {
-    marginTop: 12,
-    color: TEXT_SECONDARY,
-    fontSize: 14,
-  },
+  loadingText: { marginTop: 12, color: TEXT_SECONDARY, fontSize: 14 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -186,9 +199,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: BORDER_COLOR,
   },
-  backButton: {
-    padding: 4,
-  },
+  backButton: { padding: 4 },
   headerTitle: {
     flex: 1,
     fontSize: 20,
@@ -204,9 +215,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  listContent: {
-    padding: 16,
-  },
+  listContent: { padding: 16 },
   card: {
     backgroundColor: CARD_BACKGROUND,
     borderRadius: 12,
@@ -220,31 +229,34 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  name: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: TEXT_PRIMARY,
-  },
-  badge: {
+  name: { fontSize: 16, fontWeight: '600', color: TEXT_PRIMARY, flex: 1 },
+  codePill: {
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
+    backgroundColor: PRIMARY_COLOR + '20',
   },
-  activeBadge: {
-    backgroundColor: '#d1fae5',
-  },
-  inactiveBadge: {
-    backgroundColor: '#fee2e2',
-  },
-  badgeText: {
+  codePillText: {
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '700',
+    color: PRIMARY_COLOR,
+    letterSpacing: 0.5,
   },
-  detail: {
-    fontSize: 13,
-    color: TEXT_SECONDARY,
-    marginTop: 2,
+  badgeRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 10,
+    flexWrap: 'wrap',
   },
+  badge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  badgeGreen: { backgroundColor: '#DCFCE7' },
+  badgeBlue: { backgroundColor: '#DBEAFE' },
+  badgeGray: { backgroundColor: '#F1F5F9' },
+  badgeText: { fontSize: 10, fontWeight: '700', color: TEXT_SECONDARY },
   actions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
@@ -253,26 +265,14 @@ const styles = StyleSheet.create({
     borderTopColor: BORDER_COLOR,
     paddingTop: 10,
   },
-  editButton: {
-    padding: 6,
-    marginRight: 10,
-  },
-  deleteButton: {
-    padding: 6,
-  },
-  emptyContainer: {
-    alignItems: 'center',
-    paddingVertical: 60,
-  },
+  editButton: { padding: 6, marginRight: 10 },
+  deleteButton: { padding: 6 },
+  emptyContainer: { alignItems: 'center', paddingVertical: 60 },
   emptyTitle: {
     fontSize: 16,
     fontWeight: '600',
     color: TEXT_PRIMARY,
     marginTop: 12,
   },
-  emptySubtitle: {
-    fontSize: 13,
-    color: TEXT_SECONDARY,
-    marginTop: 4,
-  },
+  emptySubtitle: { fontSize: 13, color: TEXT_SECONDARY, marginTop: 4 },
 });

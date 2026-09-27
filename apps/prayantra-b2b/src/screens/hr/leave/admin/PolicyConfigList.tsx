@@ -29,6 +29,19 @@ import { RootStackParamList } from '../../../../navigation';
 
 type NavigationProps = StackNavigationProp<RootStackParamList, 'PolicyConfigList'>;
 
+const renderScope = (policy: LeavePolicyConfig): string => {
+  switch (policy.applies_to_type) {
+    case 'company':
+      return 'Company-wide';
+    case 'position':
+      return `Position: ${policy.applies_to_position_id ?? '—'}`;
+    case 'work_center':
+      return `Work Center: ${policy.applies_to_work_center_code ?? '—'}`;
+    default:
+      return policy.applies_to_type;
+  }
+};
+
 export default function PolicyConfigList() {
   const navigation = useNavigation<NavigationProps>();
   const { accessToken, deviceId, companyId } = useUserAuthStore();
@@ -45,8 +58,8 @@ export default function PolicyConfigList() {
     if (showRefresh) setRefreshing(true);
     else setLoading(true);
     try {
-      const res = await listPolicyConfigs(companyId, deviceId, accessToken);
-      setPolicies(res.data || []);
+      const data = await listPolicyConfigs(companyId, deviceId, accessToken);
+      setPolicies(data);
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Failed to load policies');
     } finally {
@@ -61,23 +74,23 @@ export default function PolicyConfigList() {
     }, [fetchPolicies])
   );
 
-  const handleDelete = (id: string, name: string) => {
+  const handleDelete = (policyId: string, name: string) => {
     Alert.alert(
-      'Delete Policy',
-      `Are you sure you want to delete "${name}"?`,
+      'Deactivate Policy',
+      `Are you sure you want to deactivate "${name}"?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Delete',
+          text: 'Deactivate',
           style: 'destructive',
           onPress: async () => {
             if (!accessToken || !companyId || !deviceId) return;
-            setDeletingId(id);
+            setDeletingId(policyId);
             try {
-              await deletePolicyConfig(companyId, id, deviceId, accessToken);
-              setPolicies((prev) => prev.filter((p) => p.id !== id));
+              await deletePolicyConfig(companyId, policyId, deviceId, accessToken);
+              setPolicies((prev) => prev.filter((p) => p.policy_id !== policyId));
             } catch (error: any) {
-              Alert.alert('Error', error?.message || 'Delete failed');
+              Alert.alert('Error', error?.message || 'Deactivation failed');
             } finally {
               setDeletingId(null);
             }
@@ -88,11 +101,16 @@ export default function PolicyConfigList() {
   };
 
   const renderItem = ({ item }: { item: LeavePolicyConfig }) => {
-    const isDeleting = deletingId === item.id;
+    const isDeleting = deletingId === item.policy_id;
     return (
       <TouchableOpacity
         style={styles.card}
-        onPress={() => navigation.navigate({ name: 'PolicyConfigForm', params: { policyId: item.id } })}
+        onPress={() =>
+          navigation.navigate({
+            name: 'PolicyConfigDetail',
+            params: { policyId: item.policy_id },
+          })
+        }
       >
         <View style={styles.cardHeader}>
           <Text style={styles.policyName}>{item.policy_name}</Text>
@@ -101,23 +119,32 @@ export default function PolicyConfigList() {
           </View>
         </View>
         <Text style={styles.priority}>Priority: {item.priority}</Text>
-        <Text style={styles.appliesTo}>Applies to: {item.applies_to_type}</Text>
+        <Text style={styles.appliesTo}>Applies to: {renderScope(item)}</Text>
         <Text style={styles.dateRange}>
           {new Date(item.effective_from).toLocaleDateString()} – {item.effective_to ? new Date(item.effective_to).toLocaleDateString() : 'No end date'}
         </Text>
         <View style={styles.actions}>
           <TouchableOpacity
             style={styles.editButton}
-            onPress={() => navigation.navigate({ name: 'PolicyConfigForm', params: { policyId: item.id } })}
+            onPress={() =>
+              navigation.navigate({
+                name: 'PolicyConfigForm',
+                params: { policyId: item.policy_id },
+              })
+            }
           >
             <Icon name="pencil" size={18} color={PRIMARY_COLOR} />
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.deleteButton}
-            onPress={() => handleDelete(item.id, item.policy_name)}
+            onPress={() => handleDelete(item.policy_id, item.policy_name)}
             disabled={isDeleting}
           >
-            {isDeleting ? <ActivityIndicator size="small" color="#ef4444" /> : <Icon name="delete" size={18} color="#ef4444" />}
+            {isDeleting ? (
+              <ActivityIndicator size="small" color="#ef4444" />
+            ) : (
+              <Icon name="close-circle-outline" size={18} color="#ef4444" />
+            )}
           </TouchableOpacity>
         </View>
       </TouchableOpacity>
@@ -150,7 +177,7 @@ export default function PolicyConfigList() {
 
       <FlatList
         data={policies}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item) => item.policy_id}
         renderItem={renderItem}
         contentContainerStyle={styles.listContent}
         refreshControl={
@@ -201,7 +228,7 @@ const styles = StyleSheet.create({
     borderColor: BORDER_COLOR,
   },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  policyName: { fontSize: 16, fontWeight: '600', color: TEXT_PRIMARY },
+  policyName: { fontSize: 16, fontWeight: '600', color: TEXT_PRIMARY, flex: 1 },
   statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
   activeBadge: { backgroundColor: '#d1fae5' },
   inactiveBadge: { backgroundColor: '#fee2e2' },
@@ -209,7 +236,14 @@ const styles = StyleSheet.create({
   priority: { fontSize: 13, color: TEXT_SECONDARY, marginTop: 4 },
   appliesTo: { fontSize: 13, color: TEXT_SECONDARY, marginTop: 2 },
   dateRange: { fontSize: 12, color: TEXT_SECONDARY, marginTop: 2 },
-  actions: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 10, borderTopWidth: 1, borderTopColor: BORDER_COLOR, paddingTop: 10 },
+  actions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: BORDER_COLOR,
+    paddingTop: 10,
+  },
   editButton: { padding: 6, marginRight: 10 },
   deleteButton: { padding: 6 },
   emptyContainer: { alignItems: 'center', paddingVertical: 60 },

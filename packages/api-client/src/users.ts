@@ -2,10 +2,27 @@
 import { AxiosError } from 'axios';
 import { axiosInstance } from './axios-instance';
 import { idempotentPost, idempotentPut } from './idempotency';
+import type {
+  UpdateMyProfileRequest,
+  UpdateMyProfileResponse,
+  UserDisplayName,                 // 👈 add this
+
+} from '@b2b/shared-types';
 
 // ---------- helper: base headers ----------
 const getBaseHeaders = (companyId: string, deviceId: string, accessToken: string) => ({
   'X-Company-ID': companyId,
+  'X-Device-ID': deviceId,
+  'Authorization': `Bearer ${accessToken}`,
+  'Content-Type': 'application/json',
+});
+
+// ---------- helper: user-scoped headers (no company) ----------
+//
+// Self-service routes (/users/me) are not scoped to a company and must NOT
+// carry X-Company-ID — the backend would treat them as a company-scoped call
+// and re-authorize against the wrong resource.
+const getUserScopedHeaders = (deviceId: string, accessToken: string) => ({
   'X-Device-ID': deviceId,
   'Authorization': `Bearer ${accessToken}`,
   'Content-Type': 'application/json',
@@ -189,4 +206,97 @@ export const logoutAllDevices = async (
     'logoutAllDevices',
     { headers }
   );
+};
+
+// ============================================================
+// Self-service profile — PATCH /users/me
+//
+// Only username + full_name are writable here. Everything else
+// (email, DOB, tax_id, etc.) lives on employee_profiles and is
+// HR-only — see updateMember() in ./hr.ts.
+//
+// Response shape mirrors the backend handler:
+//   { success: true, data: { user_id, username, full_name, updated_at } }
+// ============================================================
+export const updateMyProfile = async (
+  payload: UpdateMyProfileRequest,
+  deviceId: string,
+  accessToken: string,
+): Promise<UpdateMyProfileResponse> => {
+  const url = `/users/me`;
+  const headers = getUserScopedHeaders(deviceId, accessToken);
+
+  const response = await axiosInstance.patch<{
+    success: boolean;
+    data: UpdateMyProfileResponse;
+    message?: string;
+  }>(url, payload, { headers });
+
+  // The backend returns { success, data, message }. We only want `data`.
+  const body = response.data;
+  if (!body?.data) {
+    throw new Error(
+      (body as any)?.message ||
+        'Unexpected response shape from /users/me',
+    );
+  }
+  return body.data;
+};
+
+
+// ============================================================
+// User display name — GET /companies/{companyID}/users/{userID}/display-name
+//
+// Minimal, cache-free read of { user_id, username, full_name }.
+// No PII, no audit — the backend deliberately does not return
+// phone_hash, device_id, KYC flags, etc.
+//
+// This is a UI-decorating read, so it mirrors getUserPhone():
+// on failure we warn and return undefined rather than throw,
+// letting call sites fall back to "Unknown user" without a
+// try/catch on every render.
+//
+// Requires `administration.company.view` on the caller's role.
+// Not idempotent-keyed — it's a plain GET.
+// ============================================================
+export const getUserDisplayName = async (
+  companyId: string,
+  userId: string,
+  deviceId: string,
+  accessToken: string,
+): Promise<UserDisplayName | undefined> => {
+  const url = `/companies/${companyId}/users/${userId}/display-name`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+
+  try {
+    const response = await axiosInstance.get<{
+      success: boolean;
+      data: {
+        user_id: string;
+        username: string;
+        full_name: string;
+      };
+      message?: string;
+    }>(url, { headers });
+
+    const data = response.data?.data;
+    if (!data) {
+      console.warn(
+        `getUserDisplayName: empty data for user ${userId}`,
+      );
+      return undefined;
+    }
+
+    return {
+      user_id: data.user_id,
+      username: data.username,
+      full_name: data.full_name,
+    };
+  } catch (error) {
+    console.warn(
+      `Failed to fetch display name for user ${userId}`,
+      error,
+    );
+    return undefined;
+  }
 };

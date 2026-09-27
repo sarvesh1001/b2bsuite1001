@@ -1,5 +1,5 @@
 // apps/prayantra-b2b/src/screens/hr/HREmployeeList.tsx
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   RefreshControl,
   Alert,
   ActivityIndicator,
+  Keyboard,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -17,14 +18,19 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+
 import { useUserAuthStore } from '../../store/userAuthStore';
 import {
-  listEmployees,
+  searchEmployeesTypeahead,
   getEmployeeStats,
   deleteEmployeeProfile,
   exportEmployeeData,
 } from '@b2b/api-client';
-import { HREmployeeProfile } from '@b2b/shared-types';
+import type {
+  DecryptedEmployeeDetails,
+  EmployeeTypeaheadDetailsResponse,
+} from '@b2b/shared-types';
+import { UserAvatar } from '../../components/UserAvatar';
 import {
   BACKGROUND_COLOR,
   CARD_BACKGROUND,
@@ -37,78 +43,139 @@ import { RootStackParamList } from '../../navigation';
 
 type NavigationProp = StackNavigationProp<RootStackParamList, 'HREmployeeList'>;
 
-// ---------- logging helpers ----------
 const TAG = '[HREmployeeList]';
 const log = (...args: any[]) => console.log(TAG, ...args);
 const logErr = (...args: any[]) => console.error(TAG, ...args);
-const logWarn = (...args: any[]) => console.warn(TAG, ...args);
 
-const describeError = (error: any) => {
-  if (!error) return { message: 'Unknown error' };
-  return {
-    message: error?.message,
-    status: error?.response?.status,
-    statusText: error?.response?.statusText,
-    url: error?.config?.url,
-    method: error?.config?.method,
-    requestParams: error?.config?.params,
-    requestHeaders: error?.config?.headers,
-    responseData: error?.response?.data,
-    code: error?.code,
-  };
+const PAGE_SIZE = 30;
+const DEBOUNCE_MS = 300;
+
+// Verbose dump helper — one line so RN's LogBox doesn't truncate.
+const dump = (label: string, value: any) => {
+  try {
+    const s = typeof value === 'string' ? value : JSON.stringify(value);
+    log(`${label}:`, s?.slice(0, 1500));
+  } catch (e) {
+    log(`${label}: <unserialisable>`, e);
+  }
 };
 
-// ------------------------------------------------------------------
-// extractEmployees — tolerates every shape we've seen in the wild:
-//   - { data: [ ... ] }            ← current backend
-//   - { data: { employees: [...] } }
-//   - { data: { data: { employees: [...] } } }
-//   - [ ... ]                      ← bare array
-// ------------------------------------------------------------------
-const extractEmployees = (res: any): any[] => {
-  if (!res) return [];
-  if (Array.isArray(res)) return res;
-  if (Array.isArray(res?.data)) return res.data;
-  return (
-    res?.employees ??
-    res?.data?.employees ??
-    res?.data?.data?.employees ??
-    []
-  );
-};
+const describeError = (error: any) => ({
+  message: error?.message,
+  status: error?.response?.status,
+  url: error?.config?.url,
+  responseData: error?.response?.data,
+});
 
 // ------------------------------------------------------------------
-// normalizeEmployee — the backend returns employee_profile_id + user_id.
-// The screen uses `id` as the React key, route param, and delete target.
-// Prefer profile_id (the profile-scoped identifier); fall back to user_id.
-// Also surface `full_name` if a future backend version joins users, and
-// fall back to a short label so the card isn't completely blank.
+// Diagnostic extraction — logs at every branch so we know EXACTLY
+// where rows are lost.
 // ------------------------------------------------------------------
-const normalizeEmployee = (row: any): HREmployeeProfile & { id: string } => {
-  const id =
-    row?.id ??
-    row?.employee_profile_id ??
-    row?.user_id ??
-    '';
-  const email = row?.email ?? undefined;
-  const fallbackLabel = row?.full_name ?? row?.employee_id ?? id;
-  return {
-    ...row,
-    id,
-    email: email ?? fallbackLabel,
-  };
+const extractDetails = (
+  res: EmployeeTypeaheadDetailsResponse | any,
+): DecryptedEmployeeDetails[] => {
+  log('── extractDetails ──');
+  log('  res type:', typeof res, Array.isArray(res) ? 'ARRAY' : 'object');
+  log('  res keys:', res && typeof res === 'object' ? Object.keys(res) : null);
+  log('  res.success:', res?.success);
+  log('  res.data type:', typeof res?.data, Array.isArray(res?.data) ? 'ARRAY' : '');
+
+  if (!res) {
+    logErr('  ❌ res is null/undefined → returning []');
+    return [];
+  }
+
+  const data = res.data ?? res?.data?.data ?? [];
+  log('  chosen data source:',
+    res.data ? 'res.data' : res?.data?.data ? 'res.data.data' : 'fallback []');
+  log('  data is array:', Array.isArray(data), 'length:', Array.isArray(data) ? data.length : 'n/a');
+
+  if (!Array.isArray(data)) {
+    logErr('  ❌ data is not an array → returning []');
+    return [];
+  }
+
+  if (data.length === 0) {
+    log('  ⚠️ data array is empty — backend returned 0 rows');
+    return [];
+  }
+
+  // Dump first row in full so we can see its keys.
+  log('  first row (raw):', JSON.stringify(data[0]).slice(0, 1200));
+  log('  first row keys:', Object.keys(data[0] || {}));
+
+  // Which id key is present?
+  const first = data[0] as any;
+  const hasSnakeUserId = 'user_id' in first;
+  const hasPascalUserId = 'UserID' in first;
+  log('  has "user_id":', hasSnakeUserId, '| has "UserID":', hasPascalUserId);
+
+  if (!hasSnakeUserId && !hasPascalUserId) {
+    logErr('  ❌ No recognizable user id key found on the row');
+  }
+
+  // Normalizer: accept either casing so we don't silently drop anything.
+  const pick = <T = any>(row: any, snake: string, pascal: string): T | undefined =>
+    row?.[snake] ?? row?.[pascal];
+
+  const normalized: DecryptedEmployeeDetails[] = data
+    .filter(
+      (x: any) =>
+        !!x &&
+        typeof x === 'object' &&
+        ('user_id' in x || 'UserID' in x),
+    )
+    .map((row: any): DecryptedEmployeeDetails => ({
+      user_id: pick<string>(row, 'user_id', 'UserID') ?? '',
+      company_id: pick<string>(row, 'company_id', 'CompanyID') ?? '',
+      username: pick<string>(row, 'username', 'Username') ?? '',
+      full_name: pick(row, 'full_name', 'FullName') ?? null,
+      phone_number: pick(row, 'phone_number', 'PhoneNumber') ?? null,
+      email: pick(row, 'email', 'Email') ?? null,
+      employee_id: pick<string>(row, 'employee_id', 'EmployeeID') ?? '',
+      role_id: pick<string>(row, 'role_id', 'RoleID') ?? '',
+      role_name: pick<string>(row, 'role_name', 'RoleName') ?? '',
+      position_id: pick(row, 'position_id', 'PositionID') ?? null,
+      position_title: pick(row, 'position_title', 'PositionTitle') ?? null,
+      department_id: pick(row, 'department_id', 'DepartmentID') ?? null,
+      department_name: pick(row, 'department_name', 'DepartmentName') ?? null,
+      primary_location_id: pick(row, 'primary_location_id', 'PrimaryLocationID') ?? null,
+      primary_location_name: pick(row, 'primary_location_name', 'PrimaryLocationName') ?? null,
+      location_access_scope: pick(row, 'location_access_scope', 'LocationAccessScope') ?? 'ALL',
+      reports_to: pick(row, 'reports_to', 'ReportsTo') ?? null,
+      hire_date: pick<string>(row, 'hire_date', 'HireDate') ?? '',
+      is_active: pick<boolean>(row, 'is_active', 'IsActive') ?? false,
+      employee_profile_id: pick(row, 'employee_profile_id', 'EmployeeProfileID') ?? null,
+      gender: pick(row, 'gender', 'Gender') ?? null,
+      employment_type: pick(row, 'employment_type', 'EmploymentType') ?? null,
+      employment_status: pick(row, 'employment_status', 'EmploymentStatus') ?? null,
+      job_title: pick(row, 'job_title', 'JobTitle') ?? null,
+      grade: pick(row, 'grade', 'Grade') ?? null,
+      cost_center: pick(row, 'cost_center', 'CostCenter') ?? null,
+      date_of_birth: pick(row, 'date_of_birth', 'DateOfBirth') ?? null,
+      nationality: pick(row, 'nationality', 'Nationality') ?? null,
+      marital_status: pick(row, 'marital_status', 'MaritalStatus') ?? null,
+      tax_id: pick(row, 'tax_id', 'TaxID') ?? null,
+      social_security_id: pick(row, 'social_security_id', 'SocialSecurityID') ?? null,
+      profile_created_at: pick(row, 'profile_created_at', 'ProfileCreatedAt') ?? null,
+      profile_updated_at: pick(row, 'profile_updated_at', 'ProfileUpdatedAt') ?? null,
+      user_created_at: pick<string>(row, 'user_created_at', 'UserCreatedAt') ?? '',
+      user_last_login: pick(row, 'user_last_login', 'UserLastLogin') ?? null,
+    }));
+
+  log('  ✅ normalized row count:', normalized.length);
+  if (normalized[0]) {
+    log('  first normalized user_id:', normalized[0].user_id);
+    log('  first normalized username:', normalized[0].username);
+    log('  first normalized full_name:', normalized[0].full_name);
+  }
+  return normalized;
 };
 
-// ------------------------------------------------------------------
-// extractStats — the backend returns { total_employees, active_employees, ... }.
-// The screen's renderStats expects { total, active, probation, terminated }.
-// Map both shapes so either works.
-// ------------------------------------------------------------------
 const extractStats = (res: any): any => {
   if (!res) return null;
   const raw = res?.stats ?? res?.data?.stats ?? res?.data ?? res;
   if (!raw || typeof raw !== 'object') return raw;
-
   return {
     ...raw,
     total: raw.total ?? raw.total_employees ?? 0,
@@ -122,13 +189,17 @@ export default function HREmployeeList() {
   const navigation = useNavigation<NavigationProp>();
   const { accessToken, deviceId, companyId } = useUserAuthStore();
 
-  // State
-  const [employees, setEmployees] = useState<(HREmployeeProfile & { id: string })[]>([]);
-  const [filtered, setFiltered] = useState<(HREmployeeProfile & { id: string })[]>([]);
+  const [employees, setEmployees] = useState<DecryptedEmployeeDetails[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searching, setSearching] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [page, setPage] = useState(1);
+
+  const [searchTerm, setSearchTerm] = useState('');
+  const [activeQuery, setActiveQuery] = useState('');
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [stats, setStats] = useState<any>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -137,131 +208,146 @@ export default function HREmployeeList() {
 
   // ---------- fetch ----------
   const fetchEmployees = useCallback(
-    async (showRefresh = false) => {
-      log('─── fetchEmployees ───', {
-        showRefresh,
-        hasAccessToken: !!accessToken,
-        accessTokenLen: accessToken?.length,
-        companyId,
-        deviceId,
+    async (opts: { reset: boolean; query?: string; silent?: boolean } = { reset: true }) => {
+      const { reset, query, silent } = opts;
+
+      log('═══ fetchEmployees ═══', {
+        reset,
+        query,
+        hasToken: !!accessToken,
+        hasCompany: !!companyId,
+        hasDevice: !!deviceId,
       });
 
       if (!accessToken || !companyId || !deviceId) {
-        logErr('Missing auth context, aborting fetch', {
-          hasAccessToken: !!accessToken,
-          companyId,
-          deviceId,
-        });
+        logErr('Missing auth context, aborting');
         Alert.alert('Error', 'Missing authentication. Please log in again.');
         setLoading(false);
         return;
       }
 
-      if (showRefresh) setRefreshing(true);
-      else setLoading(true);
+      const targetPage = reset ? 1 : page + 1;
+      const effectiveQuery = query ?? activeQuery;
 
-      setLoadError(null);
-      setStatsError(null);
+      if (reset) {
+        if (!silent) setLoading(true);
+        setLoadError(null);
+      } else {
+        setLoadingMore(true);
+      }
 
-      const [listResult, statsResult] = await Promise.allSettled([
-        listEmployees(companyId, deviceId, accessToken, 1, 100),
-        getEmployeeStats(companyId, deviceId, accessToken),
-      ]);
+      try {
+        log('→ calling searchEmployeesTypeahead', {
+          q: effectiveQuery,
+          page: targetPage,
+          page_size: PAGE_SIZE,
+        });
 
-      // ---- list ----
-      if (listResult.status === 'fulfilled') {
-        const raw = listResult.value;
-        log('listEmployees raw response:', JSON.stringify(raw, null, 2));
+        const res = await searchEmployeesTypeahead(
+          companyId,
+          deviceId,
+          accessToken,
+          {
+            q: effectiveQuery,
+            page: targetPage,
+            page_size: PAGE_SIZE,
+          },
+          false,
+        );
 
-        const rows = extractEmployees(raw);
-        const data = rows.map(normalizeEmployee);
-        log('listEmployees parsed employee count:', data.length);
-        if (data[0]) {
-          log('sample employee:', JSON.stringify(data[0], null, 2));
+        log('← searchEmployeesTypeahead returned');
+        dump('  RAW RESPONSE', res);
+        log('  typeof res:', typeof res);
+        log('  res keys:', res ? Object.keys(res) : null);
+        log('  res.success:', (res as any)?.success);
+        log('  res.data isArray:', Array.isArray((res as any)?.data));
+        log('  res.data length:', Array.isArray((res as any)?.data) ? (res as any).data.length : 'n/a');
+        log('  res.meta:', JSON.stringify((res as any)?.meta));
+
+        const rows = extractDetails(res);
+        log('  extractDetails →', rows.length, 'rows');
+
+        if (reset) {
+          setEmployees(rows);
+          setPage(1);
+        } else {
+          setEmployees(prev => [...prev, ...rows]);
+          setPage(targetPage);
         }
+        setHasMore(rows.length === PAGE_SIZE);
 
-        setEmployees(data);
-        setFiltered(data);
-      } else {
-        const info = describeError(listResult.reason);
-        logErr('listEmployees FAILED:', JSON.stringify(info, null, 2));
-        setEmployees([]);
-        setFiltered([]);
-        setLoadError(
-          info.responseData?.error ||
-            info.responseData?.message ||
-            info.message ||
-            'Failed to load employees'
-        );
+        log('  final employees state will be:', reset ? rows.length : employees.length + rows.length);
+      } catch (error: any) {
+        const info = describeError(error);
+        logErr('❌ searchEmployeesTypeahead FAILED:', JSON.stringify(info, null, 2));
+        if (reset) {
+          setEmployees([]);
+          setLoadError(
+            info.responseData?.error ||
+              info.responseData?.message ||
+              info.message ||
+              'Failed to load employees',
+          );
+        }
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+        setLoadingMore(false);
       }
-
-      // ---- stats ----
-      if (statsResult.status === 'fulfilled') {
-        const raw = statsResult.value;
-        log('getEmployeeStats raw response:', JSON.stringify(raw, null, 2));
-        const parsed = extractStats(raw);
-        log('getEmployeeStats parsed:', JSON.stringify(parsed, null, 2));
-        setStats(parsed);
-      } else {
-        const info = describeError(statsResult.reason);
-        logErr('getEmployeeStats FAILED:', JSON.stringify(info, null, 2));
-        setStats(null);
-        setStatsError(
-          info.responseData?.error ||
-            info.responseData?.message ||
-            info.message ||
-            'Failed to load stats'
-        );
-      }
-
-      setLoading(false);
-      setRefreshing(false);
     },
-    [accessToken, companyId, deviceId]
+    [accessToken, companyId, deviceId, activeQuery, page],
   );
+
+  const fetchStats = useCallback(async () => {
+    if (!accessToken || !companyId || !deviceId) return;
+    setStatsError(null);
+    try {
+      log('→ calling getEmployeeStats');
+      const raw = await getEmployeeStats(companyId, deviceId, accessToken);
+      dump('← STATS RAW RESPONSE', raw);
+      const parsed = extractStats(raw);
+      dump('  parsed stats', parsed);
+      setStats(parsed);
+    } catch (error: any) {
+      const info = describeError(error);
+      logErr('❌ getEmployeeStats FAILED:', JSON.stringify(info, null, 2));
+      setStats(null);
+      setStatsError(info.responseData?.error || info.message || 'Failed to load stats');
+    }
+  }, [accessToken, companyId, deviceId]);
 
   useFocusEffect(
     useCallback(() => {
-      fetchEmployees();
-    }, [fetchEmployees])
+      fetchEmployees({ reset: true, query: activeQuery });
+      fetchStats();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeQuery]),
   );
 
-  // ---------- search ----------
-  const handleSearch = useCallback(
-    (query: string) => {
-      setSearchQuery(query);
-      const q = query.trim().toLowerCase();
-      if (!q) {
-        setFiltered(employees);
-        return;
-      }
-      setSearching(true);
-      const filteredData = employees.filter((emp) => {
-        return (
-          emp.email?.toLowerCase().includes(q) ||
-          emp.job_title?.toLowerCase().includes(q) ||
-          emp.department_name?.toLowerCase().includes(q) ||
-          emp.grade?.toLowerCase().includes(q)
-        );
-      });
-      log('search', { query, total: employees.length, matches: filteredData.length });
-      setFiltered(filteredData);
-      setSearching(false);
-    },
-    [employees]
-  );
+  useEffect(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => {
+      const q = searchTerm.trim();
+      if (q === activeQuery) return;
+      log('debounced query change:', { from: activeQuery, to: q });
+      setActiveQuery(q);
+    }, DEBOUNCE_MS);
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
+  }, [searchTerm, activeQuery]);
 
   const clearSearch = () => {
-    setSearchQuery('');
-    setFiltered(employees);
+    setSearchTerm('');
+    setActiveQuery('');
+    Keyboard.dismiss();
   };
 
-  // ---------- delete ----------
   const handleDelete = useCallback(
-    (employeeId: string, fullName?: string) => {
+    (userId: string, displayName?: string) => {
       Alert.alert(
         'Delete Employee',
-        `Are you sure you want to delete "${fullName || employeeId}"? This action cannot be undone.`,
+        `Are you sure you want to delete "${displayName || userId}"? This action cannot be undone.`,
         [
           { text: 'Cancel', style: 'cancel' },
           {
@@ -269,31 +355,24 @@ export default function HREmployeeList() {
             style: 'destructive',
             onPress: async () => {
               if (!accessToken || !companyId || !deviceId) return;
-              setDeletingId(employeeId);
-              log('deleteEmployeeProfile →', { employeeId });
+              setDeletingId(userId);
               try {
-                await deleteEmployeeProfile(companyId, employeeId, deviceId, accessToken);
-                log('deleteEmployeeProfile OK', { employeeId });
-                setEmployees((prev) => prev.filter((e) => e.id !== employeeId));
-                setFiltered((prev) => prev.filter((e) => e.id !== employeeId));
+                await deleteEmployeeProfile(companyId, userId, deviceId, accessToken);
+                setEmployees(prev => prev.filter(e => e.user_id !== userId));
               } catch (error: any) {
-                logErr(
-                  'deleteEmployeeProfile FAILED:',
-                  JSON.stringify(describeError(error), null, 2)
-                );
+                logErr('deleteEmployeeProfile FAILED:', JSON.stringify(describeError(error), null, 2));
                 Alert.alert('Error', error?.message || 'Failed to delete employee');
               } finally {
                 setDeletingId(null);
               }
             },
           },
-        ]
+        ],
       );
     },
-    [accessToken, companyId, deviceId]
+    [accessToken, companyId, deviceId],
   );
 
-  // ---------- export ----------
   const handleExport = useCallback(
     async (format: 'json' | 'csv') => {
       if (!accessToken || !companyId || !deviceId) {
@@ -301,14 +380,8 @@ export default function HREmployeeList() {
         return;
       }
       setExporting(true);
-      log('exportEmployeeData →', { format });
       try {
         const blob = await exportEmployeeData(companyId, deviceId, accessToken, format);
-        log('exportEmployeeData OK', {
-          type: typeof blob,
-          size: (blob as any)?.size,
-        });
-
         const reader = new FileReader();
         reader.onload = async () => {
           const base64 = reader.result?.toString().split(',')[1] || '';
@@ -322,117 +395,143 @@ export default function HREmployeeList() {
               {
                 text: 'Share',
                 onPress: async () => {
-                  if (await Sharing.isAvailableAsync()) {
-                    await Sharing.shareAsync(fileUri);
-                  } else {
-                    Alert.alert('Sharing not available');
-                  }
+                  if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(fileUri);
                 },
               },
               { text: 'OK', style: 'cancel' },
             ]);
-          } catch (writeError) {
-            logErr('export write failed', writeError);
-            Alert.alert('Error', 'Failed to save file: ' + (writeError as any).message);
+          } catch (writeError: any) {
+            Alert.alert('Error', 'Failed to save file: ' + writeError.message);
           }
-        };
-        reader.onerror = () => {
-          logErr('export reader.onerror');
-          Alert.alert('Error', 'Failed to read file data');
         };
         reader.readAsDataURL(blob);
       } catch (error: any) {
-        logErr('exportEmployeeData FAILED:', JSON.stringify(describeError(error), null, 2));
         Alert.alert('Export Failed', error?.message || 'Failed to export data');
       } finally {
         setExporting(false);
       }
     },
-    [accessToken, companyId, deviceId]
+    [accessToken, companyId, deviceId],
   );
 
   const showExportOptions = () => {
-    Alert.alert(
-      'Export Employees',
-      'Choose export format',
-      [
-        { text: 'JSON', onPress: () => handleExport('json') },
-        { text: 'CSV', onPress: () => handleExport('csv') },
-        { text: 'Cancel', style: 'cancel' },
-      ],
-      { cancelable: true }
-    );
+    Alert.alert('Export Employees', 'Choose export format', [
+      { text: 'JSON', onPress: () => handleExport('json') },
+      { text: 'CSV', onPress: () => handleExport('csv') },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   };
 
-  // ---------- render ----------
-  const renderItem = ({ item }: { item: HREmployeeProfile & { id: string } }) => {
-    const isDeleting = deletingId === item.id;
+  const renderItem = ({ item, index }: { item: DecryptedEmployeeDetails; index: number }) => {
+    const isDeleting = deletingId === item.user_id;
+    const displayName = item.full_name || item.username || 'Unnamed Employee';
+
     const statusColor =
       item.employment_status === 'active'
         ? '#10b981'
-        : item.employment_status === 'probation'
+        : item.employment_status === 'probation' || item.employment_status === 'notice'
         ? '#f59e0b'
-        : '#ef4444';
-
-    const displayName = item.email || item.id.slice(0, 8);
+        : item.employment_status === 'terminated'
+        ? '#ef4444'
+        : '#64748b';
 
     return (
       <TouchableOpacity
         style={styles.card}
-        activeOpacity={0.7}
+        activeOpacity={0.85}
         onPress={() =>
-          navigation.navigate('HREmployeeDetail', { employeeId: item.id })
+          navigation.navigate('HREmployeeDetail', {
+            userId: item.user_id,
+            employeeProfileId: item.employee_profile_id ?? undefined,
+          })
         }
       >
+        <View style={styles.cardAccent} />
+        <Text style={styles.cardNumber}>
+          {String(index + 1).padStart(2, '0')}
+        </Text>
+
         <View style={styles.cardHeader}>
-          <View style={styles.avatarPlaceholder}>
-            <Text style={styles.avatarText}>
-              {displayName.charAt(0).toUpperCase() || '?'}
-            </Text>
-          </View>
+          <UserAvatar
+            userId={item.user_id}
+            username={item.username}
+            fullName={item.full_name ?? undefined}
+            size={48}
+            style={styles.avatar}
+          />
+
           <View style={styles.cardInfo}>
             <Text style={styles.employeeName} numberOfLines={1}>
               {displayName}
             </Text>
-            <Text style={styles.employeeJob} numberOfLines={1}>
-              {item.job_title || 'No title'}
-            </Text>
+            <View style={styles.subRow}>
+              <Icon name="at" size={12} color={TEXT_SECONDARY} />
+              <Text style={styles.subText} numberOfLines={1}>
+                {item.username || '—'}
+              </Text>
+            </View>
+            <View style={styles.subRow}>
+              <Icon name="briefcase-outline" size={12} color={TEXT_SECONDARY} />
+              <Text style={styles.subText} numberOfLines={1}>
+                {item.job_title || item.position_title || 'No title'}
+              </Text>
+            </View>
           </View>
-          <View style={styles.statusBadge}>
+
+          <View style={styles.statusWrap}>
             <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
             <Text style={[styles.statusText, { color: statusColor }]}>
-              {item.employment_status?.toUpperCase() || 'UNKNOWN'}
+              {(item.employment_status || 'unknown').toUpperCase()}
             </Text>
           </View>
         </View>
 
         <View style={styles.cardFooter}>
-          <Text style={styles.detailText}>
-            <Icon name="email" size={14} color={TEXT_SECONDARY} />{' '}
-            {item.email || 'N/A'}
-          </Text>
-          <Text style={styles.detailText}>
-            <Icon name="domain" size={14} color={TEXT_SECONDARY} />{' '}
-            {item.department_name || 'No dept'}
-          </Text>
-          <Text style={styles.detailText}>
-            <Icon name="account-key" size={14} color={TEXT_SECONDARY} />{' '}
-            {item.grade || 'N/A'}
-          </Text>
+          <View style={styles.footerChip}>
+            <Icon name="domain" size={12} color={TEXT_SECONDARY} />
+            <Text style={styles.footerChipText} numberOfLines={1}>
+              {item.department_name || 'No dept'}
+            </Text>
+          </View>
+          <View style={styles.footerChip}>
+            <Icon name="map-marker-outline" size={12} color={TEXT_SECONDARY} />
+            <Text style={styles.footerChipText} numberOfLines={1}>
+              {item.primary_location_name || 'No location'}
+            </Text>
+          </View>
+          <View style={styles.footerChip}>
+            <Icon name="badge-account-outline" size={12} color={TEXT_SECONDARY} />
+            <Text style={styles.footerChipText} numberOfLines={1}>
+              {item.employee_id || 'N/A'}
+            </Text>
+          </View>
         </View>
 
         <View style={styles.actionRow}>
           <TouchableOpacity
-            style={styles.editButton}
+            style={styles.iconBtn}
             onPress={() =>
-              navigation.navigate('HREmployeeForm', { employeeId: item.id })
+              navigation.navigate('HREmployeeDetail', {
+                userId: item.user_id,
+                employeeProfileId: item.employee_profile_id ?? undefined,
+              })
+            }
+          >
+            <Icon name="eye-outline" size={18} color={PRIMARY_COLOR} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.iconBtn}
+            onPress={() =>
+              navigation.navigate('HREmployeeForm', {
+                employeeId: item.employee_profile_id ?? item.user_id,
+              })
             }
           >
             <Icon name="pencil" size={18} color={PRIMARY_COLOR} />
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.deleteButton}
-            onPress={() => handleDelete(item.id, item.email)}
+            style={styles.iconBtn}
+            onPress={() => handleDelete(item.user_id, displayName)}
             disabled={isDeleting}
           >
             {isDeleting ? (
@@ -463,28 +562,22 @@ export default function HREmployeeList() {
           <Text style={styles.statLabel}>Total</Text>
         </View>
         <View style={styles.statItem}>
-          <Text style={[styles.statNumber, { color: '#10b981' }]}>
-            {stats.active ?? 0}
-          </Text>
+          <Text style={[styles.statNumber, { color: '#10b981' }]}>{stats.active ?? 0}</Text>
           <Text style={styles.statLabel}>Active</Text>
         </View>
         <View style={styles.statItem}>
-          <Text style={[styles.statNumber, { color: '#f59e0b' }]}>
-            {stats.probation ?? 0}
-          </Text>
+          <Text style={[styles.statNumber, { color: '#f59e0b' }]}>{stats.probation ?? 0}</Text>
           <Text style={styles.statLabel}>Probation</Text>
         </View>
         <View style={styles.statItem}>
-          <Text style={[styles.statNumber, { color: '#ef4444' }]}>
-            {stats.terminated ?? 0}
-          </Text>
+          <Text style={[styles.statNumber, { color: '#ef4444' }]}>{stats.terminated ?? 0}</Text>
           <Text style={styles.statLabel}>Terminated</Text>
         </View>
       </View>
     );
   };
 
-  if (loading) {
+  if (loading && employees.length === 0) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={PRIMARY_COLOR} />
@@ -493,14 +586,12 @@ export default function HREmployeeList() {
     );
   }
 
+  log('render — employees.length:', employees.length, 'loading:', loading);
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => navigation.goBack()}
-        >
+        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
           <Icon name="arrow-left" size={24} color={TEXT_PRIMARY} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Employees</Text>
@@ -525,66 +616,77 @@ export default function HREmployeeList() {
         </View>
       </View>
 
-      {/* Load error banner */}
       {loadError && (
         <View style={styles.errorBanner}>
           <Icon name="alert-circle-outline" size={16} color="#b91c1c" />
           <Text style={styles.errorBannerText}>Employees: {loadError}</Text>
-          <TouchableOpacity onPress={() => fetchEmployees()}>
+          <TouchableOpacity onPress={() => fetchEmployees({ reset: true })}>
             <Text style={styles.retryText}>Retry</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {/* Stats */}
       {renderStats()}
 
-      {/* Search */}
       <View style={styles.searchContainer}>
         <Icon name="magnify" size={20} color={TEXT_SECONDARY} style={styles.searchIcon} />
         <TextInput
           style={styles.searchInput}
-          placeholder="Search by email, title, department..."
+          placeholder="Search by name, username..."
           placeholderTextColor={TEXT_SECONDARY}
-          value={searchQuery}
-          onChangeText={handleSearch}
+          value={searchTerm}
+          onChangeText={setSearchTerm}
           returnKeyType="search"
+          autoCapitalize="none"
+          autoCorrect={false}
         />
-        {searching ? (
-          <ActivityIndicator size="small" color={PRIMARY_COLOR} style={styles.searchSpinner} />
-        ) : searchQuery.length > 0 ? (
+        {searchTerm.length > 0 && (
           <TouchableOpacity onPress={clearSearch} style={styles.clearButton}>
             <Icon name="close" size={18} color={TEXT_SECONDARY} />
           </TouchableOpacity>
-        ) : null}
+        )}
       </View>
 
-      {/* List */}
       <FlatList
-        data={filtered}
-        keyExtractor={(item, idx) => item?.id ?? String(idx)}
+        data={employees}
+        keyExtractor={(item, idx) => item?.user_id ?? String(idx)}
         renderItem={renderItem}
         contentContainerStyle={styles.listContent}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={() => fetchEmployees(true)}
+            onRefresh={() => {
+              setRefreshing(true);
+              fetchEmployees({ reset: true, query: activeQuery });
+            }}
           />
         }
+        onEndReached={() => {
+          if (loadingMore || !hasMore || loading) return;
+          fetchEmployees({ reset: false, query: activeQuery });
+        }}
+        onEndReachedThreshold={0.35}
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Icon name="account-off" size={60} color={TEXT_SECONDARY} />
             <Text style={styles.emptyTitle}>
-              {searchQuery ? 'No matching employees' : 'No employees yet'}
+              {activeQuery ? 'No matching employees' : 'No employees yet'}
             </Text>
             <Text style={styles.emptySubtitle}>
-              {searchQuery
-                ? 'Try adjusting your search'
+              {activeQuery
+                ? 'Try a different search term'
                 : loadError
                 ? 'Pull to refresh or tap Retry above'
                 : 'Add your first employee by tapping the + button'}
             </Text>
           </View>
+        }
+        ListFooterComponent={
+          loadingMore ? (
+            <View style={styles.footerLoader}>
+              <ActivityIndicator size="small" color={PRIMARY_COLOR} />
+            </View>
+          ) : null
         }
       />
     </SafeAreaView>
@@ -634,11 +736,6 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
   },
   errorBanner: {
     flexDirection: 'row',
@@ -650,18 +747,8 @@ const styles = StyleSheet.create({
     marginTop: 10,
     borderRadius: 8,
   },
-  errorBannerText: {
-    flex: 1,
-    color: '#991b1b',
-    fontSize: 12,
-    marginLeft: 8,
-  },
-  retryText: {
-    color: PRIMARY_COLOR,
-    fontWeight: '700',
-    fontSize: 12,
-    marginLeft: 8,
-  },
+  errorBannerText: { flex: 1, color: '#991b1b', fontSize: 12, marginLeft: 8 },
+  retryText: { color: PRIMARY_COLOR, fontWeight: '700', fontSize: 12, marginLeft: 8 },
   statsRow: {
     flexDirection: 'row',
     justifyContent: 'space-around',
@@ -698,37 +785,42 @@ const styles = StyleSheet.create({
     color: TEXT_PRIMARY,
     paddingVertical: 0,
   },
-  searchSpinner: { marginLeft: 8 },
   clearButton: { padding: 4 },
-  listContent: { paddingHorizontal: 16, paddingBottom: 20 },
+  listContent: { paddingHorizontal: 16, paddingBottom: 20, flexGrow: 1 },
   card: {
+    position: 'relative',
     backgroundColor: CARD_BACKGROUND,
     borderRadius: 12,
     padding: 14,
     marginBottom: 12,
     borderWidth: 1,
     borderColor: BORDER_COLOR,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.03,
-    shadowRadius: 3,
-    elevation: 2,
+    overflow: 'hidden',
+  },
+  cardAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 3,
+    backgroundColor: PRIMARY_COLOR,
+  },
+  cardNumber: {
+    position: 'absolute',
+    top: 9,
+    right: 11,
+    color: '#D2D8E0',
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   cardHeader: { flexDirection: 'row', alignItems: 'center' },
-  avatarPlaceholder: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: PRIMARY_COLOR + '20',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  avatarText: { fontSize: 18, fontWeight: '700', color: PRIMARY_COLOR },
-  cardInfo: { flex: 1 },
-  employeeName: { fontSize: 15, fontWeight: '600', color: TEXT_PRIMARY },
-  employeeJob: { fontSize: 12, color: TEXT_SECONDARY, marginTop: 2 },
-  statusBadge: {
+  avatar: { marginLeft: 3, marginRight: 12 },
+  cardInfo: { flex: 1, paddingRight: 8 },
+  employeeName: { fontSize: 15, fontWeight: '700', color: TEXT_PRIMARY },
+  subRow: { flexDirection: 'row', alignItems: 'center', marginTop: 3 },
+  subText: { marginLeft: 4, fontSize: 11, color: TEXT_SECONDARY, flex: 1 },
+  statusWrap: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#f1f5f9',
@@ -742,9 +834,23 @@ const styles = StyleSheet.create({
     marginTop: 10,
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'space-between',
+    gap: 8,
   },
-  detailText: { fontSize: 11, color: TEXT_SECONDARY, marginRight: 8 },
+  footerChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F4F6F9',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    maxWidth: '48%',
+  },
+  footerChipText: {
+    marginLeft: 4,
+    fontSize: 10,
+    color: TEXT_SECONDARY,
+    flexShrink: 1,
+  },
   actionRow: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
@@ -753,23 +859,15 @@ const styles = StyleSheet.create({
     borderTopColor: BORDER_COLOR,
     paddingTop: 10,
   },
-  editButton: { padding: 6, marginRight: 10 },
-  deleteButton: { padding: 6 },
-  emptyContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: TEXT_PRIMARY,
-    marginTop: 12,
-  },
+  iconBtn: { padding: 6, marginLeft: 10 },
+  emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
+  emptyTitle: { fontSize: 16, fontWeight: '600', color: TEXT_PRIMARY, marginTop: 12 },
   emptySubtitle: {
     fontSize: 13,
     color: TEXT_SECONDARY,
     marginTop: 4,
     textAlign: 'center',
+    paddingHorizontal: 20,
   },
+  footerLoader: { paddingVertical: 20, alignItems: 'center' },
 });

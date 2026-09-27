@@ -7,7 +7,7 @@ import {
   FlatList,
   ActivityIndicator,
   RefreshControl,
-  TouchableOpacity,   // ✅ added missing import
+  TouchableOpacity,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -40,10 +40,11 @@ export default function LeaveBalanceScreen() {
     if (showRefresh) setRefreshing(true);
     else setLoading(true);
     try {
-      const res = await getMyLeaveBalance(companyId, deviceId, accessToken);
-      setBalances(res.data || []);
+      // ⚠️ Now returns BalancesListData — not an array
+      const data = await getMyLeaveBalance(companyId, deviceId, accessToken);
+      setBalances(data.balances);
     } catch (error: any) {
-      // Fallback mock if needed
+      // Screens are read-only; swallow errors and show empty state.
       setBalances([]);
     } finally {
       setLoading(false);
@@ -53,36 +54,54 @@ export default function LeaveBalanceScreen() {
 
   useFocusEffect(useCallback(() => { fetchBalances(); }, [fetchBalances]));
 
-  const renderItem = ({ item }: { item: LeaveBalance }) => (
-    <View style={styles.card}>
-      <Text style={styles.leaveType}>{item.leave_type_name}</Text>
-      <View style={styles.row}>
-        <Text style={styles.label}>Total:</Text>
-        <Text style={styles.value}>{item.total_entitled}</Text>
-      </View>
-      <View style={styles.row}>
-        <Text style={styles.label}>Used:</Text>
-        <Text style={styles.value}>{item.used}</Text>
-      </View>
-      <View style={styles.row}>
-        <Text style={styles.label}>Balance:</Text>
-        <Text style={[styles.value, { color: item.balance > 0 ? '#10b981' : '#ef4444' }]}>{item.balance}</Text>
-      </View>
-      {item.carry_forward !== undefined && (
+  const renderItem = ({ item }: { item: LeaveBalance }) => {
+    const hasCarryForward =
+      item.carry_forward !== null && item.carry_forward !== undefined;
+    return (
+      <View style={styles.card}>
+        <Text style={styles.leaveType}>{item.leave_type_name}</Text>
         <View style={styles.row}>
-          <Text style={styles.label}>Carry Forward:</Text>
-          <Text style={styles.value}>{item.carry_forward}</Text>
+          <Text style={styles.label}>Total Entitled:</Text>
+          <Text style={styles.value}>{item.total_entitled}</Text>
         </View>
-      )}
-    </View>
-  );
+        <View style={styles.row}>
+          <Text style={styles.label}>Accrued:</Text>
+          <Text style={styles.value}>{item.accrued}</Text>
+        </View>
+        {/* ⚠️ Backend field is "consumed", not "used" */}
+        <View style={styles.row}>
+          <Text style={styles.label}>Consumed:</Text>
+          <Text style={styles.value}>{item.consumed}</Text>
+        </View>
+        <View style={styles.row}>
+          <Text style={styles.label}>Balance:</Text>
+          <Text
+            style={[
+              styles.value,
+              { color: item.balance > 0 ? '#10b981' : '#ef4444' },
+            ]}
+          >
+            {item.balance}
+          </Text>
+        </View>
+        {hasCarryForward && (
+          <View style={styles.row}>
+            <Text style={styles.label}>Carry Forward Limit:</Text>
+            <Text style={styles.value}>{item.carry_forward}</Text>
+          </View>
+        )}
+      </View>
+    );
+  };
 
-  if (loading) return (
-    <SafeAreaView style={styles.loadingContainer}>
-      <ActivityIndicator size="large" color={PRIMARY_COLOR} />
-      <Text style={styles.loadingText}>Loading balances...</Text>
-    </SafeAreaView>
-  );
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color={PRIMARY_COLOR} />
+        <Text style={styles.loadingText}>Loading balances...</Text>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -99,7 +118,9 @@ export default function LeaveBalanceScreen() {
         keyExtractor={(item) => item.leave_type_id}
         renderItem={renderItem}
         contentContainerStyle={styles.listContent}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetchBalances(true)} />}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={() => fetchBalances(true)} />
+        }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Icon name="cash" size={60} color={TEXT_SECONDARY} />
