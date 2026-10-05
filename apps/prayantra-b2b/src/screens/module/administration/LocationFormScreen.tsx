@@ -29,6 +29,11 @@ import {
 
 import { useUserAuthStore } from '../../../store/userAuthStore';
 import { RootStackParamList } from '../../../navigation';
+
+// ── NEW: shared tz picker + helpers ───────────────────────
+import { TimeZonePicker } from '../../../components/TimeZonePicker';
+import { isSupportedTimezone } from '../../../utils/timezone';
+
 import {
   BACKGROUND_COLOR,
   CARD_BACKGROUND,
@@ -53,6 +58,8 @@ const schema = z.object({
   state: z.string().optional(),
   country: z.string().optional(),
   pincode: z.string().optional(),
+  // ── NEW: IANA name. Empty string = inherit company default.
+  timezone: z.string().optional(),
 });
 
 type FormData = z.infer<typeof schema>;
@@ -77,6 +84,8 @@ export default function LocationFormScreen() {
       location_code: '', location_name: '',
       address_line1: '', address_line2: '',
       city: '', state: '', country: 'India', pincode: '',
+      // ── NEW: empty → inherit company default.
+      timezone: '',
     },
   });
 
@@ -97,6 +106,8 @@ export default function LocationFormScreen() {
         setValue('state', loc.state ?? '');
         setValue('country', loc.country ?? 'India');
         setValue('pincode', loc.pincode ?? '');
+        // ── NEW: load tz (null → '').
+        setValue('timezone', loc.timezone ?? '');
         setIsActive(loc.is_active !== false);
       } catch (e: any) {
         Alert.alert('Error', e?.message || 'Could not load location.');
@@ -115,21 +126,40 @@ export default function LocationFormScreen() {
       Alert.alert('Session error', 'Missing company context.');
       return;
     }
+
+    // ── NEW: validate tz only when non-empty. Empty string means
+    //    "inherit company default" and is always allowed.
+    const tzTrimmed = (data.timezone || '').trim();
+    if (tzTrimmed && !isSupportedTimezone(tzTrimmed)) {
+      Alert.alert(
+        'Invalid Timezone',
+        `'${tzTrimmed}' is not a valid IANA timezone.`
+      );
+      return;
+    }
+
     try {
       setLoading(true);
       const key = isEdit
         ? `loc-upd-${locationId}-${Date.now()}`
         : `loc-new-${Date.now()}`;
 
+      // ── NEW: send tz as null when empty, IANA string otherwise.
+      //    This matches the API contract (`timezone?: string | null`).
+      const payload = {
+        ...data,
+        timezone: tzTrimmed || null,
+      };
+
       if (isEdit && locationId) {
         await updateLocation(
           companyId,
           locationId,
-          { ...data, is_active: isActive },
+          { ...payload, is_active: isActive },
           key
         );
       } else {
-        await createLocation(companyId, data, key);
+        await createLocation(companyId, payload, key);
       }
 
       Alert.alert(
@@ -301,6 +331,30 @@ export default function LocationFormScreen() {
             />
           </View>
 
+          {/* ── NEW: Timezone section ─────────────────────── */}
+          <SectionHeader
+            icon="earth"
+            title="Timezone"
+            subtitle="Optional — leave blank to inherit company default"
+          />
+
+          <View style={styles.formCard}>
+            <View style={styles.timezoneWrapper}>
+              <Controller
+                control={control}
+                name="timezone"
+                render={({ field: { value, onChange } }) => (
+                  <TimeZonePicker
+                    value={value || ''}
+                    onChange={onChange}
+                    placeholder="Inherit from company default"
+                    hint="Sales and attendance at this location use this timezone to compute business dates."
+                  />
+                )}
+              />
+            </View>
+          </View>
+
           {isEdit && (
             <View style={styles.activeCard}>
               <View style={styles.activeIcon}>
@@ -458,6 +512,11 @@ const styles = StyleSheet.create({
   },
   inputError: { color: ERROR_COLOR },
   errorText: { marginTop: 2, color: ERROR_COLOR, fontSize: 9, lineHeight: 13 },
+
+  // ── NEW: wrapper for the TimeZonePicker inside a formCard
+  timezoneWrapper: {
+    paddingVertical: 14,
+  },
 
   activeCard: {
     flexDirection: 'row', alignItems: 'center', marginTop: 20,

@@ -15,7 +15,9 @@ export * from './costCenter';
 export * from './user';
 export * from './hr';
 export * from './job';       // 👈 NEW
-
+export * from './attendance'
+export * from './reminder';
+export * from './lifecycle';
 // ---------- User ----------
 export const UserSchema = z.object({
   id: z.string().uuid(),

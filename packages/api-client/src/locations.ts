@@ -39,6 +39,14 @@ export const getMyLocations = async (
 };
 
 // ---------- 25 – Location CRUD ----------
+
+/**
+ * Payload for POST /companies/{cid}/locations.
+ *
+ * timezone is optional:
+ *   - omitted / null → inherit company.default_timezone (backend stores NULL)
+ *   - IANA name      → validated and stored on the location row
+ */
 export interface CreateLocationPayload {
   location_code: string;
   location_name: string;
@@ -48,6 +56,29 @@ export interface CreateLocationPayload {
   state?: string;
   country?: string;
   pincode?: string;
+  /** IANA name, e.g. 'Asia/Kolkata'. Null → inherit company default. */
+  timezone?: string | null;
+}
+
+/**
+ * Payload for PUT /companies/{cid}/locations/{locationID}.
+ *
+ * timezone semantics:
+ *   - undefined  → preserve current tz (field omitted from JSON)
+ *   - null       → clear (revert to inheriting company default)
+ *   - IANA name  → validated and stored
+ */
+export interface UpdateLocationPayload {
+  location_code?: string;
+  location_name?: string;
+  address_line1?: string;
+  address_line2?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  pincode?: string;
+  timezone?: string | null;
+  is_active?: boolean;
 }
 
 export const listLocations = async (
@@ -120,7 +151,7 @@ export const createLocation = async (
 export const updateLocation = async (
   companyId: string,
   locationId: string,
-  payload: Partial<CreateLocationPayload> & { is_active?: boolean },
+  payload: UpdateLocationPayload,
   idempotencyKey: string
 ) => {
   const url = `/companies/${companyId}/locations/${locationId}`;

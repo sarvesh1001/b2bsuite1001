@@ -15,6 +15,7 @@ export type {
   LocationAccessScope,
   LocationAccessLevel,
 };
+
 export interface CompanyEmployee {
   user_id: string;
   company_id: string;
@@ -313,16 +314,34 @@ export interface DecryptedEmployeeDetails {
     | 'contract'
     | 'internship'
     | null;
+  /**
+   * Current lifecycle status as returned by the read projection.
+   * The union here is the read-side view (excludes 'inactive', which
+   * only appears on the write side). Kept as a literal set so consumers
+   * narrow cleanly.
+   */
   employment_status?:
     | 'active'
     | 'probation'
     | 'notice'
     | 'on_hold'
     | 'terminated'
+    | 'resigned'
     | null;
   job_title?: string | null;
   grade?: string | null;
+
+  // Cost center — FK + resolved name/code from accounting.cost_centers.
+  // `cost_center` is the legacy text column; the resolved pair lives
+  // in `cost_center_name` / `cost_center_code`.
+  cost_center_id?: string | null;
   cost_center?: string | null;
+  cost_center_name?: string | null;
+  cost_center_code?: string | null;
+
+  // Probation / confirmation windows (mirrors employee_profiles)
+  probation_end_date?: string | null;
+  confirmation_date?: string | null;
 
   // Profile — decrypted PII
   date_of_birth?: string | null;      // ISO 8601
@@ -346,11 +365,24 @@ export interface DecryptedEmployeeDetails {
 /**
  * Meta block returned alongside the search results.
  * Mirrors the shape of `meta` on other paginated endpoints.
+ *
+ * Notes:
+ *   - `status` echoes the filter that was applied; "" when no filter.
+ *   - `total` is the row count BEFORE LIMIT — use it for the
+ *     "Showing X of Y" indicator on paginated lists.
+ *   - `total_pages` is derived as ceil(total / page_size); 0 when
+ *     total is 0.
  */
 export interface EmployeeTypeaheadMeta {
   query: string;
+  /** Echo of the applied status filter; "" when none. */
+  status: string;
   page: number;
   page_size: number;
+  /** Row count BEFORE LIMIT — drives the "X of Y" bar. */
+  total: number;
+  /** ceil(total / page_size); 0 when total is 0. */
+  total_pages: number;
   return_count: number;
   ids_only: boolean;
   duration: string;   // e.g. "42.1ms"
@@ -381,6 +413,28 @@ export type EmployeeTypeaheadDetailsResponse = Omit<EmployeeTypeaheadResponse, '
 };
 
 /**
+ * Filter values accepted by the typeahead endpoint's `employment_status`
+ * query param. `''` and `'all'` are treated identically by the backend
+ * — no filter is applied. Kept as its own union so the UI's chip state
+ * and the api-client param type stay in lockstep.
+ *
+ * NOTE: this is deliberately NOT named `EmploymentStatus` to avoid a
+ * collision with the canonical lifecycle union exported elsewhere in
+ * this package. If you need a general-purpose lifecycle status union,
+ * import the existing one from its home module rather than redeclaring
+ * it here.
+ */
+export type EmploymentStatusFilter =
+  | 'active'
+  | 'probation'
+  | 'notice'
+  | 'on_hold'
+  | 'terminated'
+  | 'resigned'
+  | 'all'
+  | '';
+
+/**
  * Query params accepted by GET .../typeahead.
  * All are optional — sending none returns the recommendation feed.
  */
@@ -396,6 +450,12 @@ export interface SearchEmployeesTypeaheadParams {
    * Useful for prefetching or when the caller already has cached details.
    */
   ids_only?: boolean;
+  /**
+   * Filter results by employment_status. `''`, `'all'`, and omitted
+   * are all treated as "no filter" by the backend — safe to send
+   * unconditionally if the caller prefers.
+   */
+  employment_status?: EmploymentStatusFilter;
 }
 
 /**
@@ -422,6 +482,30 @@ export interface GetEmployeeDetailsByIDsResponse {
   };
 }
 
+// ============================================================
+// REACTIVATE EMPLOYEE
+// ------------------------------------------------------------
+// PATCH /companies/{cid}/hr/employees/user/{userId}/reactivate
+//
+// Restores a terminated or resigned employee to active. The backend
+// flips three rows in one transaction (profile status, roster
+// is_active, latest exit → 'rehired') and enqueues a leave
+// resolution job. Idempotent — calling on an already-active
+// employee returns 200 with a no-op.
+//
+// Keyed by user_id (NOT employee_profile_id) — deliberately
+// different from the sibling lifecycle routes.
+// ============================================================
+
+/**
+ * Success payload for the reactivate endpoint.
+ * Backend always returns status: 'active' on success.
+ */
+export interface ReactivateEmployeeResponse {
+  user_id: string;
+  company_id: string;
+  status: 'active';
+}
 
 // ============================================================
 // EMPLOYEE FORM OPTIONS  (single-call prefetch)

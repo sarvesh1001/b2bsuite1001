@@ -16,14 +16,15 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
-import {
-  listLocations,
-  deleteLocation,
-} from '@b2b/api-client';
+import { listLocations, deleteLocation } from '@b2b/api-client';
 import type { AccessibleLocation } from '@b2b/shared-types';
 
 import { useUserAuthStore } from '../../../store/userAuthStore';
 import { RootStackParamList } from '../../../navigation';
+
+// ── NEW: tz helpers for display ───────────────────────────
+import { describeTz, formatOffset, getOffsetMinutes } from '../../../utils/timezone';
+
 import {
   BACKGROUND_COLOR,
   CARD_BACKGROUND,
@@ -121,14 +122,30 @@ export default function LocationListScreen() {
   // =======================================================
   // RENDER
   // =======================================================
-  const renderItem = ({ item, index }: { item: AccessibleLocation; index: number }) => {
+  const renderItem = ({
+    item,
+    index,
+  }: {
+    item: AccessibleLocation;
+    index: number;
+  }) => {
     const inactive = item.is_active === false;
+
+    // ── NEW: tz display string with fallback chain.
+    //    If the location has its own tz → "Asia/Kolkata (UTC+05:30)"
+    //    If it inherits → "Inheriting company default"
+    const tzDisplay = item.timezone
+      ? `${item.timezone} (${formatOffset(getOffsetMinutes(new Date(), item.timezone))})`
+      : 'Inheriting company default';
+
     return (
       <TouchableOpacity
         activeOpacity={0.85}
         style={[styles.card, inactive && styles.cardInactive]}
         onPress={() =>
-          navigation.navigate('LocationForm', { locationId: item.location_id })
+          navigation.navigate('LocationForm', {
+            locationId: item.location_id,
+          })
         }
       >
         <View style={styles.cardAccent} />
@@ -149,13 +166,29 @@ export default function LocationListScreen() {
             {item.location_code}
           </Text>
 
+          {/* ── NEW: timezone row */}
+          <View style={styles.tzRow}>
+            <Icon name="earth" size={11} color={TEXT_SECONDARY} />
+            <Text
+              numberOfLines={1}
+              style={[
+                styles.tzText,
+                !item.timezone && styles.tzTextMuted,
+              ]}
+            >
+              {tzDisplay}
+            </Text>
+          </View>
+
           {!item.is_active && (
             <View style={styles.badgeInactive}>
               <Text style={styles.badgeInactiveText}>INACTIVE</Text>
             </View>
           )}
           {item.access_level && (
-            <Text style={styles.cardAccess}>Access: {item.access_level}</Text>
+            <Text style={styles.cardAccess}>
+              Access: {item.access_level}
+            </Text>
           )}
         </View>
 
@@ -175,25 +208,23 @@ export default function LocationListScreen() {
   };
 
   const Header = () => (
-    <>
-      <View style={styles.sectionHeader}>
-        <View>
-          <Text style={styles.sectionTitle}>Your locations</Text>
-          <Text style={styles.sectionSubtitle}>
-            {locations.length}{' '}
-            {locations.length === 1 ? 'location' : 'locations'} configured
-          </Text>
-        </View>
-
-        <TouchableOpacity
-          style={styles.addBtn}
-          onPress={() => navigation.navigate('LocationForm', {})}
-        >
-          <Icon name="plus" size={18} color="#FFFFFF" />
-          <Text style={styles.addBtnText}>Add</Text>
-        </TouchableOpacity>
+    <View style={styles.sectionHeader}>
+      <View>
+        <Text style={styles.sectionTitle}>Your locations</Text>
+        <Text style={styles.sectionSubtitle}>
+          {locations.length}{' '}
+          {locations.length === 1 ? 'location' : 'locations'} configured
+        </Text>
       </View>
-    </>
+
+      <TouchableOpacity
+        style={styles.addBtn}
+        onPress={() => navigation.navigate('LocationForm', {})}
+      >
+        <Icon name="plus" size={18} color="#FFFFFF" />
+        <Text style={styles.addBtnText}>Add</Text>
+      </TouchableOpacity>
+    </View>
   );
 
   return (
@@ -214,7 +245,11 @@ export default function LocationListScreen() {
           </TouchableOpacity>
 
           <View style={styles.headerIcon}>
-            <Icon name="map-marker-multiple-outline" size={24} color="#FFFFFF" />
+            <Icon
+              name="map-marker-multiple-outline"
+              size={24}
+              color="#FFFFFF"
+            />
           </View>
 
           <View style={styles.headerText}>
@@ -238,7 +273,10 @@ export default function LocationListScreen() {
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+            />
           }
           ListEmptyComponent={
             <View style={styles.empty}>
@@ -276,13 +314,16 @@ const styles = StyleSheet.create({
   },
   headerRow: { flexDirection: 'row', alignItems: 'center' },
   backButton: {
-    width: 40, height: 40, alignItems: 'center', justifyContent: 'center',
-    borderRadius: 11, backgroundColor: 'rgba(255,255,255,0.14)',
+    width: 40, height: 40,
+    alignItems: 'center', justifyContent: 'center',
+    borderRadius: 11,
+    backgroundColor: 'rgba(255,255,255,0.14)',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)',
   },
   headerIcon: {
-    width: 40, height: 40, marginLeft: 10, alignItems: 'center',
-    justifyContent: 'center', borderRadius: 11,
+    width: 40, height: 40, marginLeft: 10,
+    alignItems: 'center', justifyContent: 'center',
+    borderRadius: 11,
     backgroundColor: 'rgba(255,255,255,0.14)',
   },
   headerText: { marginLeft: 11, flex: 1 },
@@ -310,7 +351,7 @@ const styles = StyleSheet.create({
   addBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
 
   card: {
-    minHeight: 96, marginBottom: 11, padding: 15,
+    minHeight: 120, marginBottom: 11, padding: 15,
     flexDirection: 'row', alignItems: 'center',
     borderRadius: 15, backgroundColor: CARD_BACKGROUND,
     borderWidth: 1, borderColor: '#E5EAF1',
@@ -328,13 +369,41 @@ const styles = StyleSheet.create({
     color: '#CBD5E1', fontSize: 9, fontWeight: '800', letterSpacing: 0.5,
   },
   cardIcon: {
-    width: 51, height: 51, alignItems: 'center', justifyContent: 'center',
+    width: 51, height: 51,
+    alignItems: 'center', justifyContent: 'center',
     borderRadius: 14, backgroundColor: `${PRIMARY_COLOR}14`,
   },
   cardInfo: { flex: 1, marginLeft: 13, paddingRight: 30 },
   cardTitle: { color: TEXT_PRIMARY, fontSize: 14, fontWeight: '700' },
-  cardSub: { marginTop: 4, color: TEXT_SECONDARY, fontSize: 10, fontWeight: '500' },
-  cardAccess: { marginTop: 5, color: PRIMARY_COLOR, fontSize: 9, fontWeight: '700' },
+  cardSub: {
+    marginTop: 4, color: TEXT_SECONDARY,
+    fontSize: 10, fontWeight: '500',
+  },
+
+  // ── NEW: timezone row
+  tzRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 6,
+  },
+  tzText: {
+    color: TEXT_PRIMARY,
+    fontSize: 10,
+    fontWeight: '600',
+    fontFamily: 'Courier',
+  },
+  tzTextMuted: {
+    color: TEXT_SECONDARY,
+    fontFamily: undefined,
+    fontWeight: '500',
+    fontStyle: 'italic',
+  },
+
+  cardAccess: {
+    marginTop: 5, color: PRIMARY_COLOR,
+    fontSize: 9, fontWeight: '700',
+  },
   badgeInactive: {
     marginTop: 6, alignSelf: 'flex-start',
     paddingHorizontal: 7, paddingVertical: 2, borderRadius: 5,
@@ -343,7 +412,8 @@ const styles = StyleSheet.create({
   badgeInactiveText: { color: ERROR_COLOR, fontSize: 8, fontWeight: '800' },
   moreBtn: {
     position: 'absolute', right: 12, bottom: 12,
-    width: 30, height: 30, alignItems: 'center', justifyContent: 'center',
+    width: 30, height: 30,
+    alignItems: 'center', justifyContent: 'center',
     borderRadius: 9, backgroundColor: '#F5EFFB',
   },
 
@@ -352,7 +422,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 30,
   },
   loadingTitle: {
-    marginTop: 13, color: TEXT_PRIMARY, fontSize: 16, fontWeight: '700',
+    marginTop: 13, color: TEXT_PRIMARY,
+    fontSize: 16, fontWeight: '700',
   },
 
   empty: {
@@ -360,10 +431,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 30, paddingVertical: 60,
   },
   emptyIcon: {
-    width: 70, height: 70, alignItems: 'center', justifyContent: 'center',
+    width: 70, height: 70,
+    alignItems: 'center', justifyContent: 'center',
     borderRadius: 20, backgroundColor: `${PRIMARY_COLOR}12`,
   },
-  emptyTitle: { marginTop: 18, color: TEXT_PRIMARY, fontSize: 16, fontWeight: '700' },
+  emptyTitle: {
+    marginTop: 18, color: TEXT_PRIMARY,
+    fontSize: 16, fontWeight: '700',
+  },
   emptyText: {
     marginTop: 6, maxWidth: 300, color: TEXT_SECONDARY,
     fontSize: 11, lineHeight: 17, textAlign: 'center',

@@ -25,7 +25,7 @@ export * from './idempotency';
 export * from './users';
 export * from './hr';
 export * from './jobs';        // 👈 NEW
-
+export * from './attendance'
 // ✅ Axios instance + auth/context setters
 export {
   default as axiosInstance,

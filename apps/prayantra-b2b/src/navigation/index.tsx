@@ -1,3 +1,4 @@
+// apps/prayantra-b2b/src/navigation/index.tsx
 import React, { useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
@@ -11,17 +12,42 @@ import { navigationRef, onNavigationReady } from './navigationService';
 // Administration = security & facilities
 //   RolesList, LocationList
 //
-// HR = people + org structure + leave + contact
+// HR = people + org structure + leave + contact + REMINDERS
 //   HREmployeeList, HREmployeeForm, HREmployeeDetail, HREmployeeStats,
-//   HRDocumentList,
+//   HRDocumentList, RemindersList,
 //   JobsList, PositionsList, DepartmentsList, WorkCentersList, OrgUnitList,
-//   LeaveRequestList, LeaveBalanceScreen, PolicyConfigList, ...
+//   LeaveRequestAdminList, LeaveBalanceAdminScreen, LeaveLedger,
+//   PolicyConfigList, ...
+//
+// LEAVE — SELF vs HR SPLIT
+// ------------------------------------------------------------
+// Self-service (from MyProfileScreen → MY LEAVE section):
+//   LeaveRequestList    — shows ONLY the logged-in user's requests
+//   LeaveBalanceScreen  — shows ONLY the logged-in user's balances
+//   LeaveRequestForm    — creates requests for the logged-in user
+//
+// HR/admin (from HR module grid):
+//   LeaveRequestAdminList    — user-picker + status filter, approve/reject
+//   LeaveBalanceAdminScreen  — user-picker, read-only balance view
+//   LeaveLedgerScreen        — user-picker + filters, company-wide ledger
+//
+// LeaveDetail handles both modes via an optional `mode: 'self' | 'hr'`
+// param that gates which action buttons render.
 //
 // Payroll = payroll domain (unchanged)
 //
 // TOP-LEVEL (not in any module grid — reached from the main screen):
 //   MyProfile       — tapped from the profile chip in ModuleGridScreen header
 //   AvatarManagement — tapped from the profile chip AND from MyProfileScreen
+//
+// ============================================================
+// HR REMINDERS (NEW)
+// ------------------------------------------------------------
+// The HR inbox. Reached ONLY from the bell in the HR module header
+// (see ModuleDetailScreen). Self-gated on `hr.employee.view`, so
+// non-HR users never see it. Location-scoped server-side via the
+// X-Location-ID header — the axios interceptor attaches it
+// automatically, so the client never passes a location filter.
 // ============================================================
 
 // Auth Screens
@@ -43,6 +69,72 @@ import MyProfileScreen from '../screens/profile/MyProfileScreen';
 import ModuleGridScreen from '../screens/main/ModuleGridScreen';
 import ModuleDetailScreen from '../screens/module/ModuleDetailScreen';
 
+// ============================================================
+// ATTENDANCE MODULE (subject-scoped shared core)
+// ============================================================
+import AttendanceHomeScreen from '../screens/attendance/shared/AttendanceHomeScreen';
+import AttendanceSearchScreen from '../screens/attendance/shared/AttendanceSearchScreen';
+import AttendanceCorrectionsScreen from '../screens/attendance/shared/AttendanceCorrectionsScreen';
+import AttendanceReportsScreen from '../screens/attendance/shared/AttendanceReportsScreen';
+import AttendanceDayScreen from '../screens/attendance/shared/AttendanceDayScreen';
+import TeamAttendanceDashboardScreen from '../screens/attendance/shared/TeamAttendanceDashboardScreen';
+import TeamMemberAttendanceScreen from '../screens/attendance/shared/TeamMemberAttendanceScreen';
+
+// ============================================================
+// ATTENDANCE MODULE (self-service — reached from MyProfileScreen)
+// ============================================================
+import MyStatsScreen from '../screens/attendance/self/MyStatsScreen';
+import MyExemptionsScreen from '../screens/attendance/self/MyExemptionsScreen';
+
+// ============================================================
+// ATTENDANCE MODULE (admin / configuration)
+// ============================================================
+import AttendanceAdminHubScreen from '../screens/attendance/admin/AttendanceAdminHubScreen';
+import AttendancePoliciesListScreen from '../screens/attendance/admin/AttendancePoliciesListScreen';
+import AttendancePolicyFormScreen from '../screens/attendance/admin/AttendancePolicyFormScreen';
+import AttendancePolicyAssignScreen from '../screens/attendance/admin/AttendancePolicyAssignScreen';
+import AttendanceExemptionsListScreen from '../screens/attendance/admin/AttendanceExemptionsListScreen';
+import AttendanceExemptionFormScreen from '../screens/attendance/admin/AttendanceExemptionFormScreen';
+import AttendanceDevicesListScreen from '../screens/attendance/admin/AttendanceDevicesListScreen';
+import AttendanceDeviceDetailScreen from '../screens/attendance/admin/AttendanceDeviceDetailScreen';
+import AttendanceDeviceFormScreen from '../screens/attendance/admin/AttendanceDeviceFormScreen';
+import AttendanceDeviceEnrollmentsScreen from '../screens/attendance/admin/AttendanceDeviceEnrollmentsScreen';
+import AttendanceDeviceTokensScreen from '../screens/attendance/admin/AttendanceDeviceTokensScreen';
+import AttendanceSourcesListScreen from '../screens/attendance/admin/AttendanceSourcesListScreen';
+
+// ============================================================
+// ATTENDANCE MODULE (admin / scheduling — work calendars + shifts)
+// ============================================================
+import SchedulingHubScreen from '../screens/attendance/admin/scheduling/SchedulingHubScreen';
+import CalendarsListScreen from '../screens/attendance/admin/scheduling/CalendarsListScreen';
+import CalendarFormScreen from '../screens/attendance/admin/scheduling/CalendarFormScreen';
+import ScheduleTemplatesScreen from '../screens/attendance/admin/scheduling/ScheduleTemplatesScreen';
+import BulkGenerateScreen from '../screens/attendance/admin/scheduling/BulkGenerateScreen';
+import ScheduleInstancesScreen from '../screens/attendance/admin/scheduling/ScheduleInstancesScreen';
+import ScheduleOverridesScreen from '../screens/attendance/admin/scheduling/ScheduleOverridesScreen';
+import WorkCenterShiftMappingScreen from '../screens/attendance/admin/scheduling/WorkCenterShiftMappingScreen';
+import ScheduleStatsScreen from '../screens/attendance/admin/scheduling/ScheduleStatsScreen';
+
+// ============================================================
+// ATTENDANCE MODULE (admin / analytics + operations)
+// ============================================================
+import AttendanceResolutionScreen from '../screens/attendance/admin/AttendanceResolutionScreen';
+import AttendanceCalendarAvailabilityScreen from '../screens/attendance/admin/AttendanceCalendarAvailabilityScreen';
+import AttendanceCompanyStatsScreen from '../screens/attendance/admin/AttendanceCompanyStatsScreen';
+import AttendanceSubjectStatsScreen from '../screens/attendance/admin/AttendanceSubjectStatsScreen';
+
+// ============================================================
+// ATTENDANCE MODULE (admin / biometrics — face embeddings + sync)
+// ============================================================
+import AttendanceFaceEmbeddingsScreen from '../screens/attendance/admin/AttendanceFaceEmbeddingsScreen';
+import AttendanceBiometricSyncStatusScreen from '../screens/attendance/admin/AttendanceBiometricSyncStatusScreen';
+
+// ============================================================
+// ATTENDANCE MODULE (admin / sessions — class & session summaries)
+// ============================================================
+import SessionSummariesListScreen from '../screens/attendance/admin/sessions/SessionSummariesListScreen';
+import SessionSummaryDetailScreen from '../screens/attendance/admin/sessions/SessionSummaryDetailScreen';
+
 // Administration Module Screens
 import WorkCentersListScreen from '../screens/module/administration/WorkCentersListScreen';
 import CreateWorkCenterScreen from '../screens/module/administration/CreateWorkCenterScreen';
@@ -55,11 +147,7 @@ import CreateRoleScreen from '../screens/module/administration/CreateRoleScreen'
 import EditRoleScreen from '../screens/module/administration/EditRoleScreen';
 
 // ============================================================
-// JOB CATALOG  (NEW)
-//
-// A job is a role *definition* ("Cashier", "Line Operator"). It carries
-// no location and no work center — those live on `positions` (seats).
-// One job → many seats. 100 stores × 1 cashier = 1 job + 100 positions.
+// JOB CATALOG
 // ============================================================
 import JobsListScreen from '../screens/module/administration/JobsListScreen';
 import CreateJobScreen from '../screens/module/administration/CreateJobScreen';
@@ -87,14 +175,28 @@ import HREmployeeForm from '../screens/hr/HREmployeeForm';
 import HREmployeeStats from '../screens/hr/HREmployeeStats';
 import HRDocumentList from '../screens/hr/HRDocumentList';
 
+// HR reminders inbox
+import RemindersListScreen from '../screens/hr/RemindersListScreen';
+
 import OrgUnitList from '../screens/hr/org-unit/OrgUnitList';
 import OrgUnitForm from '../screens/hr/org-unit/OrgUnitForm';
 import OrgUnitDetail from '../screens/hr/org-unit/OrgUnitDetail';
 
+// ============================================================
+// LEAVE — SELF-SERVICE (reached from MyProfileScreen)
+// ============================================================
 import LeaveRequestList from '../screens/hr/leave/user/LeaveRequestList';
 import LeaveRequestForm from '../screens/hr/leave/user/LeaveRequestForm';
 import LeaveBalanceScreen from '../screens/hr/leave/user/LeaveBalanceScreen';
 import LeaveDetail from '../screens/hr/leave/user/LeaveDetail';
+
+// ============================================================
+// LEAVE — ADMIN (reached from HR module grid)
+// ============================================================
+import LeaveRequestAdminList from '../screens/hr/leave/admin/LeaveRequestAdminList';
+import LeaveBalanceAdminScreen from '../screens/hr/leave/admin/LeaveBalanceAdminScreen';
+// ⚠️ NEW — company-wide ledger browse (filter by user, type, date range)
+import LeaveLedgerScreen from '../screens/hr/leave/admin/LeaveLedgerScreen';
 
 import PolicyConfigList from '../screens/hr/leave/admin/PolicyConfigList';
 import PolicyConfigForm from '../screens/hr/leave/admin/PolicyConfigForm';
@@ -105,7 +207,7 @@ import EntitlementList from '../screens/hr/leave/admin/EntitlementList';
 import CreateEntitlementScreen from '../screens/hr/leave/admin/CreateEntitlementScreen';
 // ⬇️ accrual schedule now lives here, not on the leave type
 import AddPolicyRuleScreen from '../screens/hr/leave/admin/AddPolicyRuleScreen';
-// ⬇️ NEW — policy resolution cockpit + effective-policy viewer
+// ⬇️ policy resolution cockpit + effective-policy viewer
 import PolicyResolutionScreen from '../screens/hr/leave/admin/PolicyResolutionScreen';
 import UserEffectivePoliciesScreen from '../screens/hr/leave/admin/UserEffectivePoliciesScreen';
 
@@ -257,9 +359,6 @@ export type RootStackParamList = {
   OTPVerification: { phone: string; userId?: string; hasMpin?: boolean; flowState?: string };
   MPINSetup: { userId: string; phone: string; companyId: string };
 
-  // ✅ UPDATED — MPINVerification now carries an optional companies list
-  // so the screen can render an inline company picker (needed because
-  // /auth/login/verify-mpin REQUIRES company_id in the body).
   MPINVerification: {
     phone: string;
     userId: string;
@@ -298,20 +397,21 @@ export type RootStackParamList = {
   CreateRole: undefined;
   EditRole: { roleId: string };
 
-  // ===== Job catalog (NEW) =====
-  // A job is a role definition; positions are built from jobs.
+  // Job catalog
   JobsList: undefined;
   CreateJob: undefined;
   EditJob: { jobId: string };
 
-  // ===== Positions (seats) =====
+  // Positions (seats)
   PositionsList: undefined;
   CreatePosition: undefined;
   EditPosition: { positionId: string };
 
-  // ===== User self-service =====
+  // User self-service
   MyProfile: undefined;
   AvatarManagement: undefined;
+  MyAttendanceStats: undefined;
+  MyAttendanceExemptions: undefined;
 
   // Location Management
   LocationList: undefined;
@@ -324,6 +424,98 @@ export type RootStackParamList = {
   // Chat
   Chat: undefined;
 
+  // ============================================================
+  // ATTENDANCE MODULE (subject-scoped shared family)
+  // ============================================================
+  AttendanceHome: { subjectType: 'employee' | 'student' | 'customer' };
+  AttendanceSearch: { subjectType: 'employee' | 'student' | 'customer' };
+  AttendanceCorrections: { subjectType: 'employee' | 'student' | 'customer' };
+  AttendanceReports: { subjectType: 'employee' | 'student' | 'customer' };
+  AttendanceDay: {
+    subjectType: 'employee' | 'student' | 'customer';
+    subjectId: string;
+    date: string;
+    subjectName?: string;
+  };
+  TeamAttendanceDashboard: {
+    subjectType: 'employee' | 'student' | 'customer';
+  };
+  TeamMemberAttendance: {
+    subjectType: 'employee' | 'student' | 'customer';
+    subjectId: string;
+    subjectName?: string;
+  };
+
+  // ============================================================
+  // ATTENDANCE ADMIN (configuration surfaces)
+  // ============================================================
+  AttendanceAdminHub: {
+    subjectType: 'employee' | 'student' | 'customer';
+  };
+  AttendancePoliciesList: undefined;
+  AttendancePolicyForm: { policyId?: string };
+  AttendancePolicyAssign: {
+    policyId?: string;
+    subjectType?: 'employee' | 'student' | 'customer';
+    subjectId?: string;
+  };
+  AttendanceExemptionsList: undefined;
+  AttendanceExemptionForm: { exemptionId?: string };
+  AttendanceDevicesList: undefined;
+  AttendanceDeviceDetail: { deviceId: string };
+  AttendanceDeviceForm: { deviceId?: string };
+  AttendanceDeviceEnrollments: {
+    deviceId: string;
+    deviceCode?: string;
+    deviceSourceType?: string;
+  };
+  AttendanceDeviceTokens: {
+    deviceId: string;
+    deviceCode?: string;
+    deviceSourceType?: string;
+  };
+  AttendanceSourcesList: undefined;
+
+  // ============================================================
+  // ATTENDANCE SCHEDULING (work calendars + shift templates)
+  // ============================================================
+  AttendanceSchedulingHub: undefined;
+  AttendanceCalendarsList: undefined;
+  AttendanceCalendarForm: { calendarId?: string };
+  AttendanceScheduleTemplates: undefined;
+  AttendanceBulkGenerate: undefined;
+  AttendanceInstancesList: undefined;
+  AttendanceScheduleOverrides: undefined;
+  AttendanceWorkCenterShiftMapping: undefined;
+  AttendanceScheduleStats: undefined;
+
+  // ============================================================
+  // ATTENDANCE ANALYTICS + OPERATIONS
+  // ============================================================
+  AttendanceResolution: undefined;
+  AttendanceCalendarAvailability: { calendarId?: string };
+  AttendanceCompanyStats: undefined;
+  AttendanceSubjectStats: {
+    subjectType?: 'employee' | 'student' | 'customer';
+    subjectId?: string;
+  };
+
+  // ============================================================
+  // ATTENDANCE BIOMETRICS
+  // ============================================================
+  AttendanceFaceEmbeddings: undefined;
+  AttendanceBiometricSyncStatus: undefined;
+
+  // ============================================================
+  // ATTENDANCE SESSIONS
+  // ============================================================
+  AttendanceSessionSummaries: undefined;
+  AttendanceSessionSummaryDetail: {
+    sessionId: string;
+    subjectType: 'employee' | 'student' | 'customer';
+    subjectId: string;
+  };
+
   // ===== HR SCREENS =====
   HREmployeeList: undefined;
   HREmployeeDetail: {
@@ -334,18 +526,34 @@ export type RootStackParamList = {
   HREmployeeStats: undefined;
   HRDocumentList: { employeeId: string; employeeName?: string };
 
+  // HR reminders inbox (reached from HR module bell)
+  RemindersList: undefined;
+
   // Org Units
   OrgUnitList: undefined;
   OrgUnitForm: { orgUnitId?: string };
   OrgUnitDetail: { orgUnitId: string };
 
-  // Leave - User
+  // ============================================================
+  // LEAVE — SELF-SERVICE (from MyProfileScreen)
+  // ============================================================
   LeaveRequestList: undefined;
   LeaveRequestForm: { requestId?: string };
   LeaveBalanceScreen: undefined;
-  LeaveRequestDetail: { requestId: string };
 
-  // Leave - Admin
+  // Handles BOTH modes:
+  //   mode: 'self' → self-service; only Cancel is available
+  //   mode: 'hr'   → HR admin; Approve / Reject / Cancel available
+  LeaveRequestDetail: { requestId: string; mode?: 'self' | 'hr' };
+
+  // ============================================================
+  // LEAVE — ADMIN (from HR module grid)
+  // ============================================================
+  LeaveRequestAdminList: undefined;
+  LeaveBalanceAdminScreen: undefined;
+  // ⚠️ NEW — company-wide ledger browse (filters: user, type, dates)
+  LeaveLedger: undefined;
+
   PolicyConfigList: undefined;
   PolicyConfigForm: { policyId?: string };
   PolicyConfigDetail: { policyId: string };
@@ -353,10 +561,8 @@ export type RootStackParamList = {
   LeaveTypeForm: { leaveTypeId?: string };
   EntitlementList: undefined;
   CreateEntitlement: { userId?: string; leaveTypeId?: string };
-  // ⬇️ accrual + carry-forward now belong to the rule, not the type
   AddPolicyRule: { policyId: string };
 
-  // ⬇️ NEW — the two resolution surfaces
   PolicyResolution: undefined;
   UserEffectivePolicies: {
     userId: string;
@@ -365,7 +571,6 @@ export type RootStackParamList = {
   };
 
   // ===== PAYROLL SCREENS =====
-
   BankDetailsList: { userId: string; userName?: string };
   BankDetailsForm: { bankDetailId?: string; userId: string };
 
@@ -585,6 +790,210 @@ export default function Navigation() {
           options={{ headerShown: true, title: 'Module' }}
         />
 
+        {/* ============================================================
+            ATTENDANCE MODULE  (shared, subject-scoped)
+        ============================================================ */}
+        <Stack.Screen
+          name="AttendanceHome"
+          component={AttendanceHomeScreen}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name="AttendanceSearch"
+          component={AttendanceSearchScreen}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name="AttendanceCorrections"
+          component={AttendanceCorrectionsScreen}
+          options={{ headerShown: true, title: 'Corrections' }}
+        />
+        <Stack.Screen
+          name="AttendanceReports"
+          component={AttendanceReportsScreen}
+          options={{ headerShown: true, title: 'Attendance Reports' }}
+        />
+        <Stack.Screen
+          name="AttendanceDay"
+          component={AttendanceDayScreen}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name="TeamAttendanceDashboard"
+          component={TeamAttendanceDashboardScreen}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name="TeamMemberAttendance"
+          component={TeamMemberAttendanceScreen}
+          options={{ headerShown: false }}
+        />
+
+        {/* ============================================================
+            ATTENDANCE ADMIN (configuration)
+        ============================================================ */}
+        <Stack.Screen
+          name="AttendanceAdminHub"
+          component={AttendanceAdminHubScreen}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name="AttendancePoliciesList"
+          component={AttendancePoliciesListScreen}
+          options={{ headerShown: true, title: 'Attendance Policies' }}
+        />
+        <Stack.Screen
+          name="AttendancePolicyForm"
+          component={AttendancePolicyFormScreen}
+          options={{ headerShown: true, title: 'Policy' }}
+        />
+        <Stack.Screen
+          name="AttendancePolicyAssign"
+          component={AttendancePolicyAssignScreen}
+          options={{ headerShown: true, title: 'Assign Policy' }}
+        />
+        <Stack.Screen
+          name="AttendanceExemptionsList"
+          component={AttendanceExemptionsListScreen}
+          options={{ headerShown: true, title: 'Exemptions' }}
+        />
+        <Stack.Screen
+          name="AttendanceExemptionForm"
+          component={AttendanceExemptionFormScreen}
+          options={{ headerShown: true, title: 'Exemption' }}
+        />
+        <Stack.Screen
+          name="AttendanceDevicesList"
+          component={AttendanceDevicesListScreen}
+          options={{ headerShown: true, title: 'Devices' }}
+        />
+        <Stack.Screen
+          name="AttendanceDeviceDetail"
+          component={AttendanceDeviceDetailScreen}
+          options={{ headerShown: true, title: 'Device' }}
+        />
+        <Stack.Screen
+          name="AttendanceDeviceForm"
+          component={AttendanceDeviceFormScreen}
+          options={{ headerShown: true, title: 'Device' }}
+        />
+        <Stack.Screen
+          name="AttendanceDeviceEnrollments"
+          component={AttendanceDeviceEnrollmentsScreen}
+          options={{ headerShown: true, title: 'Enrollments' }}
+        />
+        <Stack.Screen
+          name="AttendanceDeviceTokens"
+          component={AttendanceDeviceTokensScreen}
+          options={{ headerShown: true, title: 'Device Tokens' }}
+        />
+        <Stack.Screen
+          name="AttendanceSourcesList"
+          component={AttendanceSourcesListScreen}
+          options={{ headerShown: true, title: 'Attendance Sources' }}
+        />
+
+        {/* ============================================================
+            ATTENDANCE SCHEDULING
+        ============================================================ */}
+        <Stack.Screen
+          name="AttendanceSchedulingHub"
+          component={SchedulingHubScreen}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name="AttendanceCalendarsList"
+          component={CalendarsListScreen}
+          options={{ headerShown: true, title: 'Work Calendars' }}
+        />
+        <Stack.Screen
+          name="AttendanceCalendarForm"
+          component={CalendarFormScreen}
+          options={{ headerShown: true, title: 'Calendar' }}
+        />
+        <Stack.Screen
+          name="AttendanceScheduleTemplates"
+          component={ScheduleTemplatesScreen}
+          options={{ headerShown: true, title: 'Shift Templates' }}
+        />
+        <Stack.Screen
+          name="AttendanceBulkGenerate"
+          component={BulkGenerateScreen}
+          options={{ headerShown: true, title: 'Generate Schedule' }}
+        />
+        <Stack.Screen
+          name="AttendanceInstancesList"
+          component={ScheduleInstancesScreen}
+          options={{ headerShown: true, title: 'Schedule Instances' }}
+        />
+        <Stack.Screen
+          name="AttendanceScheduleOverrides"
+          component={ScheduleOverridesScreen}
+          options={{ headerShown: true, title: 'Overrides' }}
+        />
+        <Stack.Screen
+          name="AttendanceWorkCenterShiftMapping"
+          component={WorkCenterShiftMappingScreen}
+          options={{ headerShown: true, title: 'Work Center Shifts' }}
+        />
+        <Stack.Screen
+          name="AttendanceScheduleStats"
+          component={ScheduleStatsScreen}
+          options={{ headerShown: true, title: 'Schedule Stats' }}
+        />
+
+        {/* ============================================================
+            ATTENDANCE ANALYTICS + OPERATIONS
+        ============================================================ */}
+        <Stack.Screen
+          name="AttendanceResolution"
+          component={AttendanceResolutionScreen}
+          options={{ headerShown: true, title: 'Resolution' }}
+        />
+        <Stack.Screen
+          name="AttendanceCalendarAvailability"
+          component={AttendanceCalendarAvailabilityScreen}
+          options={{ headerShown: true, title: 'Calendar Availability' }}
+        />
+        <Stack.Screen
+          name="AttendanceCompanyStats"
+          component={AttendanceCompanyStatsScreen}
+          options={{ headerShown: true, title: 'Company Stats' }}
+        />
+        <Stack.Screen
+          name="AttendanceSubjectStats"
+          component={AttendanceSubjectStatsScreen}
+          options={{ headerShown: true, title: 'Subject Stats' }}
+        />
+
+        {/* ============================================================
+            ATTENDANCE BIOMETRICS
+        ============================================================ */}
+        <Stack.Screen
+          name="AttendanceFaceEmbeddings"
+          component={AttendanceFaceEmbeddingsScreen}
+          options={{ headerShown: true, title: 'Face Embeddings' }}
+        />
+        <Stack.Screen
+          name="AttendanceBiometricSyncStatus"
+          component={AttendanceBiometricSyncStatusScreen}
+          options={{ headerShown: true, title: 'Biometric Sync Status' }}
+        />
+
+        {/* ============================================================
+            ATTENDANCE SESSIONS
+        ============================================================ */}
+        <Stack.Screen
+          name="AttendanceSessionSummaries"
+          component={SessionSummariesListScreen}
+          options={{ headerShown: true, title: 'Session Summaries' }}
+        />
+        <Stack.Screen
+          name="AttendanceSessionSummaryDetail"
+          component={SessionSummaryDetailScreen}
+          options={{ headerShown: true, title: 'Session Detail' }}
+        />
+
         {/* ===== Administration Module Screens ===== */}
         <Stack.Screen name="WorkCentersList" component={WorkCentersListScreen} options={{ headerShown: true, title: 'Work Centers' }} />
         <Stack.Screen name="CreateWorkCenter" component={CreateWorkCenterScreen} options={{ headerShown: true, title: 'New Work Center' }} />
@@ -615,6 +1024,16 @@ export default function Navigation() {
           options={{ headerShown: false }}
         />
         <Stack.Screen name="AvatarManagement" component={AvatarManagementScreen} options={{ headerShown: true, title: 'My Avatars' }} />
+        <Stack.Screen
+          name="MyAttendanceStats"
+          component={MyStatsScreen}
+          options={{ headerShown: true, title: 'My Attendance Stats' }}
+        />
+        <Stack.Screen
+          name="MyAttendanceExemptions"
+          component={MyExemptionsScreen}
+          options={{ headerShown: true, title: 'My Exemptions' }}
+        />
 
         {/* Location Management */}
         <Stack.Screen name="LocationList" component={LocationListScreen} options={{ headerShown: true, title: 'Locations' }} />
@@ -633,14 +1052,60 @@ export default function Navigation() {
         <Stack.Screen name="HREmployeeStats" component={HREmployeeStats} options={{ headerShown: true, title: 'HR Statistics' }} />
         <Stack.Screen name="HRDocumentList" component={HRDocumentList} options={{ headerShown: true, title: 'Documents' }} />
 
+        {/* HR reminders inbox (from HR module bell) */}
+        <Stack.Screen
+          name="RemindersList"
+          component={RemindersListScreen}
+          options={{ headerShown: false }}
+        />
+
         <Stack.Screen name="OrgUnitList" component={OrgUnitList} options={{ headerShown: true, title: 'Org Units' }} />
         <Stack.Screen name="OrgUnitForm" component={OrgUnitForm} options={{ headerShown: true, title: 'Org Unit Form' }} />
         <Stack.Screen name="OrgUnitDetail" component={OrgUnitDetail} options={{ headerShown: true, title: 'Org Unit Detail' }} />
 
-        <Stack.Screen name="LeaveRequestList" component={LeaveRequestList} options={{ headerShown: true, title: 'Leave Requests' }} />
-        <Stack.Screen name="LeaveRequestForm" component={LeaveRequestForm} options={{ headerShown: true, title: 'Leave Request' }} />
-        <Stack.Screen name="LeaveBalanceScreen" component={LeaveBalanceScreen} options={{ headerShown: true, title: 'Leave Balance' }} />
-        <Stack.Screen name="LeaveRequestDetail" component={LeaveDetail} options={{ headerShown: true, title: 'Leave Request Detail' }} />
+        {/* ============================================================
+            LEAVE — SELF-SERVICE (from MyProfileScreen)
+        ============================================================ */}
+        <Stack.Screen
+          name="LeaveRequestList"
+          component={LeaveRequestList}
+          options={{ headerShown: true, title: 'My Leave Requests' }}
+        />
+        <Stack.Screen
+          name="LeaveRequestForm"
+          component={LeaveRequestForm}
+          options={{ headerShown: true, title: 'Leave Request' }}
+        />
+        <Stack.Screen
+          name="LeaveBalanceScreen"
+          component={LeaveBalanceScreen}
+          options={{ headerShown: true, title: 'Leave Balance' }}
+        />
+        <Stack.Screen
+          name="LeaveRequestDetail"
+          component={LeaveDetail}
+          options={{ headerShown: true, title: 'Leave Request Detail' }}
+        />
+
+        {/* ============================================================
+            LEAVE — ADMIN (from HR module grid)
+        ============================================================ */}
+        <Stack.Screen
+          name="LeaveRequestAdminList"
+          component={LeaveRequestAdminList}
+          options={{ headerShown: true, title: 'Leave Requests' }}
+        />
+        <Stack.Screen
+          name="LeaveBalanceAdminScreen"
+          component={LeaveBalanceAdminScreen}
+          options={{ headerShown: true, title: 'Leave Balance' }}
+        />
+        {/* ⚠️ NEW — company-wide ledger browse */}
+        <Stack.Screen
+          name="LeaveLedger"
+          component={LeaveLedgerScreen}
+          options={{ headerShown: false }}
+        />
 
         <Stack.Screen name="PolicyConfigList" component={PolicyConfigList} options={{ headerShown: true, title: 'Leave Policies' }} />
         <Stack.Screen name="PolicyConfigForm" component={PolicyConfigForm} options={{ headerShown: true, title: 'Leave Policy' }} />
@@ -649,10 +1114,8 @@ export default function Navigation() {
         <Stack.Screen name="LeaveTypeForm" component={LeaveTypeForm} options={{ headerShown: true, title: 'Leave Type' }} />
         <Stack.Screen name="EntitlementList" component={EntitlementList} options={{ headerShown: true, title: 'Entitlements' }} />
         <Stack.Screen name="CreateEntitlement" component={CreateEntitlementScreen} options={{ headerShown: true, title: 'Create Entitlement' }} />
-        {/* ⬇️ the ONLY place accrual_method + carry_forward_limit are set */}
         <Stack.Screen name="AddPolicyRule" component={AddPolicyRuleScreen} options={{ headerShown: true, title: 'Add Policy Rule' }} />
 
-        {/* ⬇️ NEW — resolution cockpit + effective-policy viewer */}
         <Stack.Screen
           name="PolicyResolution"
           component={PolicyResolutionScreen}

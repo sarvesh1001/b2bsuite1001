@@ -69,6 +69,11 @@ import {
   useUserAuthStore,
 } from '../../../store/userAuthStore';
 
+// ── NEW: shared tz picker + helpers ───────────────────────
+import { TimeZonePicker } from '../../../components/TimeZonePicker';
+import { isSupportedTimezone } from '../../../utils/timezone';
+import { DEFAULT_COMPANY_TIMEZONE } from '../../../constants/timezones';
+
 import {
   BACKGROUND_COLOR,
   CARD_BACKGROUND,
@@ -89,16 +94,7 @@ import {
 
 const ALL_LOCATIONS_SENTINEL = 'ALL';
 
-const TIMEZONES = [
-  'Asia/Kolkata',
-  'America/New_York',
-  'America/Los_Angeles',
-  'Europe/London',
-  'Europe/Paris',
-  'Australia/Sydney',
-  'Asia/Singapore',
-  'Asia/Dubai',
-];
+// ── REMOVED: local TIMEZONES list. Now lives in constants/timezones.ts.
 
 // =========================================================
 // VALIDATION
@@ -146,7 +142,6 @@ export default function CreateWorkCenterScreen() {
     accessToken,
     deviceId,
     companyId,
-    // ✅ reactive location context — no sync getter needed
     locationId: activeLocationId,
     accessibleLocations,
   } = useUserAuthStore();
@@ -158,8 +153,6 @@ export default function CreateWorkCenterScreen() {
   const allLocationsMode =
     activeLocationId === ALL_LOCATIONS_SENTINEL;
 
-  // The currently-active location, looked up from the store.
-  // In specific-location mode this is what gets used verbatim.
   const currentLocation = useMemo(
     () =>
       accessibleLocations.find(
@@ -168,12 +161,8 @@ export default function CreateWorkCenterScreen() {
     [accessibleLocations, activeLocationId]
   );
 
-  // =======================================================
-  // STATE — TIMEZONE
-  // =======================================================
-
-  const [modalVisible, setModalVisible] = useState(false);
-  const [timezoneSearch, setTimezoneSearch] = useState('');
+  // ── REMOVED: tz modal state (modalVisible, timezoneSearch).
+  //    The shared TimeZonePicker manages its own modal.
 
   // =======================================================
   // STATE — LOCATION (only used in ALL mode)
@@ -203,15 +192,14 @@ export default function CreateWorkCenterScreen() {
     resolver: zodResolver(schema),
 
     defaultValues: {
-      // ✅ Specific mode: force the active location.
-      //    ALL mode: empty — user must pick from the modal.
       location_id: allLocationsMode
         ? ''
         : (activeLocationId ?? ''),
       work_center_code: '',
       name: '',
       description: '',
-      timezone: 'Asia/Kolkata',
+      // ── NEW: default to company-preferred tz.
+      timezone: DEFAULT_COMPANY_TIMEZONE,
       is_active: true,
     },
   });
@@ -220,8 +208,6 @@ export default function CreateWorkCenterScreen() {
   const selectedLocationId = watch('location_id');
   const isActive = watch('is_active');
 
-  // Keep the form's location locked to the active location in
-  // specific mode, even if something tries to change it.
   useEffect(() => {
     if (
       !allLocationsMode &&
@@ -245,7 +231,6 @@ export default function CreateWorkCenterScreen() {
 
   useEffect(() => {
     if (!allLocationsMode || !companyId) {
-      // Specific mode: nothing to fetch, form is already locked.
       return;
     }
 
@@ -257,19 +242,12 @@ export default function CreateWorkCenterScreen() {
         const res = await getMyLocations(companyId);
         const items: AccessibleLocation[] = res?.locations ?? [];
 
-        // Only writable locations in SELECTED scope
         const writable =
-          res?.location_scope === 'SELECTED'
-            ? items.filter(
-                (l) =>
-                  l.access_level === 'MANAGE' ||
-                  l.access_level === 'ADMIN'
-              )
-            : items;
-
+        res?.location_scope === 'SELECTED'
+          ? items.filter((l) => l.access_level === 'MANAGE')
+          : items;
         setLocations(writable);
 
-        // Auto-select if only one option
         if (writable.length === 1) {
           setValue('location_id', writable[0].location_id, {
             shouldValidate: true,
@@ -290,17 +268,7 @@ export default function CreateWorkCenterScreen() {
     fetchLocations();
   }, [allLocationsMode, companyId, setValue]);
 
-  // =======================================================
-  // FILTER TIMEZONES
-  // =======================================================
-
-  const filteredTimezones = useMemo(() => {
-    const query = timezoneSearch.trim().toLowerCase();
-    if (!query) return TIMEZONES;
-    return TIMEZONES.filter((tz) =>
-      tz.toLowerCase().includes(query)
-    );
-  }, [timezoneSearch]);
+  // ── REMOVED: filteredTimezones memo. Handled inside TimeZonePicker.
 
   // =======================================================
   // FILTER LOCATIONS (ALL mode only)
@@ -330,9 +298,21 @@ export default function CreateWorkCenterScreen() {
       return;
     }
 
-    // Lock the target location:
-    //  - specific mode  → active location from the store
-    //  - ALL mode       → the one the user picked
+    // ── NEW: fail fast if the tz isn't a valid IANA name.
+    //    Belt-and-suspenders — the picker only offers valid options,
+    //    but this catches stale state or programmatic setValue.
+    if (!data.timezone.trim()) {
+      Alert.alert('Timezone Required', 'Please select a timezone.');
+      return;
+    }
+    if (!isSupportedTimezone(data.timezone)) {
+      Alert.alert(
+        'Invalid Timezone',
+        `'${data.timezone}' is not a valid IANA timezone.`
+      );
+      return;
+    }
+
     const targetLocationId = allLocationsMode
       ? data.location_id
       : activeLocationId;
@@ -361,7 +341,6 @@ export default function CreateWorkCenterScreen() {
           is_active: data.is_active,
         },
         accessToken,
-        // Force X-Location-ID to match the target location
         targetLocationId
       );
 
@@ -386,24 +365,8 @@ export default function CreateWorkCenterScreen() {
     }
   };
 
-  // =======================================================
-  // TIMEZONE HANDLERS
-  // =======================================================
-
-  const openTimezoneModal = () => {
-    setTimezoneSearch('');
-    setModalVisible(true);
-  };
-
-  const closeTimezoneModal = () => {
-    setTimezoneSearch('');
-    setModalVisible(false);
-  };
-
-  const selectTimezone = (timezone: string) => {
-    setValue('timezone', timezone, { shouldValidate: true });
-    closeTimezoneModal();
-  };
+  // ── REMOVED: openTimezoneModal, closeTimezoneModal, selectTimezone.
+  //    TimeZonePicker owns its own modal lifecycle.
 
   // =======================================================
   // LOCATION HANDLERS (ALL mode only)
@@ -449,10 +412,6 @@ export default function CreateWorkCenterScreen() {
           Platform.OS === 'ios' ? 'padding' : undefined
         }
       >
-        {/* =================================================
-            HEADER
-        ================================================= */}
-
         <LinearGradient
           colors={GRADIENT_COLORS}
           start={GRADIENT_START}
@@ -523,19 +482,11 @@ export default function CreateWorkCenterScreen() {
           </View>
         </LinearGradient>
 
-        {/* =================================================
-            CONTENT
-        ================================================= */}
-
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* =================================================
-              ALL-MODE BANNER
-          ================================================= */}
-
           {allLocationsMode && (
             <View style={styles.allModeBanner}>
               <Icon
@@ -553,10 +504,6 @@ export default function CreateWorkCenterScreen() {
               </Text>
             </View>
           )}
-
-          {/* =================================================
-              INTRO
-          ================================================= */}
 
           <View style={styles.introSection}>
             <View style={styles.introIcon}>
@@ -577,12 +524,7 @@ export default function CreateWorkCenterScreen() {
             </View>
           </View>
 
-          {/* =================================================
-              LOCATION
-              ------------------------------------------------
-              • Specific mode  → read-only info card
-              • ALL mode       → interactive picker
-          ================================================= */}
+          {/* ---------- LOCATION ---------- */}
 
           <View style={styles.formCard}>
             <View style={styles.sectionHeading}>
@@ -611,7 +553,6 @@ export default function CreateWorkCenterScreen() {
             </View>
 
             {allLocationsMode ? (
-              /* ------------ INTERACTIVE PICKER ------------- */
               <View style={styles.fieldContainer}>
                 <Text style={styles.fieldLabel}>
                   Location
@@ -712,7 +653,6 @@ export default function CreateWorkCenterScreen() {
                 />
               </View>
             ) : (
-              /* ------------ READ-ONLY INFO CARD ------------ */
               <View style={styles.lockedLocationCard}>
                 <View style={styles.lockedLocationIcon}>
                   <Icon
@@ -755,9 +695,7 @@ export default function CreateWorkCenterScreen() {
             )}
           </View>
 
-          {/* =================================================
-              BASIC INFORMATION
-          ================================================= */}
+          {/* ---------- BASIC INFORMATION ---------- */}
 
           <View style={styles.formCard}>
             <View style={styles.sectionHeading}>
@@ -783,7 +721,6 @@ export default function CreateWorkCenterScreen() {
               </View>
             </View>
 
-            {/* WORK CENTER CODE */}
             <View style={styles.fieldContainer}>
               <Text style={styles.fieldLabel}>
                 Work Center Code
@@ -842,7 +779,6 @@ export default function CreateWorkCenterScreen() {
               )}
             </View>
 
-            {/* NAME */}
             <View style={styles.fieldContainer}>
               <Text style={styles.fieldLabel}>
                 Work Center Name
@@ -900,7 +836,6 @@ export default function CreateWorkCenterScreen() {
               )}
             </View>
 
-            {/* DESCRIPTION */}
             <View style={styles.fieldContainer}>
               <Text style={styles.fieldLabel}>
                 Description
@@ -943,9 +878,7 @@ export default function CreateWorkCenterScreen() {
             </View>
           </View>
 
-          {/* =================================================
-              REGIONAL SETTINGS
-          ================================================= */}
+          {/* ---------- REGIONAL SETTINGS ---------- */}
 
           <View style={styles.formCard}>
             <View style={styles.sectionHeading}>
@@ -971,57 +904,20 @@ export default function CreateWorkCenterScreen() {
               </View>
             </View>
 
+            {/* ── NEW: shared TimeZonePicker replaces the inline modal. */}
             <View style={styles.fieldContainer}>
-              <Text style={styles.fieldLabel}>
-                Timezone
-                <Text style={styles.required}> *</Text>
-              </Text>
-
-              <TouchableOpacity
-                style={[
-                  styles.selectButton,
-                  errors.timezone &&
-                    styles.selectButtonError,
-                ]}
-                onPress={openTimezoneModal}
-                activeOpacity={0.8}
-              >
-                <View style={styles.selectLeft}>
-                  <View
-                    style={[
-                      styles.selectIcon,
-                      {
-                        backgroundColor:
-                          `${PRIMARY_COLOR}10`,
-                      },
-                    ]}
-                  >
-                    <Icon
-                      name="earth"
-                      size={19}
-                      color={PRIMARY_COLOR}
-                    />
-                  </View>
-                  <View
-                    style={styles.selectTextContainer}
-                  >
-                    <Text
-                      style={styles.selectValue}
-                      numberOfLines={1}
-                    >
-                      {selectedTimezone}
-                    </Text>
-                    <Text style={styles.selectHint}>
-                      Tap to change timezone
-                    </Text>
-                  </View>
-                </View>
-                <Icon
-                  name="chevron-down"
-                  size={22}
-                  color={TEXT_SECONDARY}
-                />
-              </TouchableOpacity>
+              <Controller
+                control={control}
+                name="timezone"
+                render={({ field: { value, onChange } }) => (
+                  <TimeZonePicker
+                    label="Timezone *"
+                    hint="Punches recorded at this work center use this timezone."
+                    value={value}
+                    onChange={onChange}
+                  />
+                )}
+              />
 
               {errors.timezone && (
                 <View style={styles.errorRow}>
@@ -1038,9 +934,7 @@ export default function CreateWorkCenterScreen() {
             </View>
           </View>
 
-          {/* =================================================
-              STATUS
-          ================================================= */}
+          {/* ---------- STATUS ---------- */}
 
           <View style={styles.statusCard}>
             <View
@@ -1097,10 +991,6 @@ export default function CreateWorkCenterScreen() {
             />
           </View>
 
-          {/* =================================================
-              REQUIRED NOTE
-          ================================================= */}
-
           <View style={styles.requiredNote}>
             <Icon
               name="information-outline"
@@ -1111,10 +1001,6 @@ export default function CreateWorkCenterScreen() {
               Fields marked with * are required.
             </Text>
           </View>
-
-          {/* =================================================
-              CREATE BUTTON
-          ================================================= */}
 
           <TouchableOpacity
             onPress={handleSubmit(onSubmit)}
@@ -1176,9 +1062,7 @@ export default function CreateWorkCenterScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* =====================================================
-          LOCATION MODAL (rendered only in ALL mode)
-      ===================================================== */}
+      {/* ---------- LOCATION MODAL (ALL mode only) ---------- */}
 
       {allLocationsMode && (
         <Modal
@@ -1375,181 +1259,14 @@ export default function CreateWorkCenterScreen() {
         </Modal>
       )}
 
-      {/* =====================================================
-          TIMEZONE MODAL
-      ===================================================== */}
-
-      <Modal
-        visible={modalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={closeTimezoneModal}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHandle} />
-
-            <View style={styles.modalHeader}>
-              <View>
-                <Text style={styles.modalEyebrow}>
-                  REGIONAL SETTINGS
-                </Text>
-                <Text style={styles.modalTitle}>
-                  Select Timezone
-                </Text>
-              </View>
-              <TouchableOpacity
-                style={styles.modalClose}
-                onPress={closeTimezoneModal}
-                activeOpacity={0.8}
-              >
-                <Icon
-                  name="close"
-                  size={20}
-                  color={TEXT_SECONDARY}
-                />
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.timezoneSearch}>
-              <Icon
-                name="magnify"
-                size={20}
-                color="#94A3B8"
-              />
-              <TextInput
-                value={timezoneSearch}
-                onChangeText={setTimezoneSearch}
-                placeholder="Search timezone"
-                placeholderTextColor="#94A3B8"
-                style={styles.timezoneSearchInput}
-                underlineColor="transparent"
-                activeUnderlineColor="transparent"
-              />
-              {timezoneSearch.length > 0 && (
-                <TouchableOpacity
-                  onPress={() => setTimezoneSearch('')}
-                >
-                  <Icon
-                    name="close-circle"
-                    size={18}
-                    color="#94A3B8"
-                  />
-                </TouchableOpacity>
-              )}
-            </View>
-
-            <View style={styles.currentTimezone}>
-              <View
-                style={[
-                  styles.currentTimezoneIcon,
-                  {
-                    backgroundColor:
-                      `${PRIMARY_COLOR}12`,
-                  },
-                ]}
-              >
-                <Icon
-                  name="check-circle"
-                  size={18}
-                  color={PRIMARY_COLOR}
-                />
-              </View>
-              <View style={styles.currentTimezoneText}>
-                <Text
-                  style={styles.currentTimezoneLabel}
-                >
-                  Current selection
-                </Text>
-                <Text
-                  style={styles.currentTimezoneValue}
-                >
-                  {selectedTimezone}
-                </Text>
-              </View>
-            </View>
-
-            <FlatList
-              data={filteredTimezones}
-              keyExtractor={(item) => item}
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.timezoneList}
-              keyboardShouldPersistTaps="handled"
-              renderItem={({ item }) => {
-                const selected = selectedTimezone === item;
-                return (
-                  <TouchableOpacity
-                    style={[
-                      styles.timezoneItem,
-                      selected &&
-                        styles.timezoneItemSelected,
-                    ]}
-                    onPress={() => selectTimezone(item)}
-                    activeOpacity={0.8}
-                  >
-                    <View
-                      style={[
-                        styles.timezoneItemIcon,
-                        selected && {
-                          backgroundColor:
-                            `${PRIMARY_COLOR}12`,
-                        },
-                      ]}
-                    >
-                      <Icon
-                        name="earth"
-                        size={18}
-                        color={
-                          selected
-                            ? PRIMARY_COLOR
-                            : '#94A3B8'
-                        }
-                      />
-                    </View>
-                    <Text
-                      style={[
-                        styles.timezoneItemText,
-                        selected &&
-                          styles.timezoneItemTextSelected,
-                      ]}
-                    >
-                      {item}
-                    </Text>
-                    {selected && (
-                      <Icon
-                        name="check-circle"
-                        size={20}
-                        color={PRIMARY_COLOR}
-                      />
-                    )}
-                  </TouchableOpacity>
-                );
-              }}
-              ListEmptyComponent={
-                <View style={styles.noTimezone}>
-                  <Icon
-                    name="earth-off"
-                    size={30}
-                    color="#CBD5E1"
-                  />
-                  <Text style={styles.noTimezoneTitle}>
-                    No timezone found
-                  </Text>
-                  <Text style={styles.noTimezoneText}>
-                    Try a different search.
-                  </Text>
-                </View>
-              }
-            />
-          </View>
-        </View>
-      </Modal>
+      {/* ── REMOVED: inline timezone <Modal> block. */}
+      {/*    TimeZonePicker owns its own modal now. */}
     </SafeAreaView>
   );
 }
 
 // =========================================================
-// STYLES
+// STYLES — unchanged (location modal still uses tz-* styles)
 // =========================================================
 
 const styles = StyleSheet.create({
@@ -1560,7 +1277,6 @@ const styles = StyleSheet.create({
 
   flex: { flex: 1 },
 
-  // HEADER
   header: {
     paddingHorizontal: 20,
     paddingTop: 11,
@@ -1759,7 +1475,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  // READ-ONLY LOCKED LOCATION CARD
   lockedLocationCard: {
     marginTop: 17,
     flexDirection: 'row',
@@ -1809,7 +1524,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
 
-  // SELECT
   selectButton: {
     minHeight: 62,
     flexDirection: 'row',
@@ -1847,7 +1561,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  // STATUS
   statusCard: {
     minHeight: 82,
     padding: 14,
@@ -1928,7 +1641,6 @@ const styles = StyleSheet.create({
   },
   bottomSpace: { height: 30 },
 
-  // MODAL
   modalOverlay: {
     flex: 1,
     justifyContent: 'flex-end',

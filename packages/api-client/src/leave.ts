@@ -555,7 +555,12 @@ export const listLeaveRequests = async (
   companyId: string,
   deviceId: string,
   accessToken: string,
-  params?: { status?: string; start_date?: string; end_date?: string },
+  params?: {
+    user_id?: string;        // ⚠️ NEW — HR filter by user
+    status?: string;
+    start_date?: string;
+    end_date?: string;
+  },
 ): Promise<LeaveRequestsListData> => {
   const url = `/companies/${companyId}/leave/requests`;
   const res = await axiosInstance.get<Envelope<LeaveRequestsListData>>(url, {
@@ -571,7 +576,6 @@ export const listLeaveRequests = async (
     status: raw?.status ?? '',
   };
 };
-
 export const getLeaveRequest = async (
   companyId: string,
   requestId: string,
@@ -909,4 +913,62 @@ export const resolvePositionChange = async (
     },
   );
   return { message: (res as any)?.message ?? 'Position change resolved' };
+};
+
+
+export interface LedgerBrowseParams {
+  user_id?: string;
+  leave_type_id?: string;
+  entitlement_id?: string;
+  leave_request_id?: string;
+  entry_type?: string | string[];
+  from_date?: string;
+  to_date?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface LeaveLedgerEntry {
+  ledger_id: string;
+  entitlement_id: string;
+  company_id: string;
+  user_id: string;
+  user_full_name?: string;
+  user_username?: string;
+  leave_type_id: string;
+  leave_type_code: string;
+  leave_type_name: string;
+  entry_type: string;
+  days: number;
+  entry_date: string;
+  leave_request_id?: string | null;
+  created_at: string;
+}
+
+export interface LeaveLedgerBrowseData {
+  entries: LeaveLedgerEntry[];
+  pagination: { page: number; page_size: number; total: number; total_pages: number };
+}
+
+export const listCompanyLeaveLedger = async (
+  companyId: string,
+  deviceId: string,
+  accessToken: string,
+  params: LedgerBrowseParams = {},
+): Promise<LeaveLedgerBrowseData> => {
+  const url = `/companies/${companyId}/leave/query/ledger`;
+  const res = await axiosInstance.get<Envelope<LeaveLedgerBrowseData>>(url, {
+    headers: getBaseHeaders(companyId, deviceId, accessToken),
+    params,
+  });
+  const raw = res.data?.data;
+  return {
+    entries: arr(raw?.entries),
+    pagination: {
+      page: raw?.pagination?.page ?? 1,
+      page_size: raw?.pagination?.page_size ?? 50,
+      total: raw?.pagination?.total ?? 0,
+      total_pages: raw?.pagination?.total_pages ?? 0,
+    },
+  };
 };

@@ -18,6 +18,7 @@ import DateTimePickerModal from 'react-native-modal-datetime-picker';
 import { useUserAuthStore } from '../../../../store/userAuthStore';
 import { createEntitlement, listLeaveTypes } from '@b2b/api-client';
 import { LeaveType } from '@b2b/shared-types';
+import UserSearchModal, { PickedUser } from '../../../../components/UserSearchModal';
 import {
   BACKGROUND_COLOR,
   CARD_BACKGROUND,
@@ -36,7 +37,10 @@ export default function CreateEntitlementScreen() {
   const navigation = useNavigation<NavigationProps>();
   const { accessToken, deviceId, companyId } = useUserAuthStore();
 
-  const [userId, setUserId] = useState('');
+  // Selected user (replaces the raw user-id text input)
+  const [selectedUser, setSelectedUser] = useState<PickedUser | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
   const [leaveTypeId, setLeaveTypeId] = useState('');
   const [totalDays, setTotalDays] = useState('');
   const [effectiveFrom, setEffectiveFrom] = useState(new Date());
@@ -53,7 +57,6 @@ export default function CreateEntitlementScreen() {
       if (!accessToken || !companyId || !deviceId) return;
       setLoadingTypes(true);
       try {
-        // ⚠️ Now returns LeaveTypesListData — not an array
         const data = await listLeaveTypes(companyId, deviceId, accessToken);
         setLeaveTypes(data.leave_types);
       } catch (error: any) {
@@ -67,8 +70,20 @@ export default function CreateEntitlementScreen() {
 
   const selectedType = leaveTypes.find(t => t.leave_type_id === leaveTypeId);
 
+  const handlePickUser = (user: PickedUser) => {
+    setSelectedUser(user);
+    setPickerOpen(false);
+  };
+
+  const clearSelectedUser = () => {
+    setSelectedUser(null);
+  };
+
   const handleSubmit = async () => {
-    if (!userId.trim()) { Alert.alert('Error', 'User ID is required'); return; }
+    if (!selectedUser?.user_id) {
+      Alert.alert('Error', 'Please select a user');
+      return;
+    }
     if (!leaveTypeId) { Alert.alert('Error', 'Leave type is required'); return; }
     if (!totalDays || isNaN(Number(totalDays)) || Number(totalDays) <= 0) {
       Alert.alert('Error', 'Total days must be a positive number');
@@ -82,10 +97,10 @@ export default function CreateEntitlementScreen() {
     setLoading(true);
     try {
       await createEntitlement(companyId, deviceId, accessToken, {
-        user_id: userId.trim(),
+        user_id: selectedUser.user_id,
         leave_type_id: leaveTypeId,
         total_days: Number(totalDays),
-        // ⚠️ Backend expects DATE (YYYY-MM-DD), not RFC3339
+        // Backend expects DATE (YYYY-MM-DD), not RFC3339
         effective_from: toDateOnly(effectiveFrom),
         effective_to: effectiveTo ? toDateOnly(effectiveTo) : null,
       });
@@ -110,13 +125,46 @@ export default function CreateEntitlementScreen() {
 
       <ScrollView contentContainerStyle={styles.formContainer}>
         <View style={styles.card}>
-          <Text style={styles.label}>User ID</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Enter user ID"
-            value={userId}
-            onChangeText={setUserId}
-          />
+          {/* ── User picker (matches EntitlementList UX) ── */}
+          <Text style={styles.label}>User</Text>
+          <TouchableOpacity
+            style={styles.pickerTrigger}
+            onPress={() => setPickerOpen(true)}
+            activeOpacity={0.7}
+          >
+            <Icon
+              name={selectedUser ? 'account-check' : 'account-search'}
+              size={20}
+              color={selectedUser ? PRIMARY_COLOR : TEXT_SECONDARY}
+            />
+            <Text
+              style={[
+                styles.pickerTriggerText,
+                selectedUser && styles.pickerTriggerTextActive,
+              ]}
+              numberOfLines={1}
+            >
+              {selectedUser
+                ? selectedUser.full_name ||
+                  selectedUser.username ||
+                  selectedUser.user_id
+                : 'Search user…'}
+            </Text>
+            {selectedUser ? (
+              <TouchableOpacity onPress={clearSelectedUser} style={styles.clearBtn}>
+                <Icon name="close-circle" size={18} color={TEXT_SECONDARY} />
+              </TouchableOpacity>
+            ) : (
+              <Icon name="chevron-right" size={18} color={TEXT_SECONDARY} />
+            )}
+          </TouchableOpacity>
+
+          {/* Show the @username beneath when a full name is present */}
+          {selectedUser?.full_name && selectedUser?.username ? (
+            <Text style={styles.userSub} numberOfLines={1}>
+              @{selectedUser.username}
+            </Text>
+          ) : null}
 
           <Text style={styles.label}>Leave Type</Text>
           <TouchableOpacity
@@ -200,6 +248,14 @@ export default function CreateEntitlementScreen() {
         </TouchableOpacity>
       </ScrollView>
 
+      {/* ── User picker modal — same component used in EntitlementList ── */}
+      <UserSearchModal
+        visible={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onSelect={handlePickUser}
+        title="Select user"
+      />
+
       <DateTimePickerModal
         isVisible={showFromPicker}
         mode="date"
@@ -244,4 +300,33 @@ const styles = StyleSheet.create({
   submitButton: { backgroundColor: PRIMARY_COLOR, paddingVertical: 14, borderRadius: 10, alignItems: 'center', marginTop: 20 },
   disabledButton: { opacity: 0.6 },
   submitText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+
+  // ── User picker trigger (mirrors EntitlementList styles) ──
+  pickerTrigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: BORDER_COLOR,
+    paddingHorizontal: 12,
+    height: 44,
+    gap: 8,
+  },
+  pickerTriggerText: {
+    flex: 1,
+    fontSize: 14,
+    color: TEXT_SECONDARY,
+  },
+  pickerTriggerTextActive: {
+    color: TEXT_PRIMARY,
+    fontWeight: '600',
+  },
+  clearBtn: { padding: 2 },
+  userSub: {
+    fontSize: 12,
+    color: TEXT_SECONDARY,
+    marginTop: 4,
+    paddingLeft: 4,
+  },
 });

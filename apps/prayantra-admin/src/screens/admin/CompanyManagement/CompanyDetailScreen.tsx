@@ -26,6 +26,8 @@ import {
   CompanyDetail,
 } from '../../../services/admin';
 
+import { describeTz } from '../../../utils/timezone';
+
 export default function CompanyDetailScreen() {
   const route = useRoute();
   const navigation = useNavigation();
@@ -148,7 +150,8 @@ export default function CompanyDetailScreen() {
           `ID: ${company.company_id}\n` +
           `Status: ${company.is_active ? 'Active' : 'Inactive'}\n` +
           `Tier: ${company.subscription_tier}\n` +
-          `Plan: ${planDisplay}`,
+          `Plan: ${planDisplay}\n` +
+          `Timezone: ${company.default_timezone || 'N/A'}`,
         title: company.company_name,
       });
     } catch (error) {}
@@ -182,10 +185,27 @@ export default function CompanyDetailScreen() {
     );
   }
 
-  // Plan display: name → code → id → N/A
   const planDisplay =
     planName || planCode || company.subscription_plan_id || 'N/A';
   const hasPlan = planDisplay !== 'N/A';
+
+  // ── NEW: pre-resolve tz display strings so they don't recompute per render.
+  const companyTz = company.default_timezone || '';
+  const companyTzDisplay = companyTz
+    ? `${companyTz} (${describeTz(companyTz)})`
+    : 'N/A';
+
+  const workCenterTz = company.work_center?.timezone || '';
+  const workCenterTzDisplay = workCenterTz
+    ? `${workCenterTz} (${describeTz(workCenterTz)})`
+    : 'N/A';
+
+  const locationTz = company.location?.timezone || '';
+  const locationTzDisplay = locationTz
+    ? `${locationTz} (${describeTz(locationTz)})`
+    : companyTz
+    ? `${companyTz} (inherited from company)`
+    : 'N/A';
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['bottom']}>
@@ -258,6 +278,11 @@ export default function CompanyDetailScreen() {
             <View style={styles.infoRow}>
               <Text style={styles.label}>Data Region:</Text>
               <Text style={styles.value}>{company.data_region}</Text>
+            </View>
+            {/* ── NEW: Default Timezone */}
+            <View style={styles.infoRow}>
+              <Text style={styles.label}>Default Timezone:</Text>
+              <Text style={styles.value}>{companyTzDisplay}</Text>
             </View>
             <View style={styles.infoRow}>
               <Text style={styles.label}>Financial Year Start:</Text>
@@ -474,11 +499,10 @@ export default function CompanyDetailScreen() {
                   </Text>
                 </View>
               ) : null}
+              {/* ── NEW: tz display */}
               <View style={styles.infoRow}>
                 <Text style={styles.label}>Timezone:</Text>
-                <Text style={styles.value}>
-                  {company.work_center.timezone ?? 'N/A'}
-                </Text>
+                <Text style={styles.value}>{workCenterTzDisplay}</Text>
               </View>
               <View style={styles.infoRow}>
                 <Text style={styles.label}>Active:</Text>
@@ -532,11 +556,14 @@ export default function CompanyDetailScreen() {
                     .join(' - ') || 'N/A'}
                 </Text>
               </View>
+              {/* ── NEW: tz display with inheritance indicator */}
+              <View style={styles.infoRow}>
+                <Text style={styles.label}>Timezone:</Text>
+                <Text style={styles.value}>{locationTzDisplay}</Text>
+              </View>
             </Card.Content>
           </Card>
         )}
-
-        {/* Departments Limit card removed — no longer needed */}
 
         {/* ----- Employees & Departments ----- */}
         <View style={styles.actionRow}>
@@ -571,6 +598,28 @@ export default function CompanyDetailScreen() {
               <Text style={styles.buttonText}>
                 Departments ({departmentCount})
               </Text>
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
+
+        {/* ----- Attendance Rules ----- */}
+        <View style={styles.actionRow}>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() =>
+              (navigation as any).navigate('AttendanceCompanyRules', {
+                companyId,
+                companyName: company.company_name,
+              })
+            }
+          >
+            <LinearGradient
+              colors={['#00B4DB', '#7B2FBE']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.gradientButton}
+            >
+              <Text style={styles.buttonText}>Attendance Rules</Text>
             </LinearGradient>
           </TouchableOpacity>
         </View>
@@ -659,6 +708,18 @@ export default function CompanyDetailScreen() {
           <Text variant="titleMedium" style={styles.quickLinksTitle}>
             Quick Links
           </Text>
+
+          <TouchableOpacity
+            style={styles.linkItem}
+            onPress={() =>
+              (navigation as any).navigate('AttendanceCompanyRules', {
+                companyId,
+                companyName: company.company_name,
+              })
+            }
+          >
+            <Text style={styles.linkText}>Attendance Rules</Text>
+          </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.linkItem}

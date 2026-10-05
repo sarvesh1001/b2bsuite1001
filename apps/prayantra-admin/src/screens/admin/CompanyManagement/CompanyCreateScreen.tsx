@@ -1,4 +1,4 @@
-// apps/mobile/src/screens/admin/CompanyManagement/CompanyCreateScreen.tsx
+// apps/prayantra-admin/src/screens/admin/CompanyManagement/CompanyCreateScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -32,6 +32,12 @@ import {
   SubscriptionPlan,
 } from '../../../services/admin';
 
+import { TimeZonePicker } from '../../../components/TimeZonePicker';
+import {
+  DEFAULT_COMPANY_TIMEZONE,
+} from '../../../constants/timezones';
+import { isSupportedTimezone } from '../../../utils/timezone';
+
 const TIERS = [
   { label: 'Basic', value: 'basic' },
   { label: 'Premium', value: 'premium' },
@@ -42,17 +48,6 @@ const REGIONS = [
   { label: 'US East (N. Virginia)', value: 'us-east-1' },
   { label: 'EU West (Ireland)', value: 'eu-west-1' },
   { label: 'Asia Pacific (Mumbai)', value: 'ap-south-1' },
-];
-
-const TIMEZONES = [
-  'Asia/Kolkata',
-  'America/New_York',
-  'America/Los_Angeles',
-  'Europe/London',
-  'Europe/Paris',
-  'Australia/Sydney',
-  'Asia/Singapore',
-  'Asia/Dubai',
 ];
 
 const GENDERS = [
@@ -99,8 +94,6 @@ const toRFC3339 = (value: string): string | null => {
   return d.toISOString();
 };
 
-// Slug helper for the auto-derived job code. Matches the backend's
-// slugifyJobCode() — uppercase, non-alphanumerics → underscore.
 const slugifyJobCode = (title: string): string => {
   const out = title
     .trim()
@@ -120,7 +113,7 @@ export default function CompanyCreateScreen() {
     owner_username: '',
     owner_full_name: '',
     owner_position_title: 'CEO',
-    owner_job_code: '',           // NEW — optional; falls back to slug of title
+    owner_job_code: '',
 
     // Owner HR profile (all optional)
     owner_email: '',
@@ -149,11 +142,16 @@ export default function CompanyCreateScreen() {
     subscription_days: 0,
     financial_year_start_month: 4,
 
+    // ── NEW: Company-level default timezone (required).
+    //    Fallback for every subject whose location/work center has
+    //    no explicit tz.
+    default_timezone: DEFAULT_COMPANY_TIMEZONE,
+
     // Work center
     work_center_code: 'MAIN-HQ',
     work_center_name: 'Main Headquarters',
     work_center_description: 'Primary work location',
-    work_center_timezone: 'Asia/Kolkata',
+    work_center_timezone: DEFAULT_COMPANY_TIMEZONE,
     work_center_is_active: true,
 
     // Location
@@ -165,6 +163,10 @@ export default function CompanyCreateScreen() {
     state: '',
     country: 'India',
     pincode: '',
+
+    // ── NEW: optional per-location tz override.
+    //    Empty string means "inherit company.default_timezone".
+    location_timezone: '',
   });
 
   const [allDepartments, setAllDepartments] = useState<SystemDepartment[]>([]);
@@ -178,7 +180,6 @@ export default function CompanyCreateScreen() {
   const [tierModalVisible, setTierModalVisible] = useState(false);
   const [planModalVisible, setPlanModalVisible] = useState(false);
   const [regionModalVisible, setRegionModalVisible] = useState(false);
-  const [timezoneModalVisible, setTimezoneModalVisible] = useState(false);
 
   const [genderModalVisible, setGenderModalVisible] = useState(false);
   const [maritalModalVisible, setMaritalModalVisible] = useState(false);
@@ -244,6 +245,25 @@ export default function CompanyCreateScreen() {
     if (!form.city.trim() || !form.country.trim())
       return Alert.alert('Error', 'City and country are required');
 
+    // ── NEW: timezone validation.
+    if (!form.default_timezone.trim())
+      return Alert.alert('Error', 'Default timezone is required');
+    if (!isSupportedTimezone(form.default_timezone))
+      return Alert.alert(
+        'Error',
+        `'${form.default_timezone}' is not a valid IANA timezone`
+      );
+    if (form.work_center_timezone.trim() && !isSupportedTimezone(form.work_center_timezone))
+      return Alert.alert(
+        'Error',
+        `Work center timezone '${form.work_center_timezone}' is not valid`
+      );
+    if (form.location_timezone.trim() && !isSupportedTimezone(form.location_timezone))
+      return Alert.alert(
+        'Error',
+        `Location timezone '${form.location_timezone}' is not valid`
+      );
+
     if (form.subscription_months < 0 || form.subscription_months > 36)
       return Alert.alert('Error', 'Subscription months must be between 0 and 36');
     if (form.subscription_days < 0 || form.subscription_days > 30)
@@ -282,13 +302,20 @@ export default function CompanyCreateScreen() {
         if (!payload[k]) delete payload[k];
       });
 
-      // Owner job code — send only if non-blank. Backend falls back to
-      // a slug of owner_position_title otherwise.
       const trimmedJobCode = form.owner_job_code.trim();
       if (trimmedJobCode) {
         payload.owner_job_code = slugifyJobCode(trimmedJobCode);
       } else {
         delete payload.owner_job_code;
+      }
+
+      // ── NEW: tz payload shaping.
+      //   default_timezone → always sent (required).
+      //   location_timezone → null when empty (inherit company default).
+      payload.default_timezone = form.default_timezone.trim();
+      payload.location_timezone = form.location_timezone.trim() || null;
+      if (!form.work_center_timezone.trim()) {
+        delete payload.work_center_timezone;
       }
 
       const dob = toRFC3339(form.owner_date_of_birth);
@@ -409,53 +436,6 @@ export default function CompanyCreateScreen() {
     </Modal>
   );
 
-  const renderTimezonePicker = () => (
-    <Modal
-      transparent
-      animationType="slide"
-      visible={timezoneModalVisible}
-      onRequestClose={() => setTimezoneModalVisible(false)}
-    >
-      <View style={styles.modalOverlay}>
-        <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>Select Timezone</Text>
-          <FlatList
-            data={TIMEZONES}
-            keyExtractor={(item) => item}
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                style={[
-                  styles.modalItem,
-                  item === form.work_center_timezone && styles.modalItemSelected,
-                ]}
-                onPress={() => {
-                  setForm({ ...form, work_center_timezone: item });
-                  setTimezoneModalVisible(false);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.modalItemText,
-                    item === form.work_center_timezone &&
-                      styles.modalItemTextSelected,
-                  ]}
-                >
-                  {item}
-                </Text>
-              </TouchableOpacity>
-            )}
-          />
-          <Button
-            onPress={() => setTimezoneModalVisible(false)}
-            style={styles.modalCancel}
-          >
-            Cancel
-          </Button>
-        </View>
-      </View>
-    </Modal>
-  );
-
   const renderDepartmentChip = (dept: SystemDepartment) => {
     const selected = selectedDepts.includes(dept.name);
     return (
@@ -530,7 +510,6 @@ export default function CompanyCreateScreen() {
       ? `Subscription window: +${form.subscription_months} month(s) +${form.subscription_days} day(s).`
       : 'No subscription will be created. The owner can extend it later after payment.';
 
-  // Preview what job code the backend will use.
   const previewJobCode = form.owner_job_code.trim()
     ? slugifyJobCode(form.owner_job_code)
     : slugifyJobCode(form.owner_position_title) || 'CEO';
@@ -973,6 +952,20 @@ export default function CompanyCreateScreen() {
               theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
             />
 
+            {/* ── NEW: COMPANY TIMEZONE ─────────────────────────── */}
+            <Text variant="titleSmall" style={styles.sectionTitle}>
+              Company Timezone *
+            </Text>
+            <Text style={styles.hint}>
+              The fallback timezone for every subject whose work center
+              or location has no explicit timezone. Business dates (sales,
+              attendance, invoices) are computed against this.
+            </Text>
+            <TimeZonePicker
+              value={form.default_timezone}
+              onChange={(tz) => setForm({ ...form, default_timezone: tz })}
+            />
+
             {/* WORK CENTER */}
             <Text variant="titleSmall" style={styles.sectionTitle}>
               Work Center
@@ -1008,19 +1001,12 @@ export default function CompanyCreateScreen() {
               style={styles.input}
               theme={{ roundness: 12, colors: { primary: '#7B2FBE' } }}
             />
-            <TouchableOpacity
-              style={styles.dropdown}
-              onPress={() => setTimezoneModalVisible(true)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.dropdownLabel}>Timezone</Text>
-              <View style={styles.dropdownValueContainer}>
-                <Text style={styles.dropdownValue}>
-                  {form.work_center_timezone}
-                </Text>
-                <Icon name="chevron-down" size={20} color="#666" />
-              </View>
-            </TouchableOpacity>
+            <Text style={styles.fieldLabel}>Work Center Timezone</Text>
+            <TimeZonePicker
+              value={form.work_center_timezone}
+              onChange={(tz) => setForm({ ...form, work_center_timezone: tz })}
+              hint="Punches recorded at this work center use this tz."
+            />
             <View style={styles.switchRow}>
               <Text style={styles.switchLabel}>Work Center Active</Text>
               <Switch
@@ -1131,6 +1117,22 @@ export default function CompanyCreateScreen() {
               </View>
             </View>
 
+            {/* ── NEW: LOCATION TIMEZONE (optional) ─────────────── */}
+            <Text style={styles.fieldLabel}>Location Timezone (optional)</Text>
+            <Text style={styles.hint}>
+              Leave empty to inherit the company default. Set only when this
+              site is in a different timezone.
+            </Text>
+            <TimeZonePicker
+              value={form.location_timezone}
+              onChange={(tz) => setForm({ ...form, location_timezone: tz })}
+              placeholder={
+                form.default_timezone
+                  ? `Inherit from company (${form.default_timezone})`
+                  : 'Inherit from company default'
+              }
+            />
+
             {/* DEPARTMENTS */}
             <Text variant="titleSmall" style={styles.sectionTitle}>
               Departments *
@@ -1171,6 +1173,7 @@ export default function CompanyCreateScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
+      {/* Modals (other pickers) */}
       {renderPickerModal(
         tierModalVisible,
         setTierModalVisible,
@@ -1227,7 +1230,6 @@ export default function CompanyCreateScreen() {
         (val) => setForm({ ...form, owner_employment_status: val }),
         'Select Employment Status'
       )}
-      {renderTimezonePicker()}
     </SafeAreaView>
   );
 }
@@ -1265,6 +1267,12 @@ const styles = StyleSheet.create({
     marginTop: 16,
     marginBottom: 8,
   },
+  fieldLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginBottom: 4,
+    marginTop: 4,
+  },
   hint: { fontSize: 12, color: '#666', marginBottom: 8, lineHeight: 16 },
   hintBox: {
     flexDirection: 'row',
@@ -1287,6 +1295,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
+    marginTop: 8,
   },
   switchLabel: { fontSize: 16, color: '#1A1A1A' },
   buttonWrapper: { borderRadius: 12, overflow: 'hidden', marginTop: 12 },

@@ -6,7 +6,6 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  TextInput,
   Alert,
   ActivityIndicator,
 } from 'react-native';
@@ -16,8 +15,12 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import DateTimePickerModal from 'react-native-modal-datetime-picker';
 import { useUserAuthStore } from '../../../../store/userAuthStore';
-import { createLeaveRequest, listLeaveTypes } from '@b2b/api-client';
-import { LeaveType } from '@b2b/shared-types';
+import {
+  createLeaveRequest,
+  listLeaveTypes,
+  getMyLeaveBalance,
+} from '@b2b/api-client';
+import { LeaveType, LeaveBalance } from '@b2b/shared-types';
 import {
   BACKGROUND_COLOR,
   CARD_BACKGROUND,
@@ -30,12 +33,24 @@ import { RootStackParamList } from '../../../../navigation';
 
 type NavigationProps = StackNavigationProp<RootStackParamList, 'LeaveRequestForm'>;
 
-const toDateOnly = (d: Date): string => d.toISOString().slice(0, 10);
+const toDateOnly = (d: Date): string => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
 
 // Inclusive day count between two dates (YYYY-MM-DD semantics).
 const diffDaysInclusive = (start: Date, end: Date): number => {
-  const ms = end.getTime() - start.getTime();
+  const s = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const e = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  const ms = e.getTime() - s.getTime();
   return Math.floor(ms / (1000 * 60 * 60 * 24)) + 1;
+};
+
+const fmtDays = (n: number | null | undefined): string => {
+  if (n === null || n === undefined) return '—';
+  return Number.isInteger(n) ? String(n) : String(parseFloat(n.toFixed(2)));
 };
 
 export default function LeaveRequestForm() {
@@ -43,20 +58,27 @@ export default function LeaveRequestForm() {
   const { accessToken, deviceId, companyId, user } = useUserAuthStore();
 
   // ⚠️ Self-service: default the user_id to the logged-in user.
-  //    Admin-on-behalf would need a user picker in a future iteration.
+  //    The auth store exposes the id as `user.user_id` (see MyProfileScreen).
   const currentUserId =
-    user && typeof user === 'object' && 'id' in user ? String((user as any).id) : '';
+    user && typeof user === 'object' && 'user_id' in user
+      ? String((user as any).user_id)
+      : '';
 
   const [loading, setLoading] = useState(false);
+
+  // Leave types
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
   const [loadingTypes, setLoadingTypes] = useState(true);
   const [showTypePicker, setShowTypePicker] = useState(false);
 
+  // Balances keyed by leave_type_id
+  const [balances, setBalances] = useState<Record<string, LeaveBalance>>({});
+  const [loadingBalances, setLoadingBalances] = useState(true);
+
+  // Form fields
   const [leaveTypeId, setLeaveTypeId] = useState('');
   const [startDate, setStartDate] = useState<Date>(new Date());
   const [endDate, setEndDate] = useState<Date>(new Date());
-  const [totalDays, setTotalDays] = useState('');
-  const [totalDaysTouched, setTotalDaysTouched] = useState(false);
 
   const [showStartPicker, setShowStartPicker] = useState(false);
   const [showEndPicker, setShowEndPicker] = useState(false);
@@ -78,23 +100,59 @@ export default function LeaveRequestForm() {
     fetchTypes();
   }, [accessToken, companyId, deviceId]);
 
+  // ---- Load balances -----------------------------------------------------
+  useEffect(() => {
+    const fetchBalances = async () => {
+      if (!accessToken || !companyId || !deviceId) return;
+      setLoadingBalances(true);
+      try {
+        const data = await getMyLeaveBalance(companyId, deviceId, accessToken);
+        const map: Record<string, LeaveBalance> = {};
+        for (const b of data.balances) {
+          map[b.leave_type_id] = b;
+        }
+        setBalances(map);
+      } catch {
+        setBalances({});
+      } finally {
+        setLoadingBalances(false);
+      }
+    };
+    fetchBalances();
+  }, [accessToken, companyId, deviceId]);
+
   const selectedType = useMemo(
     () => leaveTypes.find((t) => t.leave_type_id === leaveTypeId),
     [leaveTypes, leaveTypeId],
   );
 
-  // ---- Auto-calc total_days from date range ------------------------------
-  const computedDays = useMemo(() => {
+  const selectedBalance = useMemo(
+    () => (leaveTypeId ? balances[leaveTypeId] : undefined),
+    [balances, leaveTypeId],
+  );
+
+  // ---- Derived: total_days is ALWAYS the inclusive calendar span --------
+  //
+  // ⚠️ FIX: total_days is no longer user-editable. It's derived from the
+  // date range. This eliminates the bug where a user could submit
+  // start=2026-10-11, end=2026-10-16, total_days=1.
+  //
+  // If you later need half-day or working-day-only semantics, do it on the
+  // server (using the company's holiday calendar) and return the computed
+  // value after submit — don't let the client decide.
+  const totalDays = useMemo(() => {
     if (endDate < startDate) return 0;
     return diffDaysInclusive(startDate, endDate);
   }, [startDate, endDate]);
 
-  // Keep total_days in sync unless the user has manually edited it.
-  useEffect(() => {
-    if (!totalDaysTouched) {
-      setTotalDays(computedDays > 0 ? String(computedDays) : '');
-    }
-  }, [computedDays, totalDaysTouched]);
+  // ---- Derived: does requested exceed available? -------------------------
+  const availableDays = selectedBalance ? selectedBalance.balance : null;
+
+  const exceedsBalance = useMemo(() => {
+    if (availableDays === null) return false; // no data → let server decide
+    if (totalDays <= 0) return false;
+    return totalDays > availableDays;
+  }, [availableDays, totalDays]);
 
   // ---- Submit ------------------------------------------------------------
   const handleSubmit = async () => {
@@ -110,9 +168,17 @@ export default function LeaveRequestForm() {
       Alert.alert('Error', 'End date must be on or after start date');
       return;
     }
-    const days = Number(totalDays);
-    if (!totalDays || isNaN(days) || days <= 0) {
+    if (totalDays <= 0) {
       Alert.alert('Error', 'Total days must be a positive number');
+      return;
+    }
+    if (exceedsBalance && availableDays !== null) {
+      Alert.alert(
+        'Insufficient balance',
+        `You have ${fmtDays(availableDays)} day(s) of ${
+          selectedType?.name ?? 'this leave type'
+        } left, but you're requesting ${totalDays}.`,
+      );
       return;
     }
     if (!accessToken || !companyId || !deviceId) {
@@ -122,18 +188,14 @@ export default function LeaveRequestForm() {
 
     setLoading(true);
     try {
-      // ⚠️ Backend expects DATE (YYYY-MM-DD), not RFC3339.
-      // ⚠️ Returns LeaveRequest directly (no more .data).
-      // ⚠️ API client throws if in All-Locations mode — see assertWritableLocation.
       const created = await createLeaveRequest(companyId, deviceId, accessToken, {
         user_id: currentUserId,
         leave_type_id: leaveTypeId,
         start_date: toDateOnly(startDate),
         end_date: toDateOnly(endDate),
-        total_days: days,
+        total_days: totalDays, // derived, never user-typed
       });
 
-      // Leave types with requires_approval=false are auto-approved server-side.
       const msg =
         created.status === 'approved'
           ? 'Leave request submitted and auto-approved.'
@@ -148,6 +210,8 @@ export default function LeaveRequestForm() {
       setLoading(false);
     }
   };
+
+  const submitDisabled = loading || exceedsBalance || totalDays <= 0;
 
   // ---- Render ------------------------------------------------------------
   return (
@@ -195,25 +259,43 @@ export default function LeaveRequestForm() {
               {leaveTypes.length === 0 ? (
                 <Text style={styles.optionEmpty}>No leave types available</Text>
               ) : (
-                leaveTypes.map((type) => (
-                  <TouchableOpacity
-                    key={type.leave_type_id}
-                    style={styles.optionItem}
-                    onPress={() => {
-                      setLeaveTypeId(type.leave_type_id);
-                      setShowTypePicker(false);
-                    }}
-                  >
-                    <Text style={styles.optionText}>
-                      {type.name} ({type.code})
-                    </Text>
-                  </TouchableOpacity>
-                ))
+                leaveTypes.map((type) => {
+                  const bal = balances[type.leave_type_id];
+                  return (
+                    <TouchableOpacity
+                      key={type.leave_type_id}
+                      style={styles.optionItem}
+                      onPress={() => {
+                        setLeaveTypeId(type.leave_type_id);
+                        setShowTypePicker(false);
+                      }}
+                    >
+                      <View style={styles.optionRow}>
+                        <Text style={styles.optionText}>
+                          {type.name} ({type.code})
+                        </Text>
+                        {bal ? (
+                          <Text
+                            style={[
+                              styles.optionBalance,
+                              {
+                                color:
+                                  bal.balance > 0 ? '#10b981' : '#ef4444',
+                              },
+                            ]}
+                          >
+                            {fmtDays(bal.balance)} left
+                          </Text>
+                        ) : null}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })
               )}
             </View>
           ) : null}
 
-          {/* Selected type hints */}
+          {/* Selected type — approval hint */}
           {selectedType ? (
             <View style={styles.hintBox}>
               {selectedType.requires_approval ? (
@@ -227,12 +309,69 @@ export default function LeaveRequestForm() {
                   Auto-approved — no manager approval needed.
                 </Text>
               )}
-              {selectedType.carry_forward_limit !== null &&
-              selectedType.carry_forward_limit !== undefined ? (
-                <Text style={styles.hintText}>
-                  Carry-forward limit: {selectedType.carry_forward_limit} day(s)
+            </View>
+          ) : null}
+
+          {/* Available balance card */}
+          {selectedType ? (
+            <View
+              style={[
+                styles.balanceBox,
+                exceedsBalance && styles.balanceBoxError,
+              ]}
+            >
+              {loadingBalances ? (
+                <View style={styles.balanceRow}>
+                  <ActivityIndicator size="small" color={PRIMARY_COLOR} />
+                  <Text style={styles.balanceLoadingText}>
+                    Loading balance…
+                  </Text>
+                </View>
+              ) : selectedBalance ? (
+                <>
+                  <View style={styles.balanceRow}>
+                    <Text style={styles.balanceLabel}>Available Balance</Text>
+                    <Text
+                      style={[
+                        styles.balanceValue,
+                        {
+                          color:
+                            selectedBalance.balance > 0
+                              ? '#10b981'
+                              : '#ef4444',
+                        },
+                      ]}
+                    >
+                      {fmtDays(selectedBalance.balance)} day(s)
+                    </Text>
+                  </View>
+                  <View style={styles.balanceSubRow}>
+                    <Text style={styles.balanceSubLabel}>Entitled</Text>
+                    <Text style={styles.balanceSubValue}>
+                      {fmtDays(selectedBalance.total_entitled)}
+                    </Text>
+                    <Text style={styles.balanceSubLabel}>Accrued</Text>
+                    <Text style={styles.balanceSubValue}>
+                      {fmtDays(selectedBalance.accrued)}
+                    </Text>
+                    <Text style={styles.balanceSubLabel}>Used</Text>
+                    <Text style={styles.balanceSubValue}>
+                      {fmtDays(selectedBalance.consumed)}
+                    </Text>
+                  </View>
+                  {exceedsBalance ? (
+                    <Text style={styles.balanceErrorText}>
+                      You're requesting {totalDays} day(s) but only{' '}
+                      {fmtDays(selectedBalance.balance)} available.
+                    </Text>
+                  ) : null}
+                </>
+              ) : (
+                <Text style={styles.balanceEmptyText}>
+                  No balance on file for this leave type. Submission will be
+                  validated by the server.
                 </Text>
-              ) : null}
+              )}
             </View>
           ) : null}
 
@@ -256,34 +395,42 @@ export default function LeaveRequestForm() {
             <Icon name="calendar" size={20} color={PRIMARY_COLOR} />
           </TouchableOpacity>
 
-          {/* Total Days */}
-          <Text style={styles.label}>Total Days *</Text>
-          <TextInput
-            style={styles.input}
-            value={totalDays}
-            onChangeText={(v) => {
-              setTotalDaysTouched(true);
-              setTotalDays(v);
-            }}
-            keyboardType="numeric"
-            placeholder="e.g. 3"
-          />
-          {!totalDaysTouched && computedDays > 0 ? (
-            <Text style={styles.helperText}>
-              Auto-calculated from date range. Edit to override.
+          {/* Total Days — READ-ONLY, derived from date range */}
+          <Text style={styles.label}>Total Days</Text>
+          <View
+            style={[
+              styles.readonlyDaysRow,
+              exceedsBalance && styles.readonlyDaysRowError,
+            ]}
+          >
+            <Icon
+              name="calendar-range"
+              size={16}
+              color={exceedsBalance ? '#ef4444' : PRIMARY_COLOR}
+            />
+            <Text
+              style={[
+                styles.readonlyDaysText,
+                exceedsBalance && { color: '#ef4444' },
+              ]}
+            >
+              {totalDays > 0 ? `${totalDays} day(s)` : '—'}
             </Text>
-          ) : null}
+            <Text style={styles.readonlyDaysHint}>auto-calculated</Text>
+          </View>
         </View>
 
         <TouchableOpacity
-          style={[styles.submitButton, loading && styles.disabledButton]}
+          style={[styles.submitButton, submitDisabled && styles.disabledButton]}
           onPress={handleSubmit}
-          disabled={loading}
+          disabled={submitDisabled}
         >
           {loading ? (
             <ActivityIndicator size="small" color="#fff" />
           ) : (
-            <Text style={styles.submitText}>Submit Request</Text>
+            <Text style={styles.submitText}>
+              {exceedsBalance ? 'Insufficient Balance' : 'Submit Request'}
+            </Text>
           )}
         </TouchableOpacity>
       </ScrollView>
@@ -357,17 +504,35 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   readonlyText: { fontSize: 14, color: TEXT_SECONDARY, marginLeft: 8, flex: 1 },
-  input: {
-    borderWidth: 1,
-    borderColor: BORDER_COLOR,
+
+  // Read-only Total Days row (replaces the old TextInput)
+  readonlyDaysRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: `${PRIMARY_COLOR}0D`,
     borderRadius: 8,
+    borderWidth: 1,
+    borderColor: `${PRIMARY_COLOR}33`,
     paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: TEXT_PRIMARY,
-    backgroundColor: '#fff',
+    paddingVertical: 12,
+    gap: 8,
   },
-  helperText: { fontSize: 12, color: TEXT_SECONDARY, marginTop: 4 },
+  readonlyDaysRowError: {
+    backgroundColor: '#fef2f2',
+    borderColor: '#fecaca',
+  },
+  readonlyDaysText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: TEXT_PRIMARY,
+    flex: 1,
+  },
+  readonlyDaysHint: {
+    fontSize: 10,
+    color: TEXT_SECONDARY,
+    fontStyle: 'italic',
+  },
+
   selectButton: {
     borderWidth: 1,
     borderColor: BORDER_COLOR,
@@ -386,7 +551,7 @@ const styles = StyleSheet.create({
     borderColor: BORDER_COLOR,
     borderRadius: 8,
     backgroundColor: '#fff',
-    maxHeight: 180,
+    maxHeight: 220,
   },
   optionItem: {
     paddingHorizontal: 12,
@@ -394,7 +559,13 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: BORDER_COLOR,
   },
+  optionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   optionText: { fontSize: 14, color: TEXT_PRIMARY },
+  optionBalance: { fontSize: 12, fontWeight: '600' },
   optionEmpty: { fontSize: 13, color: TEXT_SECONDARY, padding: 12 },
   hintBox: {
     marginTop: 8,
@@ -406,6 +577,66 @@ const styles = StyleSheet.create({
     borderLeftColor: PRIMARY_COLOR,
   },
   hintText: { fontSize: 12, color: TEXT_SECONDARY, marginTop: 2 },
+
+  // Balance card
+  balanceBox: {
+    marginTop: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: '#ecfdf5',
+    borderWidth: 1,
+    borderColor: '#a7f3d0',
+  },
+  balanceBoxError: {
+    backgroundColor: '#fef2f2',
+    borderColor: '#fecaca',
+  },
+  balanceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  balanceLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: TEXT_SECONDARY,
+    letterSpacing: 0.3,
+  },
+  balanceValue: { fontSize: 15, fontWeight: '700' },
+  balanceLoadingText: {
+    marginLeft: 8,
+    fontSize: 12,
+    color: TEXT_SECONDARY,
+  },
+  balanceSubRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 6,
+    gap: 10,
+  },
+  balanceSubLabel: {
+    fontSize: 10,
+    color: TEXT_SECONDARY,
+    marginRight: 2,
+  },
+  balanceSubValue: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: TEXT_PRIMARY,
+    marginRight: 6,
+  },
+  balanceErrorText: {
+    marginTop: 8,
+    fontSize: 11,
+    color: '#b91c1c',
+    fontWeight: '600',
+  },
+  balanceEmptyText: {
+    fontSize: 12,
+    color: TEXT_SECONDARY,
+  },
+
   dateButton: {
     borderWidth: 1,
     borderColor: BORDER_COLOR,

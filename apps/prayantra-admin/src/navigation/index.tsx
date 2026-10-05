@@ -23,6 +23,7 @@ import CompanyCreateScreen from '../screens/admin/CompanyManagement/CompanyCreat
 import CompanyEmployeesScreen from '../screens/admin/CompanyManagement/CompanyEmployeesScreen';
 import CompanyDepartmentsScreen from '../screens/admin/CompanyManagement/CompanyDepartmentsScreen';
 import CompanyUpdateDetailsScreen from '../screens/admin/CompanyManagement/CompanyUpdateDetailsScreen';
+import AttendanceCompanyRulesScreen from '../screens/admin/CompanyManagement/AttendanceCompanyRulesScreen';
 
 // Payments
 import CompanyPaymentsScreen from '../screens/admin/CompanyManagement/Payments/CompanyPaymentsScreen';
@@ -79,6 +80,7 @@ export type RootStackParamList = {
   CompanyEmployees: { companyId: string };
   CompanyDepartments: { companyId: string };
   CompanyUpdateDetails: { companyId: string };
+  AttendanceCompanyRules: { companyId: string; companyName?: string };
 
   // Payments (company scoped)
   CompanyPayments: { companyId: string };
@@ -151,6 +153,11 @@ function AdminStack() {
         name="CompanyUpdateDetails"
         component={CompanyUpdateDetailsScreen}
         options={{ title: 'Update Company' }}
+      />
+      <Stack.Screen
+        name="AttendanceCompanyRules"
+        component={AttendanceCompanyRulesScreen}
+        options={{ title: 'Attendance Rules', headerShown: false }}
       />
 
       {/* Payments (company scoped) */}

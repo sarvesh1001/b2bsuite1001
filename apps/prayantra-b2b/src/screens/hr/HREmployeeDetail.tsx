@@ -32,6 +32,15 @@ import {
 } from '@b2b/api-client';
 import type { DecryptedEmployeeDetails } from '@b2b/shared-types';
 import { UserAvatar } from '../../components/UserAvatar';
+
+// 👇 NEW — lifecycle status card + action sheet + hook
+import {
+  LifecycleStatusCard,
+  LifecycleAction,
+} from '../../components/LifecycleStatusCard';
+import { LifecycleActionSheet } from '../../components/LifecycleActionSheet';
+import { useEmployeeLifecycle } from '../../hooks/useEmployeeLifecycle';
+
 import {
   BACKGROUND_COLOR,
   CARD_BACKGROUND,
@@ -182,6 +191,14 @@ export default function HREmployeeDetail() {
   // ---- phone-actions (call / message) sheet ----
   const [phoneActionsVisible, setPhoneActionsVisible] = useState(false);
 
+  // ---- lifecycle state ----
+  const lifecycle = useEmployeeLifecycle(
+    data?.employee_profile_id ?? undefined,
+    userId,
+  );
+  const [lifecycleSheet, setLifecycleSheet] = useState<LifecycleAction | null>(null);
+  const [lifecycleSubmitting, setLifecycleSubmitting] = useState(false);
+
   const fetchDetail = useCallback(async () => {
     if (!accessToken || !companyId || !deviceId) {
       logWarn('fetch skipped — missing auth context');
@@ -318,6 +335,53 @@ export default function HREmployeeDetail() {
     Alert.alert('Phone Number', phoneRaw, [{ text: 'OK' }]);
   }, [phoneRaw]);
 
+  // ---- lifecycle action handlers ----
+
+  const handleLifecycleAction = useCallback((action: LifecycleAction) => {
+    setLifecycleSheet(action);
+  }, []);
+
+  const handleLifecycleSubmit = useCallback(
+    async (payload: any) => {
+      setLifecycleSubmitting(true);
+      try {
+        switch (lifecycleSheet) {
+          case 'confirm_probation':
+            await lifecycle.confirm(payload);
+            break;
+          case 'fail_probation':
+            await lifecycle.fail(payload);
+            break;
+          case 'extend_probation':
+            await lifecycle.extend(payload);
+            break;
+          case 'start_notice':
+            await lifecycle.noticeStart(payload);
+            break;
+          case 'cancel_notice':
+            await lifecycle.noticeCancel(payload);
+            break;
+          case 'start_on_hold':
+            await lifecycle.onHoldStart(payload);
+            break;
+          case 'end_on_hold':
+            await lifecycle.onHoldEnd();
+            break;
+        }
+        setLifecycleSheet(null);
+        // Also refetch the base detail so hero card status pill updates too.
+        fetchDetail();
+      } catch (err: any) {
+        // The sheet itself surfaces the error via the catch in handleSubmit;
+        // but we re-throw so it knows not to close.
+        throw err;
+      } finally {
+        setLifecycleSubmitting(false);
+      }
+    },
+    [lifecycleSheet, lifecycle, fetchDetail],
+  );
+
   // ---------- loading ----------
   if (loading) {
     return (
@@ -401,6 +465,20 @@ export default function HREmployeeDetail() {
           </View>
         </View>
 
+        {/* ==========================================================
+            LIFECYCLE STATUS CARD
+            ----------------------------------------------------------
+            Shows the current lifecycle phase (probation / notice /
+            on-hold / active / terminated) with the relevant action
+            buttons. Reads from /status-now which is location-scoped
+            via X-Location-ID (attached by the axios interceptor).
+        ========================================================== */}
+        <LifecycleStatusCard
+          status={lifecycle.status}
+          loading={lifecycle.isLoading}
+          onAction={handleLifecycleAction}
+        />
+
         {/* ---------- Contact ---------- */}
         <Section title="Contact" icon="card-account-phone-outline">
           {/* Phone — tap value to call/message, tap pencil to edit */}
@@ -458,6 +536,23 @@ export default function HREmployeeDetail() {
           <InfoRow icon="login-variant" label="Last Login" value={fmtDate(data.user_last_login)} />
         </Section>
       </ScrollView>
+
+      {/* ============================================================
+          LIFECYCLE ACTION SHEET
+          ------------------------------------------------------------
+          One modal that adapts to whichever action the user tapped
+          on the LifecycleStatusCard. Validates fields, submits via
+          useEmployeeLifecycle, and closes on success. The card's
+          actions invalidate ['reminderFeed'] + ['reminderCounts']
+          so the HR bell badge updates without a manual refresh.
+      ============================================================ */}
+      <LifecycleActionSheet
+        visible={lifecycleSheet !== null}
+        action={lifecycleSheet}
+        submitting={lifecycleSubmitting}
+        onClose={() => !lifecycleSubmitting && setLifecycleSheet(null)}
+        onSubmit={handleLifecycleSubmit}
+      />
 
       {/* ============================================================
           PHONE ACTIONS (CALL / MESSAGE) — small bottom sheet

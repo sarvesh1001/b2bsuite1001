@@ -24,6 +24,8 @@ export interface AccessibleLocation {
   state?: string;
   country?: string;
   pincode?: string;
+  /** IANA timezone name. null → inherit company.default_timezone. */
+  timezone?: string | null;
   is_active: boolean;
   /** Present only when the caller has SELECTED scope on this location */
   access_level?: LocationAccessLevel;
@@ -71,6 +73,12 @@ export interface CreateLocationRequest {
   state?: string;
   country?: string;
   pincode?: string;
+  /**
+   * Optional IANA timezone name.
+   * null (or omitted) → inherit company.default_timezone.
+   * Example: 'Asia/Kolkata', 'America/New_York'.
+   */
+  timezone?: string | null;
 }
 
 export interface UpdateLocationRequest {
@@ -82,6 +90,13 @@ export interface UpdateLocationRequest {
   state?: string;
   country?: string;
   pincode?: string;
+  /**
+   * Optional IANA timezone name.
+   * undefined → preserve current tz
+   * null / ""  → clear (revert to inherit company default)
+   * IANA name  → set
+   */
+  timezone?: string | null;
   is_active?: boolean;
 }
 
@@ -96,6 +111,8 @@ export interface LocationResponse {
   state?: string;
   country?: string;
   pincode?: string;
+  /** IANA timezone name. null → inherit company.default_timezone. */
+  timezone?: string | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;

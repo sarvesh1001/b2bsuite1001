@@ -295,6 +295,11 @@ export async function searchEmployeesTypeahead(
     if (params.q !== undefined) query.q = params.q;
     if (params.page !== undefined) query.page = params.page;
     if (params.page_size !== undefined) query.page_size = params.page_size;
+    // 👇 NEW — status filter chip on the list screen. Backend treats
+    // "" and "all" as "no filter", so it's safe to omit when not set.
+    if (params.employment_status !== undefined && params.employment_status !== '') {
+        query.employment_status = params.employment_status;
+    }
 
     // ids_only is a transport hint — default to false (server default too)
     query.ids_only = idsOnly;
@@ -305,7 +310,6 @@ export async function searchEmployeesTypeahead(
     });
     return response.data;
 }
-
 /**
  * Batch hydrate + decrypt a caller-supplied list of user IDs.
  *

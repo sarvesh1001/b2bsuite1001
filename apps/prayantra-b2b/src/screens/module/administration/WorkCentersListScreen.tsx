@@ -22,32 +22,24 @@ import {
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
 
-import {
-  Text,
-  ActivityIndicator,
-} from 'react-native-paper';
+import { Text, ActivityIndicator } from 'react-native-paper';
 
 import {
   useNavigation,
   useFocusEffect,
 } from '@react-navigation/native';
 
-import {
-  StackNavigationProp,
-} from '@react-navigation/stack';
+import { StackNavigationProp } from '@react-navigation/stack';
 
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { LinearGradient } from 'expo-linear-gradient';
 
-import {
-  LinearGradient,
-} from 'expo-linear-gradient';
-
-// ✅ Only axiosInstance — no isAllLocations dependency
 import { axiosInstance } from '@b2b/api-client';
 
-import {
-  useUserAuthStore,
-} from '../../../store/userAuthStore';
+import { useUserAuthStore } from '../../../store/userAuthStore';
+
+// ── NEW: tz display helpers ───────────────────────────────
+import { formatOffset, getOffsetMinutes } from '../../../utils/timezone';
 
 import {
   BACKGROUND_COLOR,
@@ -76,6 +68,8 @@ type WorkCenter = {
   location_code?: string;
   location_name?: string;
   city?: string;
+  // ── NEW: IANA tz. Backend now returns this on every WC row.
+  timezone?: string;
 };
 
 type NavigationProp = StackNavigationProp<any>;
@@ -90,16 +84,6 @@ const ALL_LOCATIONS_SENTINEL = 'ALL';
 // HELPERS
 // =========================================================
 
-/**
- * Safely extract a WorkCenter[] from an unknown API response body.
- *
- * Your backend returns:
- *   { success: true, data: [...]  , meta: {...} }   → [...]
- *   { success: true, data: null   , meta: {...} }   → []   (zero rows)
- *
- * This also guards against alternate nesting if the contract ever
- * changes (work_centers, items, results, ...).
- */
 const extractWorkCenters = (body: any): WorkCenter[] => {
   const candidate = body?.data ?? body;
   if (Array.isArray(candidate)) return candidate;
@@ -135,19 +119,13 @@ export default function WorkCentersListScreen() {
   const allLocationsMode =
     locationId === ALL_LOCATIONS_SENTINEL;
 
-  // =======================================================
-  // STATE
-  // =======================================================
-  const [workCenters, setWorkCenters] =
-    useState<WorkCenter[]>([]);
-  const [filteredCenters, setFilteredCenters] =
-    useState<WorkCenter[]>([]);
+  const [workCenters, setWorkCenters] = useState<WorkCenter[]>([]);
+  const [filteredCenters, setFilteredCenters] = useState<WorkCenter[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searching, setSearching] = useState(false);
 
-  // Latest query in a ref so fetchWorkCenters doesn't refetch on every keystroke
   const searchQueryRef = useRef(searchQuery);
   useEffect(() => {
     searchQueryRef.current = searchQuery;
@@ -223,13 +201,6 @@ export default function WorkCentersListScreen() {
     [accessToken, companyId, deviceId, locationId]
   );
 
-  // =======================================================
-  // FETCH ON FOCUS
-  // ---------------------------------------------------------
-  // useFocusEffect fires on mount AND when the screen regains
-  // focus. A separate useEffect(() => fetch(), []) would double
-  // the request on mount — we removed it.
-  // =======================================================
   useFocusEffect(
     useCallback(() => {
       fetchWorkCenters();
@@ -238,7 +209,7 @@ export default function WorkCentersListScreen() {
   );
 
   // =======================================================
-  // SEARCH (local filter + debounced server search)
+  // SEARCH
   // =======================================================
   useEffect(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -249,7 +220,6 @@ export default function WorkCentersListScreen() {
       return;
     }
 
-    // Instant local filter
     const localResults = workCenters.filter(
       (wc) =>
         wc.name.toLowerCase().includes(query) ||
@@ -258,7 +228,6 @@ export default function WorkCentersListScreen() {
     );
     setFilteredCenters(localResults);
 
-    // Debounced server search
     const timer = setTimeout(async () => {
       if (!accessToken || !companyId || !deviceId) return;
 
@@ -285,7 +254,6 @@ export default function WorkCentersListScreen() {
         const data = extractWorkCenters(response.data);
         setFilteredCenters(data);
       } catch {
-        // Keep local results on server failure
         setFilteredCenters(localResults);
       } finally {
         setSearching(false);
@@ -423,6 +391,11 @@ export default function WorkCentersListScreen() {
     const hasLocation =
       item.location_name || item.location_code;
 
+    // ── NEW: tz display with live offset.
+    const tzDisplay = item.timezone
+      ? `${item.timezone}  ${formatOffset(getOffsetMinutes(new Date(), item.timezone))}`
+      : 'Not set';
+
     return (
       <TouchableOpacity
         activeOpacity={0.92}
@@ -490,6 +463,24 @@ export default function WorkCentersListScreen() {
               </Text>
             </View>
           )}
+
+          {/* ── NEW: timezone row */}
+          <View style={[styles.codeRow, { marginTop: 3 }]}>
+            <Icon
+              name="earth"
+              size={13}
+              color="#94A3B8"
+            />
+            <Text
+              numberOfLines={1}
+              style={[
+                styles.tzText,
+                !item.timezone && styles.tzTextMuted,
+              ]}
+            >
+              {tzDisplay}
+            </Text>
+          </View>
 
           {!!item.description && (
             <Text
@@ -703,9 +694,7 @@ export default function WorkCentersListScreen() {
           />
           <Text
             style={styles.searchInput}
-            onPress={() => {
-              // hook up a TextInput if you want typing
-            }}
+            onPress={() => {}}
           >
             {searchQuery || 'Search work centers...'}
           </Text>
@@ -778,11 +767,6 @@ export default function WorkCentersListScreen() {
         ListEmptyComponent={
           <View style={styles.emptyState}>
             <View style={styles.emptyIcon}>
-              {/*
-               * ✅ FIXED: was 'factory-off' (invalid MaterialCommunityIcons
-               *    name). Using 'factory' — the base name exists and
-               *    matches the loading state icon for visual consistency.
-               */}
               <Icon
                 name={searchQuery ? 'magnify-close' : 'factory'}
                 size={31}
@@ -861,7 +845,7 @@ export default function WorkCentersListScreen() {
 }
 
 // =========================================================
-// STYLES (unchanged)
+// STYLES
 // =========================================================
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BACKGROUND_COLOR },
@@ -1087,6 +1071,23 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: 0.2,
   },
+
+  // ── NEW: tz text styles
+  tzText: {
+    flex: 1,
+    marginLeft: 5,
+    color: TEXT_PRIMARY,
+    fontSize: 10,
+    fontWeight: '600',
+    fontFamily: 'Courier',
+  },
+  tzTextMuted: {
+    color: TEXT_SECONDARY,
+    fontFamily: undefined,
+    fontWeight: '500',
+    fontStyle: 'italic',
+  },
+
   description: {
     marginTop: 7,
     color: TEXT_SECONDARY,

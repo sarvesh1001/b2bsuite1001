@@ -48,6 +48,8 @@ export interface CompanyLocation {
   state?: string;
   country?: string;
   pincode?: string;
+  /** ── NEW: IANA name. NULL → inherit company.default_timezone. */
+  timezone?: string | null;
 }
 
 export interface Company {
@@ -61,6 +63,8 @@ export interface Company {
   max_departments: number;
   max_locations?: number;
   data_region: string;
+  /** ── NEW: IANA name, always present. Fallback for all subjects. */
+  default_timezone: string;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -132,10 +136,6 @@ export interface User {
 
 // ============================================================
 // Jobs catalog (job definitions)
-//
-// A "job" is a role definition: "Cashier", "Line Operator".
-// It has NO location, NO work center, NO department — those live
-// on the "position" (seat) that references the job.
 // ============================================================
 
 export interface Job {
@@ -180,10 +180,6 @@ export interface JobPositionCount {
 
 // ============================================================
 // Positions (updated shape)
-//
-// The seat's old `title` / `is_schedulable` / `attendance_required`
-// / `overtime_allowed` moved to the job. Use `effective_title`
-// for display (title_override ?? job_title).
 // ============================================================
 
 export interface Position {
@@ -244,21 +240,18 @@ export interface AddMemberPayload {
   role_id: string;
   reports_to?: string;
 
-  // Position assignment — pick one side:
-  position_id?: string;           // reuse an existing seat
-  job_id?: string;                // OR auto-create a seat
+  position_id?: string;
+  job_id?: string;
   department_id?: string;
   location_id?: string;
   work_center_code?: string;
   title_override?: string;
 
-  // Location access
   primary_location_id?: string;
   location_access_scope?: 'PRIMARY' | 'SELECTED' | 'ALL';
   selected_locations?: MemberLocationGrant[];
   selected_location_ids?: string[];
 
-  // HR profile (all optional)
   date_of_birth?: string;
   gender?: string;
   marital_status?: string;
@@ -321,6 +314,10 @@ export interface CreateCompanyPayload {
   trial_days?: number;
 
   data_region: string;
+
+  /** ── NEW: required. IANA name (e.g. 'Asia/Kolkata'). */
+  default_timezone: string;
+
   subscription_months: number;
   subscription_days?: number;
   financial_year_start_month: number;
@@ -341,6 +338,9 @@ export interface CreateCompanyPayload {
   state?: string;
   country?: string;
   pincode?: string;
+
+  /** ── NEW: optional. null/undefined → inherit default_timezone. */
+  location_timezone?: string | null;
 
   owner_email?: string | null;
   owner_date_of_birth?: string | null;
@@ -369,6 +369,8 @@ export interface CreateCompanyResponse extends Company {
 export interface UpdateCompanyDetailsPayload {
   company_name?: string;
   data_region?: string;
+  /** ── NEW: IANA name. Send "" to reject (server returns 400). */
+  default_timezone?: string;
   financial_year_start_month?: number;
   max_employees?: number;
   max_locations?: number;
@@ -566,7 +568,7 @@ export interface UpdateInvoicePayload {
 }
 
 // ============================================================
-// Analytics & Operational Log Types
+// Analytics & Operational Log Types (unchanged)
 // ============================================================
 
 export interface OTPLog {
@@ -977,8 +979,6 @@ export const searchCompaniesByOwner = async (
 
 // ============================================================
 // Jobs catalog APIs
-// Permissions: hr.position.* (a job is the definition side of
-// a position, so the same permission covers both).
 // ============================================================
 
 export const listJobs = async (

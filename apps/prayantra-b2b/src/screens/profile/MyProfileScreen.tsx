@@ -15,12 +15,12 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text } from 'react-native-paper';
 import { useNavigation } from '@react-navigation/native';
-import { useFocusEffect } from '@react-navigation/native';   // 👈 ADD
+import { useFocusEffect } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { LinearGradient } from 'expo-linear-gradient';
 
-import { useQueryClient } from '@tanstack/react-query';      // 👈 ADD
+import { useQueryClient } from '@tanstack/react-query';
 
 import {
   updateMyProfile,
@@ -65,23 +65,19 @@ export default function MyProfileScreen() {
   const [hydrating, setHydrating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  const queryClient = useQueryClient();   // 👈 ADD
+  const queryClient = useQueryClient();
 
   // -----------------------------------------------------
   // Refresh avatar cache every time the screen gains focus.
-  // Ensures the hero avatar reflects the latest primary
-  // avatar after the user comes back from AvatarManagement.
   // -----------------------------------------------------
-  useFocusEffect(                          // 👈 ADD
+  useFocusEffect(
     useCallback(() => {
       queryClient.invalidateQueries({ queryKey: ['avatar'] });
     }, [queryClient]),
   );
 
   // -----------------------------------------------------
-  // Shared fetch + patch. Called by:
-  //   • the auto-hydrate effect on mount (when fields are missing)
-  //   • handleRefresh (pull-to-refresh — always re-fetch)
+  // Shared fetch + patch.
   // -----------------------------------------------------
   const fetchAndPatchProfile = useCallback(async (): Promise<boolean> => {
     if (!user?.user_id) return false;
@@ -137,23 +133,20 @@ export default function MyProfileScreen() {
   }, [user?.user_id, user?.username, user?.full_name, accessToken, companyId, deviceId, fetchAndPatchProfile]);
 
   // -----------------------------------------------------
-  // Pull-to-refresh handler. Always re-fetches, even when
-  // the store already has username/full_name, so the user
-  // can force a fresh read at any time. Also refreshes the
-  // avatar cache so the hero image updates.
+  // Pull-to-refresh handler.
   // -----------------------------------------------------
   const handleRefresh = useCallback(async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      await Promise.all([                       // 👈 updated
+      await Promise.all([
         fetchAndPatchProfile(),
         queryClient.invalidateQueries({ queryKey: ['avatar'] }),
       ]);
     } finally {
       setRefreshing(false);
     }
-  }, [refreshing, fetchAndPatchProfile, queryClient]);   // 👈 added queryClient
+  }, [refreshing, fetchAndPatchProfile, queryClient]);
 
   // -----------------------------------------------------
   // Sync drafts whenever the store's user changes.
@@ -364,6 +357,125 @@ export default function MyProfileScreen() {
           </View>
 
           {/* =====================================================
+              MY ATTENDANCE
+          ===================================================== */}
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionLabel}>MY ATTENDANCE</Text>
+          </View>
+
+          <View style={styles.quickRow}>
+            <TouchableOpacity
+              style={styles.quickCard}
+              onPress={() => navigation.navigate('MyAttendanceStats')}
+              activeOpacity={0.85}
+            >
+              <View
+                style={[styles.quickIcon, { backgroundColor: '#10B98115' }]}
+              >
+                <Icon
+                  name="chart-timeline-variant"
+                  size={20}
+                  color="#10B981"
+                />
+              </View>
+              <Text style={styles.quickLabel}>My Stats</Text>
+              <Text style={styles.quickSub}>Present, absent, hours</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.quickCard}
+              onPress={() => navigation.navigate('MyAttendanceExemptions')}
+              activeOpacity={0.85}
+            >
+              <View
+                style={[styles.quickIcon, { backgroundColor: '#6366F115' }]}
+              >
+                <Icon
+                  name="shield-off-outline"
+                  size={20}
+                  color="#6366F1"
+                />
+              </View>
+              <Text style={styles.quickLabel}>My Exemptions</Text>
+              <Text style={styles.quickSub}>Active exemptions</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* =====================================================
+              MY LEAVE  ← new section
+          ===================================================== */}
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionLabel}>MY LEAVE</Text>
+          </View>
+
+          {/* Row 1 — Balance + My Requests */}
+          <View style={styles.quickRow}>
+            <TouchableOpacity
+              style={styles.quickCard}
+              onPress={() => navigation.navigate('LeaveBalanceScreen')}
+              activeOpacity={0.85}
+            >
+              <View
+                style={[styles.quickIcon, { backgroundColor: '#10B98115' }]}
+              >
+                <Icon name="wallet-outline" size={20} color="#10B981" />
+              </View>
+              <Text style={styles.quickLabel}>Leave Balance</Text>
+              <Text style={styles.quickSub}>Days remaining</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.quickCard}
+              onPress={() => navigation.navigate('LeaveRequestList')}
+              activeOpacity={0.85}
+            >
+              <View
+                style={[styles.quickIcon, { backgroundColor: '#6366F115' }]}
+              >
+                <Icon
+                  name="calendar-text-outline"
+                  size={20}
+                  color="#6366F1"
+                />
+              </View>
+              <Text style={styles.quickLabel}>My Requests</Text>
+              <Text style={styles.quickSub}>View / cancel</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Row 2 — Request Leave (full width CTA) */}
+          <View style={[styles.quickRow, styles.quickRowTight]}>
+            <TouchableOpacity
+              style={[styles.quickCard, styles.quickCardFull]}
+              onPress={() =>
+                navigation.navigate('LeaveRequestForm', {})
+              }
+              activeOpacity={0.85}
+            >
+              <View
+                style={[styles.quickIcon, { backgroundColor: `${PRIMARY_COLOR}15` }]}
+              >
+                <Icon
+                  name="plus-circle-outline"
+                  size={20}
+                  color={PRIMARY_COLOR}
+                />
+              </View>
+              <View style={styles.quickFullText}>
+                <Text style={styles.quickLabel}>Request Leave</Text>
+                <Text style={styles.quickSub}>
+                  Submit a new leave request
+                </Text>
+              </View>
+              <Icon
+                name="chevron-right"
+                size={20}
+                color={TEXT_SECONDARY}
+              />
+            </TouchableOpacity>
+          </View>
+
+          {/* =====================================================
               EDITABLE FIELDS
           ===================================================== */}
           <View style={styles.sectionHeaderRow}>
@@ -475,7 +587,7 @@ export default function MyProfileScreen() {
 }
 
 // =========================================================
-// STYLES — unchanged
+// STYLES
 // =========================================================
 
 const styles = StyleSheet.create({
@@ -612,6 +724,9 @@ const styles = StyleSheet.create({
     marginTop: 22,
     gap: 12,
   },
+  // Slight top spacing adjustment for the second row of the same section
+  quickRowTight: { marginTop: 12 },
+
   quickCard: {
     flex: 1,
     padding: 14,
@@ -620,6 +735,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER_COLOR,
   },
+  // Full-width variant of quickCard (used for the "Request Leave" CTA).
+  // Lays out horizontally: icon — text block — chevron.
+  quickCardFull: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  quickFullText: { flex: 1 },
+
   quickIcon: {
     width: 40,
     height: 40,

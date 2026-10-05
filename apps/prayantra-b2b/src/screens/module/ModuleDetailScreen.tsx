@@ -45,6 +45,10 @@ import {
   GRADIENT_END,
 } from '../../constants/colors';
 
+// HR reminders bell. Self-gated on `hr.employee.view`; renders
+// nothing for non-HR users. Rendered ONLY when the HR module is open.
+import { ReminderBell } from '../../components/ReminderBell';
+
 // =========================================================
 // MODULE CONFIGURATION
 // =========================================================
@@ -159,20 +163,53 @@ const MODULE_CONFIG: Record<
 //
 // Ownership model (SAP-like split):
 //   - Administration = security & facilities (Roles, Locations)
-//   - HR = people + org structure + leave
+//   - HR = people + org structure + leave + attendance (employees)
+//   - Academics = students, timetables + attendance (students)
+//   - Sales = customers, subscriptions + attendance (customers)
 //   - AvatarManagement = top-level, reached from ModuleGridScreen header
 //
-// Leave admin surfaces are split into four cards in the order an
+// LEAVE — SELF vs HR SPLIT
+// ------------------------------------------------------------
+// Leave admin surfaces are split into five cards in the order an
 // admin actually needs them:
-//   1. Leave Types        — define the kinds of leave (AL, SL, CL...)
-//   2. Leave Policies     — bundle types into policies with rules
-//   3. Entitlements       — assign day quotas to individual employees
-//   4. Policy Resolution  — re-run the resolver (seed / bulk / debug)
+//   1. Leave Requests     — approve/reject, user picker + status pills
+//   2. Leave Balance      — read-only balance per user
+//   3. Leave Ledger       — company-wide ledger browse (the "why")
+//   4. Leave Types        — define the kinds of leave (AL, SL, CL...)
+//   5. Leave Policies     — bundle types into policies with rules
+//   6. Entitlements       — assign day quotas to individual employees
+//   7. Policy Resolution  — re-run the resolver (seed / bulk / debug)
+//
+// The three operational cards route to HR-scoped screens that
+// include a user picker:
+//   - Leave Requests → LeaveRequestAdminList
+//   - Leave Balance  → LeaveBalanceAdminScreen
+//   - Leave Ledger   → LeaveLedger
+//
+// The self-service versions of Requests/Balance (no picker, hard
+// scoped to the logged-in user) are reached from MyProfileScreen's
+// "MY LEAVE" section, NOT from this HR grid.
 //
 // Jobs vs Positions:
 //   - Jobs      = role catalog ("Cashier", "Line Operator")
 //   - Positions = seats ("Cashier @ Mumbai Store #42, Register-3")
 //   Jobs come FIRST because a position must reference a job.
+//
+// ATTENDANCE — one screen family, three verticals, TWO cards each:
+//   Attendance       → daily use, highest-frequency action
+//   Attendance Admin → configuration hub (policies, company rules, ...)
+//
+//   HR        → AttendanceHome { subjectType: 'employee' }
+//   Academics → AttendanceHome { subjectType: 'student'  }
+//   Sales     → AttendanceHome { subjectType: 'customer' }
+//
+// The `params` field is forwarded verbatim to navigation.navigate.
+//
+// HR REMINDERS — reached from the BELL in the header (not a tile).
+// The bell is rendered only when moduleName === 'hr'. It deep-links
+// into `RemindersList` and pulls its badge from `/hr/reminders/count`
+// with the caller's X-Location-ID scope applied automatically by the
+// axios interceptor.
 // =========================================================
 
 const FEATURES_CONFIG: Record<
@@ -182,6 +219,8 @@ const FEATURES_CONFIG: Record<
     label: string;
     icon: string;
     screen: string;
+    /** Optional params forwarded to navigation.navigate on tap. */
+    params?: Record<string, unknown>;
   }>
 > = {
   administration: [
@@ -202,11 +241,28 @@ const FEATURES_CONFIG: Record<
   // ============================================================
   // HR MODULE FEATURES
   //
+  // Attendance + Attendance Admin are paired at the top — daily use
+  // first, config second.
+  //
   // Jobs is placed BEFORE Positions because every position must
   // reference a job. Admins need to define the role catalog first,
   // then create seats.
   // ============================================================
   hr: [
+    {
+      key: 'attendance',
+      label: 'Attendance',
+      icon: 'calendar-clock',
+      screen: 'AttendanceHome',
+      params: { subjectType: 'employee' },
+    },
+    {
+      key: 'attendanceAdmin',
+      label: 'Attendance Admin',
+      icon: 'cog-outline',
+      screen: 'AttendanceAdminHub',
+      params: { subjectType: 'employee' },
+    },
     {
       key: 'employeeList',
       label: 'Employees',
@@ -249,17 +305,37 @@ const FEATURES_CONFIG: Record<
       icon: 'sitemap',
       screen: 'OrgUnitList',
     },
+    // ============================================================
+    // LEAVE — HR-scoped operational screens (user picker + filters).
+    //
+    // ⚠️ These point at the ADMIN screens, not the self-service ones.
+    //    HR must be able to search any employee and act on their
+    //    requests / balances / ledger; the self-service screens are
+    //    locked to the caller.
+    //
+    //    Self-service equivalents live in MyProfileScreen's MY LEAVE
+    //    section and remain hard-scoped to the logged-in user.
+    // ============================================================
     {
       key: 'leaveRequests',
       label: 'Leave Requests',
       icon: 'calendar-edit',
-      screen: 'LeaveRequestList',
+      screen: 'LeaveRequestAdminList',
     },
     {
       key: 'leaveBalance',
       label: 'Leave Balance',
       icon: 'calendar-check',
-      screen: 'LeaveBalanceScreen',
+      screen: 'LeaveBalanceAdminScreen',
+    },
+    // ⚠️ NEW — company-wide ledger browse.
+    //    Filter by user, entry type, and date range. Location-scoped
+    //    automatically via the X-Location-ID header.
+    {
+      key: 'leaveLedger',
+      label: 'Leave Ledger',
+      icon: 'book-open-page-variant',
+      screen: 'LeaveLedger',
     },
     // ---- Leave administration setup order ----
     {
@@ -280,12 +356,52 @@ const FEATURES_CONFIG: Record<
       icon: 'account-cash',
       screen: 'EntitlementList',
     },
-    // ⬇️ NEW — the tester's cockpit for re-running the resolver
+    // ⬇️ the tester's cockpit for re-running the resolver
     {
       key: 'leaveResolution',
       label: 'Policy Resolution',
       icon: 'refresh-auto',
       screen: 'PolicyResolution',
+    },
+  ],
+
+  // ============================================================
+  // ACADEMICS MODULE FEATURES
+  // ============================================================
+  academics: [
+    {
+      key: 'attendance',
+      label: 'Attendance',
+      icon: 'calendar-clock',
+      screen: 'AttendanceHome',
+      params: { subjectType: 'student' },
+    },
+    {
+      key: 'attendanceAdmin',
+      label: 'Attendance Admin',
+      icon: 'cog-outline',
+      screen: 'AttendanceAdminHub',
+      params: { subjectType: 'student' },
+    },
+  ],
+
+  // ============================================================
+  // SALES MODULE FEATURES
+  // ============================================================
+  sales: [
+    {
+      key: 'attendance',
+      label: 'Attendance',
+      icon: 'calendar-clock',
+      screen: 'AttendanceHome',
+      params: { subjectType: 'customer' },
+    },
+    {
+      key: 'attendanceAdmin',
+      label: 'Attendance Admin',
+      icon: 'cog-outline',
+      screen: 'AttendanceAdminHub',
+      params: { subjectType: 'customer' },
     },
   ],
 
@@ -425,15 +541,16 @@ export default function ModuleDetailScreen() {
       .toUpperCase() +
     moduleName.slice(1);
 
+  // Reminders bell appears ONLY when the HR module is open.
+  const showReminderBell = moduleName === 'hr';
+
   // =======================================================
   // RESPONSIVE CARD WIDTH
   // =======================================================
 
   const cardWidth = useMemo(() => {
     const horizontalPadding = 20;
-
     const gap = 12;
-
     return (
       (width -
         horizontalPadding * 2 -
@@ -524,7 +641,8 @@ export default function ModuleDetailScreen() {
         activeOpacity={0.88}
         onPress={() =>
           navigation.navigate(
-            item.screen
+            item.screen as any,
+            item.params as any,
           )
         }
         style={[
@@ -666,12 +784,31 @@ export default function ModuleDetailScreen() {
 
           </View>
 
-          <View style={styles.headerGridButton}>
-            <Icon
-              name="view-grid-outline"
-              size={20}
-              color="#FFFFFF"
-            />
+          {/* ============================================
+              RIGHT-SIDE HEADER ACTIONS
+
+              - HR module  → Reminder bell (permission-gated,
+                             invisible to non-HR users) + grid
+              - Every other → grid icon only
+          ============================================ */}
+
+          <View style={styles.headerRightRow}>
+
+            {showReminderBell && (
+              <ReminderBell
+                color="#FFFFFF"
+                size={22}
+              />
+            )}
+
+            <View style={styles.headerGridButton}>
+              <Icon
+                name="view-grid-outline"
+                size={20}
+                color="#FFFFFF"
+              />
+            </View>
+
           </View>
 
         </View>
@@ -876,6 +1013,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
+
+  headerRightRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+
   headerGridButton: {
     width: 39,
     height: 39,

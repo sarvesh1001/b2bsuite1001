@@ -1,3 +1,4 @@
+// apps/prayantra-admin/src/screens/admin/CompanyManagement/CompanyUpdateDetailsScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -30,18 +31,10 @@ import {
   SubscriptionPlan,
 } from '../../../services/admin';
 
-// ---------------------------------------------------------------------------
-// Subscription statuses — must match the backend's chk_subscription_status
-// constraint and the models.SubscriptionStatus* constants.
-//
-//   pending    → company created but no subscription provisioned yet
-//                (owner must pay / extend to activate)
-//   trial      → trial window active
-//   active     → paid window active
-//   past_due   → past end date but within grace period (read-only)
-//   expired    → grace period over, blocked from all non-billing paths
-//   cancelled  → subscription terminated
-// ---------------------------------------------------------------------------
+import { TimeZonePicker } from '../../../components/TimeZonePicker';
+import { isSupportedTimezone } from '../../../utils/timezone';
+import { DEFAULT_COMPANY_TIMEZONE } from '../../../constants/timezones';
+
 const SUBSCRIPTION_STATUSES = [
   { label: 'Pending (no subscription yet)', value: 'pending' },
   { label: 'Trial', value: 'trial' },
@@ -60,6 +53,8 @@ const REGIONS = [
 type FormState = {
   company_name: string;
   data_region: string;
+  // ── NEW: company-wide fallback tz.
+  default_timezone: string;
   financial_year_start_month: number;
   max_employees: number;
   max_locations: number;
@@ -78,6 +73,7 @@ type FormState = {
 const INITIAL_FORM: FormState = {
   company_name: '',
   data_region: 'us-east-1',
+  default_timezone: DEFAULT_COMPANY_TIMEZONE,
   financial_year_start_month: 4,
   max_employees: 100,
   max_locations: 20,
@@ -107,9 +103,6 @@ export default function CompanyUpdateDetailsScreen() {
 
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
 
-  // -------------------------------------------------------------------------
-  // Load company + plans
-  // -------------------------------------------------------------------------
   useEffect(() => {
     (async () => {
       try {
@@ -123,13 +116,14 @@ export default function CompanyUpdateDetailsScreen() {
         setForm({
           company_name: c.company_name || '',
           data_region: c.data_region || 'us-east-1',
+          // ── NEW: default_timezone loaded from the company.
+          default_timezone: c.default_timezone || DEFAULT_COMPANY_TIMEZONE,
           financial_year_start_month:
             c.financial_year_start_month || c.FinancialYearStartMonth || 4,
           max_employees: c.max_employees || 0,
           max_locations: c.max_locations || 0,
           is_active: c.is_active ?? true,
           subscription_plan_code: c.subscription_plan_code || '',
-          // ✅ fall back to `pending` when the server sends nothing
           subscription_status: c.subscription_status || 'pending',
           grace_period_days: c.grace_period_days ?? 3,
           extend_by_months: 0,
@@ -147,14 +141,25 @@ export default function CompanyUpdateDetailsScreen() {
     })();
   }, [companyId]);
 
-  // -------------------------------------------------------------------------
-  // Save
-  // -------------------------------------------------------------------------
   const handleSave = async () => {
     if (!form.company_name.trim()) {
       Alert.alert('Error', 'Company name is required');
       return;
     }
+
+    // ── NEW: tz validation. Company default is required and must be valid.
+    if (!form.default_timezone.trim()) {
+      Alert.alert('Error', 'Default timezone is required');
+      return;
+    }
+    if (!isSupportedTimezone(form.default_timezone)) {
+      Alert.alert(
+        'Error',
+        `'${form.default_timezone}' is not a valid IANA timezone`
+      );
+      return;
+    }
+
     if (
       form.financial_year_start_month < 1 ||
       form.financial_year_start_month > 12
@@ -177,11 +182,12 @@ export default function CompanyUpdateDetailsScreen() {
 
     setSaving(true);
     try {
-      // Build a clean payload — drop empty strings, undefined, and NaN so the
-      // backend treats them as "not supplied" and doesn't reject them.
       const payload: Record<string, any> = {
         company_name: form.company_name.trim(),
         data_region: form.data_region,
+        // ── NEW: always sent. Backend rejects empty, so this screen
+        //    guarantees a valid IANA name before we reach here.
+        default_timezone: form.default_timezone.trim(),
         financial_year_start_month: form.financial_year_start_month,
         max_employees: form.max_employees,
         max_locations: form.max_locations,
@@ -190,23 +196,17 @@ export default function CompanyUpdateDetailsScreen() {
         grace_period_days: form.grace_period_days,
       };
 
-      // Plan is optional — only send if the admin selected one.
       if (form.subscription_plan_code) {
         payload.subscription_plan_code = form.subscription_plan_code;
       }
 
-      // Extend by — only send if nonzero (backend rejects 0/0).
       if (form.extend_by_months > 0) {
         payload.extend_by_months = form.extend_by_months;
       }
       if (form.extend_by_days > 0) {
         payload.extend_by_days = form.extend_by_days;
       }
-      if (form.extend_by_months === 0 && form.extend_by_days === 0) {
-        // nothing to extend — silently skip both fields
-      }
 
-      // Optional RFC3339 dates — drop empties.
       (
         [
           'subscription_start_date',
@@ -236,9 +236,6 @@ export default function CompanyUpdateDetailsScreen() {
     }
   };
 
-  // -------------------------------------------------------------------------
-  // Picker modal (generic)
-  // -------------------------------------------------------------------------
   const renderPicker = (
     visible: boolean,
     setVisible: (v: boolean) => void,
@@ -287,9 +284,6 @@ export default function CompanyUpdateDetailsScreen() {
     </Modal>
   );
 
-  // -------------------------------------------------------------------------
-  // Loading
-  // -------------------------------------------------------------------------
   if (loading) {
     return (
       <SafeAreaView style={styles.safeArea} edges={['bottom']}>
@@ -300,9 +294,6 @@ export default function CompanyUpdateDetailsScreen() {
     );
   }
 
-  // -------------------------------------------------------------------------
-  // Derived options / labels
-  // -------------------------------------------------------------------------
   const planOptions = [
     { label: 'None (leave unassigned)', value: '' },
     ...plans.map((p) => ({
@@ -369,6 +360,16 @@ export default function CompanyUpdateDetailsScreen() {
               <Icon name="chevron-down" size={20} color="#666" />
             </View>
           </TouchableOpacity>
+
+          {/* ── NEW: Company timezone picker. */}
+          <View style={{ marginBottom: 12 }}>
+            <TimeZonePicker
+              label="Company Timezone *"
+              hint="Fallback tz for any subject without an explicit work-center or location tz."
+              value={form.default_timezone}
+              onChange={(tz) => setForm({ ...form, default_timezone: tz })}
+            />
+          </View>
 
           <View style={styles.row}>
             <View style={styles.half}>
@@ -450,7 +451,6 @@ export default function CompanyUpdateDetailsScreen() {
             </View>
           </TouchableOpacity>
 
-          {/* Live status hint */}
           <View
             style={[
               styles.hintBox,

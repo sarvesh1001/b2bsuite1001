@@ -11,7 +11,24 @@ import {
   UpdateMemberRequest,
   ApiResponse,
   EmployeeFormOptions,        // 👈 ADD THIS
+  ListRemindersParams,
+  Reminder,
+  ReminderFeedPayload,
+  ReminderCountsPayload,
 
+
+} from '@b2b/shared-types';
+import type {
+  EmployeeStatusNow,
+  EmployeeProbation,
+  EmployeeNotice,
+  EmployeeOnHold,
+  ConfirmProbationRequest,
+  FailProbationRequest,
+  ExtendProbationRequest,
+  StartNoticeRequest,
+  CancelNoticeRequest,
+  StartOnHoldRequest,
 } from '@b2b/shared-types';
 import { axiosInstance } from './axios-instance';
 import { idempotentPost, idempotentPut, idempotentPatch, idempotentDelete } from './idempotency';
@@ -449,4 +466,307 @@ export const getEmployeeFormOptions = async (
   const headers = getBaseHeaders(companyId, deviceId, accessToken);
   const response = await axiosInstance.get<ApiResponse<EmployeeFormOptions>>(url, { headers });
   return response.data;
+};
+
+
+// ============================================================
+// HR REMINDERS — in-app feed for HR lifecycle events
+// ------------------------------------------------------------
+// These are per-HR-user, not location-scoped, but the routes live
+// under the company-scoped /hr mount so the interceptor still adds
+// X-Location-ID. That's fine — the backend ignores it for these
+// endpoints; the recipient is always derived from the JWT.
+// ============================================================
+
+/**
+ * List the caller's reminders, newest first, grouped by day.
+ *
+ * @example
+ *   // Unread only
+ *   const unread = await listReminders(cid, did, tok, { status: 'unread' });
+ *
+ *   // Critical probation reminders
+ *   const critical = await listReminders(cid, did, tok, {
+ *     severity: 'critical',
+ *     type_prefix: 'probation_',
+ *   });
+ */
+export const listReminders = async (
+  companyId: string,
+  deviceId: string,
+  accessToken: string,
+  params: ListRemindersParams = {},
+): Promise<ApiResponse<ReminderFeedPayload> & {
+  meta: { page: number; page_size: number; total_count: number };
+}> => {
+  const url = `/companies/${companyId}/hr/reminders`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+
+  const query: Record<string, string | number> = {};
+  if (params.status)      query.status      = params.status;
+  if (params.severity)    query.severity    = params.severity;
+  if (params.type)        query.type        = params.type;
+  if (params.type_prefix) query.type_prefix = params.type_prefix;
+  if (params.since)       query.since       = params.since;
+  if (params.page !== undefined)      query.page      = params.page;
+  if (params.page_size !== undefined) query.page_size = params.page_size;
+
+  const response = await axiosInstance.get(url, { headers, params: query });
+  return response.data;
+};
+
+/**
+ * Badge count for the bell icon.
+ * Cheap enough to poll every 60s.
+ */
+export const getReminderCounts = async (
+  companyId: string,
+  deviceId: string,
+  accessToken: string,
+): Promise<ApiResponse<ReminderCountsPayload>> => {
+  const url = `/companies/${companyId}/hr/reminders/count`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+  const response = await axiosInstance.get(url, { headers });
+  return response.data;
+};
+
+/**
+ * Mark a single reminder read. Idempotent — re-marking a read row is a
+ * no-op on the server, so we still send Idempotency-Key for safety.
+ */
+export const markReminderRead = async (
+  companyId: string,
+  reminderId: string,
+  deviceId: string,
+  accessToken: string,
+): Promise<ApiResponse<{ message: string }>> => {
+  const url = `/companies/${companyId}/hr/reminders/${reminderId}/read`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+  return idempotentPost<ApiResponse<{ message: string }>>(
+    url,
+    {},
+    `markReminderRead:${companyId}:${reminderId}`,
+    { headers },
+  );
+};
+
+/**
+ * Mark every unread reminder read for the caller.
+ * Returns the affected count so the UI can flip its badge in one shot.
+ */
+export const markAllRemindersRead = async (
+  companyId: string,
+  deviceId: string,
+  accessToken: string,
+): Promise<ApiResponse<{ affected_count: number }>> => {
+  const url = `/companies/${companyId}/hr/reminders/read-all`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+  return idempotentPost<ApiResponse<{ affected_count: number }>>(
+    url,
+    {},
+    `markAllRemindersRead:${companyId}`,
+    { headers },
+  );
+};
+
+/**
+ * Dismiss a reminder — soft-delete from the feed. Read-only rows and
+ * already-dismissed rows are no-ops.
+ */
+export const dismissReminder = async (
+  companyId: string,
+  reminderId: string,
+  deviceId: string,
+  accessToken: string,
+): Promise<ApiResponse<{ message: string }>> => {
+  const url = `/companies/${companyId}/hr/reminders/${reminderId}/dismiss`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+  return idempotentPost<ApiResponse<{ message: string }>>(
+    url,
+    {},
+    `dismissReminder:${companyId}:${reminderId}`,
+    { headers },
+  );
+};
+
+
+// ============================================================
+// EMPLOYEE LIFECYCLE — probation / notice / on-hold
+// ------------------------------------------------------------
+// Path pattern: /companies/{cid}/hr/employees/{employeeProfileId}/...
+// `employeeProfileId` is the employee_profile_id (not user_id).
+// All writes go through idempotentPost.
+// Location is attached automatically by the axios interceptor.
+// ============================================================
+
+// ---- Status read ----
+
+export const getEmployeeStatusNow = async (
+  companyId: string,
+  employeeProfileId: string,
+  deviceId: string,
+  accessToken: string,
+): Promise<ApiResponse<EmployeeStatusNow>> => {
+  const url = `/companies/${companyId}/hr/employees/${employeeProfileId}/status-now`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+  const response = await axiosInstance.get<ApiResponse<EmployeeStatusNow>>(url, { headers });
+  return response.data;
+};
+
+// ---- Probation ----
+
+export const confirmProbation = async (
+  companyId: string,
+  employeeProfileId: string,
+  deviceId: string,
+  accessToken: string,
+  payload: ConfirmProbationRequest,
+): Promise<ApiResponse<EmployeeProbation>> => {
+  const url = `/companies/${companyId}/hr/employees/${employeeProfileId}/probation/confirm`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+  return idempotentPost<ApiResponse<EmployeeProbation>>(
+    url,
+    payload,
+    `confirmProbation:${employeeProfileId}`,
+    { headers },
+  );
+};
+
+export const failProbation = async (
+  companyId: string,
+  employeeProfileId: string,
+  deviceId: string,
+  accessToken: string,
+  payload: FailProbationRequest,
+): Promise<ApiResponse<{ message: string }>> => {
+  const url = `/companies/${companyId}/hr/employees/${employeeProfileId}/probation/fail`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+  return idempotentPost<ApiResponse<{ message: string }>>(
+    url,
+    payload,
+    `failProbation:${employeeProfileId}`,
+    { headers },
+  );
+};
+
+export const extendProbation = async (
+  companyId: string,
+  employeeProfileId: string,
+  deviceId: string,
+  accessToken: string,
+  payload: ExtendProbationRequest,
+): Promise<ApiResponse<EmployeeProbation>> => {
+  const url = `/companies/${companyId}/hr/employees/${employeeProfileId}/probation/extend`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+  return idempotentPost<ApiResponse<EmployeeProbation>>(
+    url,
+    payload,
+    `extendProbation:${employeeProfileId}`,
+    { headers },
+  );
+};
+
+// ---- Notice ----
+
+export const startNotice = async (
+  companyId: string,
+  employeeProfileId: string,
+  deviceId: string,
+  accessToken: string,
+  payload: StartNoticeRequest,
+): Promise<ApiResponse<EmployeeNotice>> => {
+  const url = `/companies/${companyId}/hr/employees/${employeeProfileId}/notice/start`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+  return idempotentPost<ApiResponse<EmployeeNotice>>(
+    url,
+    payload,
+    `startNotice:${employeeProfileId}`,
+    { headers },
+  );
+};
+
+export const cancelNotice = async (
+  companyId: string,
+  employeeProfileId: string,
+  deviceId: string,
+  accessToken: string,
+  payload: CancelNoticeRequest,
+): Promise<ApiResponse<{ message: string }>> => {
+  const url = `/companies/${companyId}/hr/employees/${employeeProfileId}/notice/cancel`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+  return idempotentPost<ApiResponse<{ message: string }>>(
+    url,
+    payload,
+    `cancelNotice:${employeeProfileId}`,
+    { headers },
+  );
+};
+
+// ---- On-hold ----
+
+export const startOnHold = async (
+  companyId: string,
+  employeeProfileId: string,
+  deviceId: string,
+  accessToken: string,
+  payload: StartOnHoldRequest,
+): Promise<ApiResponse<EmployeeOnHold>> => {
+  const url = `/companies/${companyId}/hr/employees/${employeeProfileId}/on-hold/start`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+  return idempotentPost<ApiResponse<EmployeeOnHold>>(
+    url,
+    payload,
+    `startOnHold:${employeeProfileId}`,
+    { headers },
+  );
+};
+
+export const endOnHold = async (
+  companyId: string,
+  employeeProfileId: string,
+  deviceId: string,
+  accessToken: string,
+): Promise<ApiResponse<{ message: string }>> => {
+  const url = `/companies/${companyId}/hr/employees/${employeeProfileId}/on-hold/end`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+  return idempotentPost<ApiResponse<{ message: string }>>(
+    url,
+    {},
+    `endOnHold:${employeeProfileId}`,
+    { headers },
+  );
+};
+
+// ============================================================
+// Reactivate — PATCH /companies/{companyId}/hr/employees/user/{userId}/reactivate
+//
+// Restores a terminated or resigned employee to active.
+// Idempotent on the backend: already-active is a no-op 200.
+//
+// NOTE: keyed by user_id (not employee_profile_id) — deliberately
+// different from the sibling lifecycle routes under /employees/{employeeId}.
+// The mobile list already carries user_id per row and doesn't want to
+// do a profile lookup just to hit this.
+//
+// Errors surfaced as-is:
+//   400 — status guard blocked (probation / notice / on_hold)
+//   403 — employee outside caller's location scope
+//   404 — employee not found
+// ============================================================
+export const reactivateEmployee = async (
+  companyId: string,
+  userId: string,
+  deviceId: string,
+  accessToken: string,
+): Promise<ApiResponse<{ user_id: string; company_id: string; status: string }>> => {
+  const url = `/companies/${companyId}/hr/employees/user/${userId}/reactivate`;
+  const headers = getBaseHeaders(companyId, deviceId, accessToken);
+  return idempotentPatch<
+    ApiResponse<{ user_id: string; company_id: string; status: string }>
+  >(
+    url,
+    {},
+    `reactivateEmployee:${companyId}:${userId}`,
+    { headers },
+  );
 };
