@@ -104,16 +104,20 @@ import AttendanceSourcesListScreen from '../screens/attendance/admin/AttendanceS
 
 // ============================================================
 // ATTENDANCE MODULE (admin / scheduling — work calendars + shifts)
+//
+// NOTE: the old "ScheduleInstances" and "ScheduleStats" screens have
+// been retired. Schedules are now derived on read via the
+// AttendanceSchedulePreview screen; there are no stored instances to
+// list, count, or generate.
 // ============================================================
 import SchedulingHubScreen from '../screens/attendance/admin/scheduling/SchedulingHubScreen';
 import CalendarsListScreen from '../screens/attendance/admin/scheduling/CalendarsListScreen';
 import CalendarFormScreen from '../screens/attendance/admin/scheduling/CalendarFormScreen';
 import ScheduleTemplatesScreen from '../screens/attendance/admin/scheduling/ScheduleTemplatesScreen';
 import BulkGenerateScreen from '../screens/attendance/admin/scheduling/BulkGenerateScreen';
-import ScheduleInstancesScreen from '../screens/attendance/admin/scheduling/ScheduleInstancesScreen';
+import SchedulePreviewScreen from '../screens/attendance/admin/scheduling/SchedulePreviewScreen';
 import ScheduleOverridesScreen from '../screens/attendance/admin/scheduling/ScheduleOverridesScreen';
 import WorkCenterShiftMappingScreen from '../screens/attendance/admin/scheduling/WorkCenterShiftMappingScreen';
-import ScheduleStatsScreen from '../screens/attendance/admin/scheduling/ScheduleStatsScreen';
 
 // ============================================================
 // ATTENDANCE MODULE (admin / analytics + operations)
@@ -478,16 +482,25 @@ export type RootStackParamList = {
 
   // ============================================================
   // ATTENDANCE SCHEDULING (work calendars + shift templates)
+  //
+  // NOTE: no more AttendanceInstancesList / AttendanceScheduleStats.
+  // Schedules are derived on read via AttendanceSchedulePreview.
   // ============================================================
   AttendanceSchedulingHub: undefined;
   AttendanceCalendarsList: undefined;
   AttendanceCalendarForm: { calendarId?: string };
   AttendanceScheduleTemplates: undefined;
   AttendanceBulkGenerate: undefined;
-  AttendanceInstancesList: undefined;
-  AttendanceScheduleOverrides: undefined;
+  AttendanceSchedulePreview: undefined;
+  AttendanceScheduleOverrides:
+  | {
+      userId?: string;
+      date?: string;
+      overrideId?: string | null;
+      existingType?: string | null;
+    }
+  | undefined;
   AttendanceWorkCenterShiftMapping: undefined;
-  AttendanceScheduleStats: undefined;
 
   // ============================================================
   // ATTENDANCE ANALYTICS + OPERATIONS
@@ -895,6 +908,7 @@ export default function Navigation() {
 
         {/* ============================================================
             ATTENDANCE SCHEDULING
+            Schedules are computed on read. No instances, no stats.
         ============================================================ */}
         <Stack.Screen
           name="AttendanceSchedulingHub"
@@ -919,12 +933,12 @@ export default function Navigation() {
         <Stack.Screen
           name="AttendanceBulkGenerate"
           component={BulkGenerateScreen}
-          options={{ headerShown: true, title: 'Generate Schedule' }}
+          options={{ headerShown: true, title: 'Scheduling Info' }}
         />
         <Stack.Screen
-          name="AttendanceInstancesList"
-          component={ScheduleInstancesScreen}
-          options={{ headerShown: true, title: 'Schedule Instances' }}
+          name="AttendanceSchedulePreview"
+          component={SchedulePreviewScreen}
+          options={{ headerShown: true, title: 'Schedule Preview' }}
         />
         <Stack.Screen
           name="AttendanceScheduleOverrides"
@@ -935,11 +949,6 @@ export default function Navigation() {
           name="AttendanceWorkCenterShiftMapping"
           component={WorkCenterShiftMappingScreen}
           options={{ headerShown: true, title: 'Work Center Shifts' }}
-        />
-        <Stack.Screen
-          name="AttendanceScheduleStats"
-          component={ScheduleStatsScreen}
-          options={{ headerShown: true, title: 'Schedule Stats' }}
         />
 
         {/* ============================================================

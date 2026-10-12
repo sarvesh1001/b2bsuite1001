@@ -30,6 +30,10 @@ import type {
 } from '@b2b/shared-types';
 
 import { useUserAuthStore } from '../../../store/userAuthStore';
+import {
+  formatEventClock,
+  formatInstantWithOffset,
+} from '../../../utils/attendanceTime';
 
 import {
   PRIMARY_COLOR,
@@ -97,17 +101,6 @@ const EVENT_LABEL: Record<string, string> = {
 // HELPERS
 // ============================================================
 
-function fmtTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return '—';
-  }
-}
-
 function fmtDateLong(ymd: string): string {
   try {
     const [y, m, d] = ymd.split('-').map(Number);
@@ -156,8 +149,6 @@ export default function AttendanceDayScreen() {
         if (isRefresh) setRefreshing(true);
         else setLoading(true);
 
-        // Parallel: summary + events. Summary 404 is expected if not
-        // yet resolved — we fall back to a placeholder card.
         const [sumRes, evRes] = await Promise.allSettled([
           getDailySummary(
             companyId,
@@ -345,7 +336,11 @@ export default function AttendanceDayScreen() {
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.sessionLabel}>
-                      Check in · {p.check_in_time ? fmtTime(p.check_in_time) : '—'}
+                      Check in ·{' '}
+                      {formatInstantWithOffset(
+                        p.check_in_time,
+                        summary?.offset_minutes,
+                      )}
                     </Text>
                   </View>
                   <View style={styles.sessionDivider} />
@@ -355,7 +350,10 @@ export default function AttendanceDayScreen() {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.sessionLabel}>
                       Check out ·{' '}
-                      {p.check_out_time ? fmtTime(p.check_out_time) : '—'}
+                      {formatInstantWithOffset(
+                        p.check_out_time,
+                        summary?.offset_minutes,
+                      )}
                     </Text>
                   </View>
                   {p.worked_minutes != null ? (
@@ -423,7 +421,7 @@ export default function AttendanceDayScreen() {
                       {EVENT_LABEL[e.event_type] ?? e.event_type}
                     </Text>
                     <Text style={styles.eventSub} numberOfLines={1}>
-                      {e.source_type} · {fmtTime(e.event_time)}
+                      {e.source_type} · {formatEventClock(e)}
                       {e.context?.work_center_code
                         ? ` · ${e.context.work_center_code}`
                         : ''}

@@ -34,6 +34,7 @@ import { useUserAuthStore } from '../../../store/userAuthStore';
 import { UserAvatar } from '../../../components/UserAvatar';
 import { useUserDisplayName } from '../../../hooks/useUserDisplayName';
 import PunchSheet from '../../../components/attendance/PunchSheet';
+import { formatEventLocalTime } from '../../../utils/attendanceTime';
 
 import {
   PRIMARY_COLOR,
@@ -85,17 +86,6 @@ function daysAgo(n: number): string {
   return ymd(d);
 }
 
-function fmtTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return '—';
-  }
-}
-
 function fmtMinutes(mins: number | null | undefined): string {
   if (mins == null) return '—';
   const h = Math.floor(mins / 60);
@@ -122,11 +112,11 @@ export default function TeamMemberAttendanceScreen() {
   const route = useRoute<MemberRouteProp>();
   const { subjectType, subjectId, subjectName } = route.params;
 
-// AFTER
-const { companyId, deviceId, accessToken, locationId } = useUserAuthStore();
-const { data: nameData } = useUserDisplayName(subjectId);
-const resolvedName = nameData?.full_name ?? nameData?.username ?? null;
-const finalName: string = subjectName || resolvedName || subjectId;  const today = useMemo(() => ymd(new Date()), []);
+  const { companyId, deviceId, accessToken, locationId } = useUserAuthStore();
+  const { data: nameData } = useUserDisplayName(subjectId);
+  const resolvedName = nameData?.full_name ?? nameData?.username ?? null;
+  const finalName: string = subjectName || resolvedName || subjectId;
+  const today = useMemo(() => ymd(new Date()), []);
 
   const [todaySummary, setTodaySummary] =
     useState<AttendanceDailySummary | null>(null);
@@ -229,7 +219,6 @@ const finalName: string = subjectName || resolvedName || subjectId;  const today
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.back}
@@ -264,7 +253,6 @@ const finalName: string = subjectName || resolvedName || subjectId;  const today
             />
           }
         >
-          {/* Identity card */}
           <View style={styles.identity}>
             <UserAvatar
               userId={subjectId}
@@ -289,7 +277,6 @@ const finalName: string = subjectName || resolvedName || subjectId;  const today
             </TouchableOpacity>
           </View>
 
-          {/* Today card */}
           <Text style={styles.sectionTitle}>Today</Text>
           {todaySummary ? (
             <TouchableOpacity
@@ -327,7 +314,6 @@ const finalName: string = subjectName || resolvedName || subjectId;  const today
             </View>
           )}
 
-          {/* 7-day strip */}
           <Text style={styles.sectionTitle}>Last 7 days</Text>
           <View style={styles.weekStrip}>
             {Array.from({ length: 7 }).map((_, idx) => {
@@ -360,7 +346,6 @@ const finalName: string = subjectName || resolvedName || subjectId;  const today
             })}
           </View>
 
-          {/* Recent events */}
           <Text style={styles.sectionTitle}>
             Recent events ({recentEvents.length})
           </Text>
@@ -394,13 +379,7 @@ const finalName: string = subjectName || resolvedName || subjectId;  const today
                     {e.event_type.replace(/_/g, ' ')}
                   </Text>
                   <Text style={styles.eventSub} numberOfLines={1}>
-                    {new Date(e.event_time).toLocaleString([], {
-                      day: '2-digit',
-                      month: 'short',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}{' '}
-                    · {e.source_type}
+                    {formatEventLocalTime(e)} · {e.source_type}
                   </Text>
                 </View>
                 {e.metadata?.is_correction ? (
@@ -652,3 +631,4 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
 });
+

@@ -236,6 +236,13 @@ const FEATURES_CONFIG: Record<
       icon: 'map-marker-multiple-outline',
       screen: 'LocationList',
     },
+    {
+      key: 'workCalendars',
+      label: 'Work Calendars',
+      icon: 'calendar-star',
+      screen: 'AttendanceCalendarsList',
+    },
+
   ],
 
   // ============================================================

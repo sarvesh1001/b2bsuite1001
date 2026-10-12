@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   StyleSheet,
@@ -38,13 +38,111 @@ import {
 
 const WEEKDAY_SHORT = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
+/**
+ * Defensive unwrap for the calendars list response.
+ *
+ * The scheduling list endpoint currently returns a BARE ARRAY, but a few
+ * other attendance endpoints wrap their payload as { success, data }.
+ * We accept both so the screen keeps working if the backend is later
+ * standardised.
+ *
+ * Logs every decision so we can see which shape actually arrived.
+ */
+function unwrapCalendarList(raw: unknown): WorkCalendar[] {
+  console.log('[calendars] unwrap — raw type:', typeof raw);
+  console.log('[calendars] unwrap — is array:', Array.isArray(raw));
+  console.log(
+    '[calendars] unwrap — keys:',
+    raw && typeof raw === 'object'
+      ? Object.keys(raw as Record<string, unknown>)
+      : '(not an object)',
+  );
+  console.log(
+    '[calendars] unwrap — preview:',
+    (() => {
+      try {
+        return JSON.stringify(raw).slice(0, 400);
+      } catch {
+        return '<unstringifiable>';
+      }
+    })(),
+  );
+
+  // Shape 1: bare array — [ { calendar... }, { calendar... } ]
+  if (Array.isArray(raw)) {
+    console.log(
+      '[calendars] unwrap → BARE ARRAY, length =',
+      raw.length,
+    );
+    return raw as WorkCalendar[];
+  }
+
+  // Shape 2: { data: [...] } envelope
+  if (raw && typeof raw === 'object') {
+    const r = raw as Record<string, unknown>;
+
+    if (Array.isArray(r.data)) {
+      console.log(
+        '[calendars] unwrap → { data: [...] }, length =',
+        (r.data as unknown[]).length,
+      );
+      return r.data as WorkCalendar[];
+    }
+
+    // Shape 3: { data: { calendars: [...] } }
+    if (
+      r.data &&
+      typeof r.data === 'object' &&
+      Array.isArray((r.data as Record<string, unknown>).calendars)
+    ) {
+      const inner = (r.data as Record<string, unknown>).calendars as WorkCalendar[];
+      console.log(
+        '[calendars] unwrap → { data: { calendars: [...] } }, length =',
+        inner.length,
+      );
+      return inner;
+    }
+
+    // Shape 4: { calendars: [...] }
+    if (Array.isArray(r.calendars)) {
+      console.log(
+        '[calendars] unwrap → { calendars: [...] }, length =',
+        (r.calendars as unknown[]).length,
+      );
+      return r.calendars as WorkCalendar[];
+    }
+  }
+
+  console.warn(
+    '[calendars] unwrap → NO RECOGNISED SHAPE, returning []',
+  );
+  return [];
+}
+
 // ============================================================
 // SCREEN
 // ============================================================
 
 export default function CalendarsListScreen() {
   const navigation = useNavigation<any>();
-  const { companyId, deviceId, accessToken, locationId } = useUserAuthStore();
+
+  const {
+    companyId,
+    deviceId,
+    accessToken,
+    locationId,
+    accessibleLocations: locations,
+  } = useUserAuthStore();
+
+  const refreshLocations = useUserAuthStore((s) => s.refreshLocations);
+
+  const locationNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const l of locations) m.set(l.location_id, l.location_name);
+    return m;
+  }, [locations]);
+
+  const hasMultipleLocations = locations.length > 1;
 
   const [rows, setRows] = useState<WorkCalendar[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,11 +152,23 @@ export default function CalendarsListScreen() {
 
   const fetchAll = useCallback(
     async (isRefresh = false) => {
-      if (!companyId || !deviceId || !accessToken) return;
+      if (!companyId || !deviceId || !accessToken) {
+        console.warn(
+          '[calendars] fetch skipped — missing auth context',
+          { companyId, deviceId, hasToken: !!accessToken },
+        );
+        return;
+      }
       try {
         if (isRefresh) setRefreshing(true);
         else setLoading(true);
         setError(null);
+
+        console.log('[calendars] fetch start', {
+          companyId,
+          locationId,
+          isRefresh,
+        });
 
         const res: any = await listWorkCalendars(
           companyId,
@@ -67,14 +177,35 @@ export default function CalendarsListScreen() {
           locationId ?? undefined,
         );
 
-        const list: WorkCalendar[] = Array.isArray(res?.data)
-          ? res.data
-          : Array.isArray(res?.data?.calendars)
-          ? res.data.calendars
-          : [];
+        console.log('[calendars] fetch raw response:', res);
+
+        const list = unwrapCalendarList(res);
+
+        console.log('[calendars] parsed list length:', list.length);
+
+        if (list.length > 0) {
+          console.log(
+            '[calendars] first item keys:',
+            Object.keys(list[0]),
+          );
+          console.log(
+            '[calendars] first item preview:',
+            JSON.stringify(list[0]).slice(0, 300),
+          );
+        }
 
         setRows(list);
+
+        console.log(
+          '[calendars] setRows complete — displayed count:',
+          list.length,
+        );
       } catch (err: any) {
+        console.error('[calendars] fetch failed:', {
+          status: err?.response?.status,
+          data: err?.response?.data,
+          message: err?.message,
+        });
         setError(
           err?.response?.data?.error ||
             err?.message ||
@@ -90,11 +221,14 @@ export default function CalendarsListScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      console.log('[calendars] screen focused — refreshing');
+      refreshLocations();
       fetchAll();
-    }, [fetchAll]),
+    }, [refreshLocations, fetchAll]),
   );
 
   useEffect(() => {
+    console.log('[calendars] initial mount — fetching');
     fetchAll();
   }, []);
 
@@ -141,6 +275,11 @@ export default function CalendarsListScreen() {
     const holidayCount = Object.keys(item.holidays ?? {}).length;
     const workingCount = item.working_days?.length ?? 0;
     const isDeleting = deletingId === item.calendar_id;
+
+    const scopeLabel = item.location_id
+      ? locationNameById.get(item.location_id) ??
+        item.location_id.slice(0, 8) + '…'
+      : 'Company-wide';
 
     return (
       <TouchableOpacity
@@ -206,26 +345,23 @@ export default function CalendarsListScreen() {
 
         <View style={styles.metaGrid}>
           <View style={styles.metaCell}>
-            <Icon name="earth" size={11} color={TEXT_SECONDARY} />
-            <Text style={styles.metaLabel}>Timezone</Text>
-            <Text style={styles.metaValue} numberOfLines={1}>
-              {item.timezone}
-            </Text>
-          </View>
-          <View style={styles.metaCell}>
             <Icon name="party-popper" size={11} color={TEXT_SECONDARY} />
             <Text style={styles.metaLabel}>Holidays</Text>
             <Text style={styles.metaValue}>{holidayCount}</Text>
           </View>
-          <View style={styles.metaCell}>
-            <Icon name="map-marker-outline" size={11} color={TEXT_SECONDARY} />
-            <Text style={styles.metaLabel}>Location</Text>
-            <Text style={styles.metaValue} numberOfLines={1}>
-              {item.location_id
-                ? item.location_id.slice(0, 8) + '…'
-                : 'Company-wide'}
-            </Text>
-          </View>
+          {hasMultipleLocations ? (
+            <View style={styles.metaCell}>
+              <Icon
+                name={item.location_id ? 'map-marker-outline' : 'domain'}
+                size={11}
+                color={TEXT_SECONDARY}
+              />
+              <Text style={styles.metaLabel}>Scope</Text>
+              <Text style={styles.metaValue} numberOfLines={1}>
+                {scopeLabel}
+              </Text>
+            </View>
+          ) : null}
         </View>
 
         <View style={styles.actions}>
@@ -304,8 +440,8 @@ export default function CalendarsListScreen() {
               <Icon name="calendar-blank-outline" size={32} color="#94A3B8" />
               <Text style={styles.errTitle}>No calendars yet</Text>
               <Text style={styles.errMsg}>
-                Create a calendar per year (and per location, if you have
-                multiple sites).
+                Create a company-wide calendar once, or a per-location
+                calendar if you operate across timezones or jurisdictions.
               </Text>
             </View>
           }

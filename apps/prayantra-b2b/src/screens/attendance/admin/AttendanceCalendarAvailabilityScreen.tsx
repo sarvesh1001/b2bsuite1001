@@ -90,6 +90,50 @@ function isDateValid(s: string): boolean {
   );
 }
 
+/**
+ * The scheduling list endpoint returns a bare array `[{...}]` today, but
+ * other attendance endpoints wrap in `{ success, data }`. Accept both.
+ * Logs every branch decision so we can see which shape actually arrived.
+ */
+function unwrapCalendarList(raw: unknown): WorkCalendar[] {
+  console.log('[availability] unwrap — is array:', Array.isArray(raw));
+  if (Array.isArray(raw)) {
+    console.log('[availability] unwrap → BARE ARRAY, length =', raw.length);
+    return raw as WorkCalendar[];
+  }
+  if (raw && typeof raw === 'object') {
+    const r = raw as Record<string, unknown>;
+    if (Array.isArray(r.data)) {
+      console.log(
+        '[availability] unwrap → { data: [...] }, length =',
+        (r.data as unknown[]).length,
+      );
+      return r.data as WorkCalendar[];
+    }
+    if (
+      r.data &&
+      typeof r.data === 'object' &&
+      Array.isArray((r.data as Record<string, unknown>).calendars)
+    ) {
+      const inner = (r.data as Record<string, unknown>).calendars as WorkCalendar[];
+      console.log(
+        '[availability] unwrap → { data: { calendars: [...] } }, length =',
+        inner.length,
+      );
+      return inner;
+    }
+    if (Array.isArray(r.calendars)) {
+      console.log(
+        '[availability] unwrap → { calendars: [...] }, length =',
+        (r.calendars as unknown[]).length,
+      );
+      return r.calendars as WorkCalendar[];
+    }
+  }
+  console.warn('[availability] unwrap → NO RECOGNISED SHAPE, returning []');
+  return [];
+}
+
 // ============================================================
 // SCREEN
 // ============================================================
@@ -113,25 +157,59 @@ export default function AttendanceCalendarAvailabilityScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load calendars once
+  // ============================================================
+  // LOAD CALENDARS
+  // ============================================================
+
   useEffect(() => {
     if (!companyId || !deviceId || !accessToken) return;
     (async () => {
       try {
+        console.log('[availability] fetching calendars', {
+          companyId,
+          locationId,
+          presetCalendarId,
+        });
+
         const res: any = await listWorkCalendars(
           companyId,
           deviceId,
           accessToken,
           locationId ?? undefined,
         );
-        const list: WorkCalendar[] = Array.isArray(res?.data)
-          ? res.data
-          : [];
+
+        console.log('[availability] raw calendars response:', res);
+
+        const list = unwrapCalendarList(res);
+        console.log('[availability] parsed calendars count:', list.length);
+
         setCalendars(list);
+
+        if (list.length > 0) {
+          console.log(
+            '[availability] calendars:',
+            list.map((c) => ({
+              id: c.calendar_id.slice(0, 8),
+              name: c.name,
+              location_id: c.location_id?.slice(0, 8) ?? null,
+            })),
+          );
+        }
+
+        // If we arrived without a preset, default to the first calendar.
         if (!presetCalendarId && list[0]) {
+          console.log(
+            '[availability] no preset, auto-selecting:',
+            list[0].calendar_id,
+          );
           setCalendarId(list[0].calendar_id);
         }
-      } catch {
+      } catch (err: any) {
+        console.error('[availability] calendars fetch failed:', {
+          status: err?.response?.status,
+          data: err?.response?.data,
+          message: err?.message,
+        });
         // non-fatal
       }
     })();
@@ -144,16 +222,29 @@ export default function AttendanceCalendarAvailabilityScreen() {
   }, [preset]);
 
   // ============================================================
-  // FETCH
+  // FETCH AVAILABILITY
   // ============================================================
 
   const fetchAvailability = useCallback(
     async (isRefresh = false) => {
-      if (!companyId || !deviceId || !accessToken || !calendarId) return;
+      if (!companyId || !deviceId || !accessToken || !calendarId) {
+        console.log('[availability] fetch skipped', {
+          hasCompany: !!companyId,
+          hasDevice: !!deviceId,
+          hasToken: !!accessToken,
+          hasCalendar: !!calendarId,
+        });
+        return;
+      }
       try {
         if (isRefresh) setRefreshing(true);
         else setLoading(true);
         setError(null);
+
+        console.log('[availability] fetching availability', {
+          calendarId: calendarId.slice(0, 8),
+          range,
+        });
 
         const res: any = await getCalendarAvailability(
           companyId,
@@ -163,11 +254,23 @@ export default function AttendanceCalendarAvailabilityScreen() {
           { start_date: range.start, end_date: range.end },
         );
 
-        const list: CalendarAvailability[] = Array.isArray(res?.data)
-          ? res.data
+        console.log('[availability] raw availability response:', res);
+
+        // Same unwrap pattern — accept both bare array and envelope.
+        const list: CalendarAvailability[] = Array.isArray(res)
+          ? (res as CalendarAvailability[])
+          : Array.isArray(res?.data)
+          ? (res.data as CalendarAvailability[])
           : [];
+
+        console.log('[availability] parsed rows:', list.length);
         setRows(list);
       } catch (e: any) {
+        console.error('[availability] fetch failed:', {
+          status: e?.response?.status,
+          data: e?.response?.data,
+          message: e?.message,
+        });
         setError(
           e?.response?.data?.error ||
             e?.message ||
@@ -264,6 +367,8 @@ export default function AttendanceCalendarAvailabilityScreen() {
           <Text style={styles.calendarPickText} numberOfLines={1}>
             {currentCalendar
               ? `${currentCalendar.name} (${currentCalendar.year})`
+              : calendarId
+              ? 'Loading calendar…'
               : 'Pick a calendar'}
           </Text>
           <Icon name="chevron-down" size={16} color={TEXT_SECONDARY} />
@@ -455,7 +560,10 @@ export default function AttendanceCalendarAvailabilityScreen() {
                           {c.name}
                         </Text>
                         <Text style={styles.modalRowSub}>
-                          {c.year} · {c.timezone}
+                          {c.year}
+                          {c.location_id
+                            ? ` · ${c.location_id.slice(0, 8)}…`
+                            : ' · Company-wide'}
                         </Text>
                       </View>
                       {active ? (

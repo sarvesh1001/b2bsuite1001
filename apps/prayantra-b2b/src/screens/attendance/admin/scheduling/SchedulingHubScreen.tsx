@@ -27,6 +27,13 @@ import {
 
 // ============================================================
 // FEATURES
+//
+// Schedules are computed on read. There is no "generate" step and
+// no stored instances — so the hub exposes:
+//   - the rule tables (calendars, templates, WC mappings)
+//   - a read-only preview
+//   - the only per-day write: overrides
+//   - an info page explaining the model
 // ============================================================
 
 const FEATURES = [
@@ -47,19 +54,11 @@ const FEATURES = [
     tone: '#8B5CF6',
   },
   {
-    key: 'generate',
-    label: 'Generate Schedule',
-    sub: 'Bulk-create future instances',
-    icon: 'auto-fix',
-    screen: 'AttendanceBulkGenerate',
-    tone: '#10B981',
-  },
-  {
-    key: 'instances',
-    label: 'Instances',
-    sub: 'Browse scheduled days',
-    icon: 'calendar-multiple-check',
-    screen: 'AttendanceInstancesList',
+    key: 'preview',
+    label: 'Schedule Preview',
+    sub: "Compute a user's schedule on read",
+    icon: 'calendar-search',
+    screen: 'AttendanceSchedulePreview',
     tone: '#F59E0B',
   },
   {
@@ -67,7 +66,6 @@ const FEATURES = [
     label: 'Overrides',
     sub: 'Force work or off for a day',
     icon: 'calendar-edit',
-    // ✅ was 'AttendanceOverridesList' — real route is 'AttendanceScheduleOverrides'
     screen: 'AttendanceScheduleOverrides',
     tone: '#EF4444',
   },
@@ -80,11 +78,11 @@ const FEATURES = [
     tone: '#0EA5E9',
   },
   {
-    key: 'stats',
-    label: 'Schedule Stats',
-    sub: 'Instances, users, coverage',
-    icon: 'chart-timeline-variant',
-    screen: 'AttendanceScheduleStats',
+    key: 'info',
+    label: 'Scheduling Info',
+    sub: 'How schedules are computed on read',
+    icon: 'information-outline',
+    screen: 'AttendanceBulkGenerate',
     tone: '#10B981',
   },
 ];
@@ -153,7 +151,7 @@ export default function SchedulingHubScreen() {
         </View>
       </View>
       <Text style={styles.heroSub}>
-        Calendars, templates and bulk schedule generation
+        Calendars, shift templates, and computed schedules
       </Text>
     </LinearGradient>
   );

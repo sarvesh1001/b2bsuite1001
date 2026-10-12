@@ -38,11 +38,6 @@ import type {
 
 import { useUserAuthStore } from '../../../../store/userAuthStore';
 
-// ── NEW: shared tz picker + helpers ───────────────────────
-import { TimeZonePicker } from '../../../../components/TimeZonePicker';
-import { isSupportedTimezone } from '../../../../utils/timezone';
-import { DEFAULT_COMPANY_TIMEZONE } from '../../../../constants/timezones';
-
 import {
   PRIMARY_COLOR,
   BACKGROUND_COLOR,
@@ -71,8 +66,6 @@ const WEEKDAYS: { value: number; label: string; short: string }[] = [
   { value: 6, label: 'Saturday', short: 'S' },
 ];
 
-// ── REMOVED: local COMMON_TIMEZONES. Now handled by TimeZonePicker.
-
 // ============================================================
 // HELPERS
 // ============================================================
@@ -99,23 +92,39 @@ export default function CalendarFormScreen() {
   const { calendarId } = route.params || {};
   const isEdit = !!calendarId;
 
-  const { companyId, deviceId, accessToken, locationId } = useUserAuthStore();
+  const {
+    companyId,
+    deviceId,
+    accessToken,
+    locationId: activeLocationId,
+    // Locations the caller can see. For ALL-scope callers this is every
+    // active location in the company; for SELECTED it's their granted set;
+    // for PRIMARY it's just their primary. Sourced from the persisted
+    // userAuthStore so no extra network call is needed here.
+    accessibleLocations: locations,
+  } = useUserAuthStore();
+
+  // ALL-scope callers may create either company-wide or location-scoped
+  // calendars. Location-scope callers are locked to their active location.
+  const isAllScope = !activeLocationId || activeLocationId === 'ALL';
 
   const currentYear = new Date().getFullYear();
 
   const [name, setName] = useState(`${currentYear} Company Calendar`);
   const [year, setYear] = useState(String(currentYear));
-  // ── CHANGED: default to company-preferred tz.
-  const [timezone, setTimezone] = useState<string>(DEFAULT_COMPANY_TIMEZONE);
   const [workingDays, setWorkingDays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [holidays, setHolidays] = useState<WorkCalendarHoliday[]>([]);
   const [isActive, setIsActive] = useState(true);
 
+  // Scope selection
+  //   'company'  → location_id = null  (only permitted for ALL-scope callers)
+  //   'location' → location_id = scopeLocationId
+  const [scope, setScope] = useState<'company' | 'location'>('company');
+  const [scopeLocationId, setScopeLocationId] = useState<string | null>(null);
+
+  const [locationPickerOpen, setLocationPickerOpen] = useState(false);
   const [loading, setLoading] = useState(isEdit);
   const [submitting, setSubmitting] = useState(false);
-
-  // ── REMOVED: tzModalOpen — TimeZonePicker owns its modal.
-
   const [holidayModalOpen, setHolidayModalOpen] = useState(false);
   const [snack, setSnack] = useState<{
     text: string;
@@ -123,7 +132,23 @@ export default function CalendarFormScreen() {
   } | null>(null);
 
   // ============================================================
-  // LOAD
+  // INITIAL SCOPE DEFAULTS
+  // ============================================================
+  // - ALL-scope caller → default to company-wide
+  // - Location-scope caller → default to their active location, locked
+  useEffect(() => {
+    if (isEdit) return;
+    if (isAllScope) {
+      setScope('company');
+      setScopeLocationId(null);
+    } else {
+      setScope('location');
+      setScopeLocationId(activeLocationId ?? null);
+    }
+  }, [isEdit, isAllScope, activeLocationId]);
+
+  // ============================================================
+  // LOAD (edit mode)
   // ============================================================
 
   useEffect(() => {
@@ -143,11 +168,18 @@ export default function CalendarFormScreen() {
 
         setName(c.name);
         setYear(String(c.year));
-        setTimezone(c.timezone || DEFAULT_COMPANY_TIMEZONE);
         setWorkingDays(c.working_days ?? [1, 2, 3, 4, 5]);
         setIsActive(c.is_active ?? true);
 
-        // Backend returns holidays as Record<string, {date, name}>.
+        // Scope: if the row has a location_id, it's location-scoped.
+        if (c.location_id) {
+          setScope('location');
+          setScopeLocationId(c.location_id);
+        } else {
+          setScope('company');
+          setScopeLocationId(null);
+        }
+
         const holidayArr: WorkCalendarHoliday[] = Object.values(
           c.holidays ?? {},
         ).map((h: any) => ({
@@ -180,17 +212,15 @@ export default function CalendarFormScreen() {
       return 'Year must be between 2000 and 2100';
     }
     if (workingDays.length === 0) return 'Pick at least one working day';
-    if (!timezone.trim()) return 'Timezone is required';
-    // ── NEW: validate tz against IANA allow-list.
-    if (!isSupportedTimezone(timezone)) {
-      return `'${timezone}' is not a valid IANA timezone`;
+    if (scope === 'location' && !scopeLocationId) {
+      return 'Pick a location for this calendar';
     }
     for (const h of holidays) {
       if (!isDateValid(h.date)) return `Holiday "${h.name}" has invalid date`;
       if (!h.name.trim()) return 'Holiday name is required';
     }
     return null;
-  }, [name, year, workingDays, timezone, holidays]);
+  }, [name, year, workingDays, scope, scopeLocationId, holidays]);
 
   const canSubmit = !validationError && !submitting;
 
@@ -208,18 +238,25 @@ export default function CalendarFormScreen() {
       return;
     }
 
+    // location_id is only sent when the scope is location. Company-wide
+    // calendars omit it — resolveTargetLocation interprets nil as
+    // "company-wide" for ALL-scope callers.
+    const payloadLocationId =
+      scope === 'location' ? scopeLocationId ?? undefined : undefined;
+
     setSubmitting(true);
     try {
       if (isEdit && calendarId) {
+        // Location is not editable after creation (the update payload has
+        // no location_id field). We only send name/working_days/etc.
         await updateWorkCalendar(
           companyId,
           calendarId,
           deviceId,
           accessToken,
-          locationId ?? '',
+          activeLocationId ?? '',
           {
             name: name.trim(),
-            timezone: timezone.trim(),
             working_days: workingDays,
             holidays,
             is_active: isActive,
@@ -227,19 +264,23 @@ export default function CalendarFormScreen() {
         );
         setSnack({ text: 'Calendar updated', tone: 'ok' });
       } else {
+        const body: any = {
+          year: Number(year),
+          name: name.trim(),
+          working_days: workingDays,
+          holidays,
+          is_active: isActive,
+        };
+        if (payloadLocationId) {
+          body.location_id = payloadLocationId;
+        }
+
         await createWorkCalendar(
           companyId,
           deviceId,
           accessToken,
-          locationId ?? '',
-          {
-            year: Number(year),
-            name: name.trim(),
-            timezone: timezone.trim(),
-            working_days: workingDays,
-            holidays,
-            is_active: isActive,
-          },
+          activeLocationId ?? '',
+          body,
         );
         setSnack({ text: 'Calendar created', tone: 'ok' });
       }
@@ -272,6 +313,10 @@ export default function CalendarFormScreen() {
     );
   }
 
+  const selectedLocation = locations.find(
+    (l) => l.location_id === scopeLocationId,
+  );
+
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <KeyboardAvoidingView
@@ -282,8 +327,160 @@ export default function CalendarFormScreen() {
           contentContainerStyle={styles.scroll}
           showsVerticalScrollIndicator={false}
         >
+          {/* ==================================================
+              SCOPE — who this calendar applies to.
+              Read-only in edit mode: location cannot be changed
+              after creation.
+          ================================================== */}
+          <Text style={styles.sectionLabel}>Scope</Text>
+
+          {isEdit ? (
+            <View style={styles.scopeReadonly}>
+              <Icon
+                name={scope === 'company' ? 'domain' : 'map-marker-outline'}
+                size={16}
+                color={PRIMARY_COLOR}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.scopeReadonlyLabel}>
+                  {scope === 'company' ? 'Company-wide' : 'Location'}
+                </Text>
+                <Text style={styles.scopeReadonlyValue} numberOfLines={1}>
+                  {scope === 'company'
+                    ? 'Applies to every location'
+                    : selectedLocation?.location_name ||
+                      scopeLocationId?.slice(0, 8) + '…' ||
+                      '—'}
+                </Text>
+              </View>
+              <Text style={styles.scopeReadonlyHint}>Locked</Text>
+            </View>
+          ) : (
+            <>
+              <View style={styles.scopeChips}>
+                <TouchableOpacity
+                  style={[
+                    styles.scopeChip,
+                    scope === 'company' && styles.scopeChipActive,
+                  ]}
+                  activeOpacity={0.85}
+                  disabled={!isAllScope}
+                  onPress={() => {
+                    if (!isAllScope) return;
+                    setScope('company');
+                    setScopeLocationId(null);
+                  }}
+                >
+                  <Icon
+                    name="domain"
+                    size={16}
+                    color={
+                      scope === 'company'
+                        ? '#FFFFFF'
+                        : !isAllScope
+                        ? '#CBD5E1'
+                        : TEXT_SECONDARY
+                    }
+                  />
+                  <Text
+                    style={[
+                      styles.scopeChipText,
+                      scope === 'company' && styles.scopeChipTextActive,
+                      !isAllScope && { color: '#CBD5E1' },
+                    ]}
+                  >
+                    Company-wide
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.scopeChip,
+                    scope === 'location' && styles.scopeChipActive,
+                  ]}
+                  activeOpacity={0.85}
+                  onPress={() => {
+                    setScope('location');
+                    if (
+                      !scopeLocationId &&
+                      activeLocationId &&
+                      activeLocationId !== 'ALL'
+                    ) {
+                      setScopeLocationId(activeLocationId);
+                    }
+                  }}
+                >
+                  <Icon
+                    name="map-marker-outline"
+                    size={16}
+                    color={scope === 'location' ? '#FFFFFF' : TEXT_SECONDARY}
+                  />
+                  <Text
+                    style={[
+                      styles.scopeChipText,
+                      scope === 'location' && styles.scopeChipTextActive,
+                    ]}
+                  >
+                    Specific location
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {!isAllScope ? (
+                <Text style={styles.helperText}>
+                  You can only create calendars for your active location.
+                </Text>
+              ) : scope === 'company' ? (
+                <Text style={styles.helperText}>
+                  One company-wide calendar per year. Applies everywhere the
+                  location-specific calendar doesn't override.
+                </Text>
+              ) : null}
+
+              {/* Location picker — only when scope === 'location' */}
+              {scope === 'location' ? (
+                <>
+                  <Text style={[styles.sectionLabel, { marginTop: 16 }]}>
+                    Location
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.locationPick}
+                    onPress={() => setLocationPickerOpen(true)}
+                    activeOpacity={0.85}
+                    disabled={!isAllScope}
+                  >
+                    <Icon
+                      name="map-marker-outline"
+                      size={16}
+                      color={PRIMARY_COLOR}
+                    />
+                    <Text
+                      style={[
+                        styles.locationPickText,
+                        !selectedLocation && styles.locationPickPlaceholder,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {selectedLocation?.location_name ??
+                        (scopeLocationId
+                          ? scopeLocationId.slice(0, 8) + '…'
+                          : 'Pick a location')}
+                    </Text>
+                    <Icon
+                      name="chevron-down"
+                      size={16}
+                      color={TEXT_SECONDARY}
+                    />
+                  </TouchableOpacity>
+                </>
+              ) : null}
+            </>
+          )}
+
           {/* Name */}
-          <Text style={styles.sectionLabel}>Calendar name</Text>
+          <Text style={[styles.sectionLabel, { marginTop: 20 }]}>
+            Calendar name
+          </Text>
           <TextInput
             style={styles.input}
             value={name}
@@ -309,16 +506,6 @@ export default function CalendarFormScreen() {
               Year cannot be changed after creation.
             </Text>
           ) : null}
-
-          {/* ── NEW: shared TimeZonePicker replaces the local picker. */}
-          <View style={{ marginTop: 20 }}>
-            <TimeZonePicker
-              label="Timezone *"
-              hint="IANA timezone — days roll at midnight in this zone."
-              value={timezone}
-              onChange={setTimezone}
-            />
-          </View>
 
           {/* Working days */}
           <Text style={[styles.sectionLabel, { marginTop: 20 }]}>
@@ -373,11 +560,7 @@ export default function CalendarFormScreen() {
 
           {holidays.length === 0 ? (
             <View style={styles.emptyHolidayBox}>
-              <Icon
-                name="party-popper"
-                size={22}
-                color="#94A3B8"
-              />
+              <Icon name="party-popper" size={22} color="#94A3B8" />
               <Text style={styles.emptyHolidayText}>
                 No holidays yet. Add public holidays, festivals, etc.
               </Text>
@@ -461,8 +644,85 @@ export default function CalendarFormScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* ── REMOVED: SimplePickerModal for timezone. */}
-      {/*    TimeZonePicker owns its own modal now. */}
+      {/* Location picker */}
+      <Modal
+        visible={locationPickerOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setLocationPickerOpen(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <SafeAreaView style={styles.modalCard} edges={['bottom']}>
+            <View style={styles.modalGrabber} />
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Pick a location</Text>
+              <TouchableOpacity
+                onPress={() => setLocationPickerOpen(false)}
+                style={styles.closeBtn}
+              >
+                <Icon name="close" size={16} color={TEXT_PRIMARY} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={{ maxHeight: 420 }}>
+              {locations.length === 0 ? (
+                <View style={styles.emptyPicker}>
+                  <Icon
+                    name="map-marker-off-outline"
+                    size={26}
+                    color="#94A3B8"
+                  />
+                  <Text style={styles.emptyPickerText}>
+                    No locations available.
+                  </Text>
+                </View>
+              ) : (
+                locations.map((l) => {
+                  const active = l.location_id === scopeLocationId;
+                  return (
+                    <TouchableOpacity
+                      key={l.location_id}
+                      style={[
+                        styles.modalRow,
+                        active && styles.modalRowActive,
+                      ]}
+                      activeOpacity={0.85}
+                      onPress={() => {
+                        setScopeLocationId(l.location_id);
+                        setLocationPickerOpen(false);
+                      }}
+                    >
+                      <View style={styles.modalRowIcon}>
+                        <Icon
+                          name="map-marker-outline"
+                          size={18}
+                          color={PRIMARY_COLOR}
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.modalRowTitle} numberOfLines={1}>
+                          {l.location_name}
+                        </Text>
+                        {l.location_code ? (
+                          <Text style={styles.modalRowSub}>
+                            {l.location_code}
+                          </Text>
+                        ) : null}
+                      </View>
+                      {active ? (
+                        <Icon
+                          name="check-circle"
+                          size={16}
+                          color={PRIMARY_COLOR}
+                        />
+                      ) : null}
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+            </ScrollView>
+          </SafeAreaView>
+        </View>
+      </Modal>
 
       {/* Holiday add modal */}
       <HolidayModal
@@ -490,7 +750,7 @@ export default function CalendarFormScreen() {
 }
 
 // ============================================================
-// HOLIDAY MODAL — unchanged (still in use)
+// HOLIDAY MODAL
 // ============================================================
 
 function HolidayModal({
@@ -542,9 +802,7 @@ function HolidayModal({
             autoCapitalize="none"
           />
 
-          <Text style={[styles.dialogLabel, { marginTop: 12 }]}>
-            Name
-          </Text>
+          <Text style={[styles.dialogLabel, { marginTop: 12 }]}>Name</Text>
           <TextInput
             style={styles.input}
             value={name}
@@ -607,13 +865,88 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
 
-  // ── REMOVED: selectInput, selectInputText — picker supplies its own.
-
   helperText: {
     color: TEXT_SECONDARY,
     fontSize: 10,
     marginTop: 6,
     lineHeight: 14,
+  },
+
+  scopeChips: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  scopeChip: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  scopeChipActive: {
+    backgroundColor: PRIMARY_COLOR,
+    borderColor: PRIMARY_COLOR,
+  },
+  scopeChipText: {
+    color: TEXT_SECONDARY,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  scopeChipTextActive: { color: '#FFFFFF' },
+
+  scopeReadonly: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: `${PRIMARY_COLOR}08`,
+    borderWidth: 1,
+    borderColor: `${PRIMARY_COLOR}25`,
+  },
+  scopeReadonlyLabel: {
+    color: TEXT_PRIMARY,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  scopeReadonlyValue: {
+    color: TEXT_SECONDARY,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  scopeReadonlyHint: {
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+
+  locationPick: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER_COLOR,
+    backgroundColor: CARD_BACKGROUND,
+  },
+  locationPickText: {
+    flex: 1,
+    color: TEXT_PRIMARY,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  locationPickPlaceholder: {
+    color: TEXT_SECONDARY,
+    fontWeight: '400',
   },
 
   weekRow: {
@@ -773,11 +1106,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
 
-  // ── REMOVED: modalBackdrop, modalCard, modalGrabber, modalRow,
-  //    modalRowActive, modalRowText, modalHeader, modalTitle, closeBtn.
-  //    These were only for SimplePickerModal which is now gone.
-  //    HolidayModal has its own styles below.
-
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.5)',
+    justifyContent: 'flex-end',
+  },
   modalBackdropCenter: {
     flex: 1,
     backgroundColor: 'rgba(15,23,42,0.5)',
@@ -785,12 +1118,29 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 24,
   },
+  modalCard: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingTop: 8,
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+    maxHeight: '80%',
+  },
   dialogCard: {
     width: '100%',
     maxWidth: 380,
     padding: 20,
     borderRadius: 16,
     backgroundColor: '#FFFFFF',
+  },
+  modalGrabber: {
+    alignSelf: 'center',
+    width: 44,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#CBD5E1',
+    marginBottom: 12,
   },
   modalHeader: {
     flexDirection: 'row',
@@ -811,6 +1161,29 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#F1F5F9',
   },
+
+  modalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+  },
+  modalRowActive: { backgroundColor: `${PRIMARY_COLOR}08` },
+  modalRowIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: `${PRIMARY_COLOR}12`,
+  },
+  modalRowTitle: { color: TEXT_PRIMARY, fontSize: 13, fontWeight: '700' },
+  modalRowSub: { color: TEXT_SECONDARY, fontSize: 11, marginTop: 2 },
+
+  emptyPicker: { alignItems: 'center', paddingVertical: 30 },
+  emptyPickerText: { color: TEXT_SECONDARY, fontSize: 12, marginTop: 8 },
 
   dialogLabel: {
     color: TEXT_SECONDARY,

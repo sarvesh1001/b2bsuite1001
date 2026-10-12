@@ -36,6 +36,7 @@ import { UserAvatar } from '../../../components/UserAvatar';
 import SubjectPickerSheet, {
   PickedSubject,
 } from '../../../components/attendance/SubjectPickerSheet';
+import { formatEventLocalTime } from '../../../utils/attendanceTime';
 
 import {
   PRIMARY_COLOR,
@@ -127,17 +128,6 @@ function rangeForPreset(days: number): { start: string; end: string } {
   return { start: ymd(start), end: ymd(end) };
 }
 
-function humanDateTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    const date = d.toLocaleDateString([], { day: '2-digit', month: 'short' });
-    const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    return `${date} · ${time}`;
-  } catch {
-    return '—';
-  }
-}
-
 function sourceColor(src: AttendanceSourceType): string {
   switch (src) {
     case 'biometric':
@@ -193,7 +183,6 @@ export default function AttendanceSearchScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [detail, setDetail] = useState<AttendancePunchEvent | null>(null);
 
-  // Sync preset → range
   useEffect(() => {
     const p = DATE_PRESETS.find((x) => x.key === preset);
     if (p) setRange(rangeForPreset(p.days));
@@ -267,7 +256,6 @@ export default function AttendanceSearchScreen() {
     ],
   );
 
-  // Reset + reload whenever filters change
   useEffect(() => {
     fetchPage(1, true);
   }, [fetchPage]);
@@ -308,7 +296,7 @@ export default function AttendanceSearchScreen() {
             </View>
           </View>
           <Text style={styles.eventMeta} numberOfLines={1}>
-            {humanDateTime(item.event_time)}
+            {formatEventLocalTime(item)}
           </Text>
         </View>
         <Icon name="chevron-right" size={18} color="#CBD5E1" />
@@ -391,7 +379,6 @@ export default function AttendanceSearchScreen() {
 
       {filterOpen && (
         <View style={styles.advancedBody}>
-          {/* Event type */}
           <Text style={styles.filterLabel}>Event type</Text>
           <ScrollView
             horizontal
@@ -432,7 +419,6 @@ export default function AttendanceSearchScreen() {
             })}
           </ScrollView>
 
-          {/* Source type */}
           <Text style={[styles.filterLabel, { marginTop: 14 }]}>Source</Text>
           <ScrollView
             horizontal
@@ -473,7 +459,6 @@ export default function AttendanceSearchScreen() {
             })}
           </ScrollView>
 
-          {/* Subject */}
           <Text style={[styles.filterLabel, { marginTop: 14 }]}>Subject</Text>
           {subjectFilter ? (
             <View style={styles.subjectRow}>
@@ -598,7 +583,6 @@ export default function AttendanceSearchScreen() {
         />
       )}
 
-      {/* Custom range modal */}
       <CustomRangeModal
         visible={customOpen}
         initial={range}
@@ -610,7 +594,6 @@ export default function AttendanceSearchScreen() {
         }}
       />
 
-      {/* Subject picker — shared component, subject-type aware */}
       <SubjectPickerSheet
         visible={subjectPickerOpen}
         subjectType={subjectType}
@@ -626,7 +609,6 @@ export default function AttendanceSearchScreen() {
         }}
       />
 
-      {/* Event detail */}
       <EventDetailModal event={detail} onClose={() => setDetail(null)} />
     </SafeAreaView>
   );
@@ -740,11 +722,8 @@ function EventDetailModal({
             <Row k="Event ID" v={event.attendance_event_id} />
             <Row k="Subject type" v={event.subject_type} />
             <Row k="Subject ID" v={event.subject_id} />
-            <Row
-              k="Event time"
-              v={new Date(event.event_time).toLocaleString()}
-            />
-            <Row k="Event date" v={event.event_date} />
+            <Row k="Event time" v={formatEventLocalTime(event)} />
+            <Row k="Event date" v={event.event_date_local} />
             <Row k="Source" v={event.source_type} />
             <Row k="Device" v={event.device_id ?? '—'} />
             <Row k="IP" v={event.ip_address ?? '—'} />

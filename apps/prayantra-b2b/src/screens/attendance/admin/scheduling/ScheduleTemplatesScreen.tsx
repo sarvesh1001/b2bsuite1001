@@ -25,16 +25,25 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import {
   listScheduleTemplates,
   createScheduleTemplate,
+  updateScheduleTemplate,
   deleteScheduleTemplate,
   listWorkCalendars,
+  listPositions,
 } from '@b2b/api-client';
 
 import type {
   ScheduleTemplate,
   ScheduleTemplateType,
+  ScheduleTemplateScope,
   TemplateRules,
   ClassPeriod,
   WorkCalendar,
+  Position,
+} from '@b2b/shared-types';
+
+import {
+  SCHEDULE_TEMPLATE_SCOPES,
+  scheduleTemplateScope,
 } from '@b2b/shared-types';
 
 import { useUserAuthStore } from '../../../../store/userAuthStore';
@@ -47,6 +56,24 @@ import {
   TEXT_SECONDARY,
   BORDER_COLOR,
 } from '../../../../constants/colors';
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+/**
+ * Position display name — mirrors PositionsListScreen.displayTitle.
+ * effective_title is computed server-side as COALESCE(title_override, job_title).
+ */
+function displayTitle(p: Position): string {
+  return p.effective_title ?? p.job_title ?? p.title_override ?? '—';
+}
+
+/** Minimal location shape for the picker. */
+interface LocationOption {
+  location_id: string;
+  name: string;
+}
 
 // ============================================================
 // CONSTANTS
@@ -82,6 +109,54 @@ const TEMPLATE_TYPES: {
   },
 ];
 
+const SCOPE_META: Record<
+  ScheduleTemplateScope,
+  { label: string; icon: string; tone: string; desc: string }
+> = {
+  company: {
+    label: 'Company',
+    icon: 'office-building',
+    tone: '#64748B',
+    desc: 'Applies to everyone without a more specific match',
+  },
+  location: {
+    label: 'Location',
+    icon: 'map-marker',
+    tone: '#0EA5E9',
+    desc: 'Applies to everyone at that location',
+  },
+  position: {
+    label: 'Position',
+    icon: 'badge-account',
+    tone: '#8B5CF6',
+    desc: 'Most specific — wins over location and WC',
+  },
+};
+
+// ============================================================
+// RESPONSE UNWRAPPERS
+// ============================================================
+
+function unwrapTemplates(raw: unknown): ScheduleTemplate[] {
+  if (Array.isArray(raw)) return raw as ScheduleTemplate[];
+  if (raw && typeof raw === 'object') {
+    const r = raw as Record<string, unknown>;
+    if (Array.isArray(r.data)) return r.data as ScheduleTemplate[];
+    if (Array.isArray(r.items)) return r.items as ScheduleTemplate[];
+  }
+  return [];
+}
+
+function unwrapCalendars(raw: unknown): WorkCalendar[] {
+  if (Array.isArray(raw)) return raw as WorkCalendar[];
+  if (raw && typeof raw === 'object') {
+    const r = raw as Record<string, unknown>;
+    if (Array.isArray(r.data)) return r.data as WorkCalendar[];
+    if (Array.isArray(r.items)) return r.items as WorkCalendar[];
+  }
+  return [];
+}
+
 // ============================================================
 // HELPERS
 // ============================================================
@@ -97,20 +172,22 @@ function templateSummary(t: ScheduleTemplate): string {
     return `${count} period${count === 1 ? '' : 's'} per day`;
   }
   if (r.start_time && r.end_time) {
-    return `${r.start_time} – ${r.end_time}`;
+    const night = r.start_time >= r.end_time;
+    return `${r.start_time} – ${r.end_time}${night ? ' (night)' : ''}`;
   }
   return 'No times set';
 }
-
 // ============================================================
 // SCREEN
 // ============================================================
 
 export default function ScheduleTemplatesScreen() {
-  const { companyId, deviceId, accessToken, locationId } = useUserAuthStore();
+  const { companyId, deviceId, accessToken, locationId, accessibleLocations } =
+    useUserAuthStore();
 
   const [rows, setRows] = useState<ScheduleTemplate[]>([]);
   const [calendars, setCalendars] = useState<WorkCalendar[]>([]);
+  const [positions, setPositions] = useState<Position[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -122,6 +199,15 @@ export default function ScheduleTemplatesScreen() {
     tone: 'ok' | 'err';
   } | null>(null);
 
+  // Locations from the auth store. Adjust the map if your shape differs.
+  const locations: LocationOption[] = useMemo(() => {
+    const raw = (accessibleLocations as any[]) ?? [];
+    return raw.map((l) => ({
+      location_id: l.location_id ?? l.id,
+      name: l.name ?? l.location_name ?? l.location_code ?? 'Location',
+    }));
+  }, [accessibleLocations]);
+
   const fetchAll = useCallback(
     async (isRefresh = false) => {
       if (!companyId || !deviceId || !accessToken) return;
@@ -130,7 +216,7 @@ export default function ScheduleTemplatesScreen() {
         else setLoading(true);
         setError(null);
 
-        const [tplRes, calRes] = await Promise.allSettled([
+        const [tplRes, calRes, posRes] = await Promise.allSettled([
           listScheduleTemplates(
             companyId,
             deviceId,
@@ -144,23 +230,32 @@ export default function ScheduleTemplatesScreen() {
             accessToken,
             locationId ?? undefined,
           ),
+          listPositions(
+            companyId,
+            deviceId,
+            { limit: 100, offset: 0 },
+            accessToken,
+          ),
         ]);
 
         const tplList: ScheduleTemplate[] =
           tplRes.status === 'fulfilled'
-            ? Array.isArray((tplRes.value as any)?.data)
-              ? (tplRes.value as any).data
-              : []
+            ? unwrapTemplates(tplRes.value)
             : [];
-        setRows(tplList);
 
         const calList: WorkCalendar[] =
           calRes.status === 'fulfilled'
-            ? Array.isArray((calRes.value as any)?.data)
-              ? (calRes.value as any).data
-              : []
+            ? unwrapCalendars(calRes.value)
             : [];
+
+        const posList: Position[] =
+          posRes.status === 'fulfilled'
+            ? posRes.value?.data?.positions ?? []
+            : [];
+
+        setRows(tplList);
         setCalendars(calList);
+        setPositions(posList);
       } catch (err: any) {
         setError(
           err?.response?.data?.error ||
@@ -180,10 +275,6 @@ export default function ScheduleTemplatesScreen() {
       fetchAll();
     }, [fetchAll]),
   );
-
-  useEffect(() => {
-    fetchAll();
-  }, []);
 
   const handleDelete = (t: ScheduleTemplate) => {
     Alert.alert(
@@ -228,10 +319,7 @@ export default function ScheduleTemplatesScreen() {
 
   const handleCreateClick = () => {
     if (calendars.length === 0) {
-      setSnack({
-        text: 'Create a work calendar first',
-        tone: 'err',
-      });
+      setSnack({ text: 'Create a work calendar first', tone: 'err' });
       return;
     }
     setEditing(null);
@@ -247,10 +335,20 @@ export default function ScheduleTemplatesScreen() {
       (c) => c.calendar_id === item.calendar_id,
     )?.name;
 
+    const scopeKey = scheduleTemplateScope(item);
+    const scope = SCOPE_META[scopeKey];
+    const scopeLabel = (() => {
+      if (scopeKey === 'company') return 'Company-wide';
+      if (scopeKey === 'location') {
+        const loc = locations.find((l) => l.location_id === item.location_id);
+        return `Location: ${loc?.name ?? item.location_id?.slice(0, 8)}`;
+      }
+      const pos = positions.find((p) => p.position_id === item.position_id);
+      return `Position: ${pos ? displayTitle(pos) : item.position_id?.slice(0, 8)}`;
+    })();
+
     return (
-      <View
-        style={[styles.card, !item.is_active && styles.cardInactive]}
-      >
+      <View style={[styles.card, !item.is_active && styles.cardInactive]}>
         <View style={[styles.cardAccent, { backgroundColor: meta.tone }]} />
         <View style={styles.cardHeader}>
           <View
@@ -273,11 +371,24 @@ export default function ScheduleTemplatesScreen() {
           ) : null}
         </View>
 
+        <View
+          style={[
+            styles.scopePill,
+            {
+              backgroundColor: `${scope.tone}18`,
+              borderColor: `${scope.tone}30`,
+            },
+          ]}
+        >
+          <Icon name={scope.icon} size={11} color={scope.tone} />
+          <Text style={[styles.scopePillText, { color: scope.tone }]}>
+            {scopeLabel}
+          </Text>
+        </View>
+
         <View style={styles.summaryBar}>
           <Icon name="timer-outline" size={13} color={TEXT_SECONDARY} />
-          <Text style={styles.summaryText}>
-            {templateSummary(item)}
-          </Text>
+          <Text style={styles.summaryText}>{templateSummary(item)}</Text>
           {item.rules?.break_minutes ? (
             <View style={styles.breakChip}>
               <Text style={styles.breakChipText}>
@@ -354,8 +465,8 @@ export default function ScheduleTemplatesScreen() {
               />
               <Text style={styles.errTitle}>No templates</Text>
               <Text style={styles.errMsg}>
-                Templates define the expected work window for each schedule
-                instance.
+                Templates define the expected work window. Create one per
+                position, location, or as a company-wide default.
               </Text>
             </View>
           }
@@ -374,6 +485,8 @@ export default function ScheduleTemplatesScreen() {
         visible={editorOpen}
         editing={editing}
         calendars={calendars}
+        positions={positions}
+        locations={locations}
         onClose={() => setEditorOpen(false)}
         onSaved={() => {
           setEditorOpen(false);
@@ -403,12 +516,16 @@ function TemplateEditor({
   visible,
   editing,
   calendars,
+  positions,
+  locations,
   onClose,
   onSaved,
 }: {
   visible: boolean;
   editing: ScheduleTemplate | null;
   calendars: WorkCalendar[];
+  positions: Position[];
+  locations: LocationOption[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -427,6 +544,15 @@ function TemplateEditor({
   const [busy, setBusy] = useState(false);
   const [snack, setSnack] = useState<string | null>(null);
 
+  // ── Scope state ──────────────────────────────────────────────
+  const [scope, setScope] = useState<ScheduleTemplateScope>('company');
+  const [scopeLocationId, setScopeLocationId] = useState<string | null>(null);
+  const [scopePositionId, setScopePositionId] = useState<string | null>(null);
+
+  // ── Picker modals ────────────────────────────────────────────
+  const [locPickerOpen, setLocPickerOpen] = useState(false);
+  const [posPickerOpen, setPosPickerOpen] = useState(false);
+
   useEffect(() => {
     if (!visible) return;
     if (editing) {
@@ -439,6 +565,10 @@ function TemplateEditor({
       setBreakMinutes(r.break_minutes?.toString() ?? '');
       setPeriods(r.periods ?? []);
       setIsActive(editing.is_active);
+
+      setScope(scheduleTemplateScope(editing));
+      setScopeLocationId(editing.location_id ?? null);
+      setScopePositionId(editing.position_id ?? null);
     } else {
       setName('');
       setType('office');
@@ -448,6 +578,10 @@ function TemplateEditor({
       setBreakMinutes('');
       setPeriods([]);
       setIsActive(true);
+
+      setScope('company');
+      setScopeLocationId(null);
+      setScopePositionId(null);
     }
   }, [visible, editing, calendars]);
 
@@ -457,11 +591,10 @@ function TemplateEditor({
     if (type !== 'class') {
       if (!isTimeValid(startTime)) return 'Start time must be HH:MM';
       if (!isTimeValid(endTime)) return 'End time must be HH:MM';
-      if (startTime >= endTime) return 'End time must be after start time';
+      if (startTime === endTime) return 'Start and end time cannot be the same';
     }
     return null;
   }, [name, calendarId, type, startTime, endTime]);
-
   const handleSubmit = async () => {
     if (!companyId || !deviceId || !accessToken) return;
     if (validationError) {
@@ -480,21 +613,46 @@ function TemplateEditor({
       }
     }
 
+    // Scope → payload fields. Only one of the two is ever set.
+    const scopeFields = {
+      location_id: scope === 'location' ? scopeLocationId : null,
+      position_id: scope === 'position' ? scopePositionId : null,
+    };
+
     setBusy(true);
     try {
-      await createScheduleTemplate(
-        companyId,
-        deviceId,
-        accessToken,
-        locationId ?? '',
-        {
-          calendar_id: calendarId,
-          template_type: type,
-          name: name.trim(),
-          rules,
-          is_active: isActive,
-        },
-      );
+      if (isEdit && editing) {
+        await updateScheduleTemplate(
+          companyId,
+          editing.schedule_template_id,
+          deviceId,
+          accessToken,
+          locationId ?? '',
+          {
+            name: name.trim(),
+            calendar_id: calendarId,
+            template_type: type,
+            rules,
+            is_active: isActive,
+            ...scopeFields,
+          },
+        );
+      } else {
+        await createScheduleTemplate(
+          companyId,
+          deviceId,
+          accessToken,
+          locationId ?? '',
+          {
+            calendar_id: calendarId,
+            template_type: type,
+            name: name.trim(),
+            rules,
+            is_active: isActive,
+            ...scopeFields,
+          },
+        );
+      }
       onSaved();
     } catch (err: any) {
       setSnack(
@@ -518,6 +676,13 @@ function TemplateEditor({
     ]);
   };
 
+  const selectedLocation = locations.find(
+    (l) => l.location_id === scopeLocationId,
+  );
+  const selectedPosition = positions.find(
+    (p) => p.position_id === scopePositionId,
+  );
+
   return (
     <Modal
       visible={visible}
@@ -538,10 +703,9 @@ function TemplateEditor({
           </View>
 
           <ScrollView
-            style={{ maxHeight: 560 }}
+            style={{ maxHeight: 620 }}
             contentContainerStyle={{ paddingBottom: 20 }}
           >
-            {/* Name */}
             <Text style={styles.fieldLabel}>Name</Text>
             <TextInput
               style={styles.input}
@@ -549,26 +713,142 @@ function TemplateEditor({
               onChangeText={setName}
               placeholder="e.g. General 9–6"
               placeholderTextColor="#94A3B8"
-              editable={!isEdit}
             />
 
-            {/* Type */}
+            {/* ── SCOPE ──────────────────────────────────── */}
             <Text style={[styles.fieldLabel, { marginTop: 14 }]}>
-              Type
+              Scope
             </Text>
+            <View style={styles.scopeGrid}>
+              {SCHEDULE_TEMPLATE_SCOPES.map((s) => {
+                const meta = SCOPE_META[s];
+                const active = scope === s;
+                return (
+                  <TouchableOpacity
+                    key={s}
+                    style={[
+                      styles.scopeCard,
+                      active && {
+                        borderColor: meta.tone,
+                        backgroundColor: `${meta.tone}08`,
+                      },
+                    ]}
+                    onPress={() => {
+                      setScope(s);
+                      if (s !== 'location') setScopeLocationId(null);
+                      if (s !== 'position') setScopePositionId(null);
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <View
+                      style={[
+                        styles.scopeIconWrap,
+                        { backgroundColor: `${meta.tone}15` },
+                        active && { backgroundColor: meta.tone },
+                      ]}
+                    >
+                      <Icon
+                        name={meta.icon}
+                        size={14}
+                        color={active ? '#FFFFFF' : meta.tone}
+                      />
+                    </View>
+                    <Text
+                      style={[
+                        styles.scopeCardLabel,
+                        active && { color: meta.tone },
+                      ]}
+                    >
+                      {meta.label}
+                    </Text>
+                    <Text style={styles.scopeCardDesc} numberOfLines={2}>
+                      {meta.desc}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* Conditional scope picker */}
+            {scope === 'location' && (
+              <>
+                <Text style={[styles.fieldLabel, { marginTop: 12 }]}>
+                  Location
+                </Text>
+                {selectedLocation ? (
+                  <View style={styles.pickedCard}>
+                    <Icon name="map-marker" size={16} color="#0EA5E9" />
+                    <Text style={styles.pickedText} numberOfLines={1}>
+                      {selectedLocation.name}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.changeBtn}
+                      onPress={() => setLocPickerOpen(true)}
+                    >
+                      <Text style={styles.changeBtnText}>Change</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <TouchableOpacity
+                    style={styles.pickBtn}
+                    onPress={() => setLocPickerOpen(true)}
+                  >
+                    <Icon
+                      name="map-marker-plus-outline"
+                      size={16}
+                      color={PRIMARY_COLOR}
+                    />
+                    <Text style={styles.pickBtnText}>Pick location</Text>
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+
+            {scope === 'position' && (
+              <>
+                <Text style={[styles.fieldLabel, { marginTop: 12 }]}>
+                  Position
+                </Text>
+                {selectedPosition ? (
+                  <View style={styles.pickedCard}>
+                    <Icon name="badge-account" size={16} color="#8B5CF6" />
+                    <Text style={styles.pickedText} numberOfLines={1}>
+                      {displayTitle(selectedPosition)}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.changeBtn}
+                      onPress={() => setPosPickerOpen(true)}
+                    >
+                      <Text style={styles.changeBtnText}>Change</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <TouchableOpacity
+                    style={styles.pickBtn}
+                    onPress={() => setPosPickerOpen(true)}
+                  >
+                    <Icon
+                      name="badge-account-outline"
+                      size={16}
+                      color={PRIMARY_COLOR}
+                    />
+                    <Text style={styles.pickBtnText}>Pick position</Text>
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+
+            {/* Type selector */}
+            <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Type</Text>
             <View style={styles.typeGrid}>
               {TEMPLATE_TYPES.map((t) => {
                 const active = type === t.value;
                 return (
                   <TouchableOpacity
                     key={t.value}
-                    style={[
-                      styles.typeCard,
-                      active && styles.typeCardActive,
-                    ]}
+                    style={[styles.typeCard, active && styles.typeCardActive]}
                     activeOpacity={0.85}
-                    onPress={() => !isEdit && setType(t.value)}
-                    disabled={isEdit}
+                    onPress={() => setType(t.value)}
                   >
                     <Icon
                       name={t.icon}
@@ -591,7 +871,6 @@ function TemplateEditor({
               })}
             </View>
 
-            {/* Calendar */}
             <Text style={[styles.fieldLabel, { marginTop: 14 }]}>
               Calendar
             </Text>
@@ -605,10 +884,7 @@ function TemplateEditor({
                 return (
                   <TouchableOpacity
                     key={c.calendar_id}
-                    style={[
-                      styles.calChip,
-                      active && styles.calChipActive,
-                    ]}
+                    style={[styles.calChip, active && styles.calChipActive]}
                     onPress={() => setCalendarId(c.calendar_id)}
                   >
                     <Text
@@ -624,7 +900,6 @@ function TemplateEditor({
               })}
             </ScrollView>
 
-            {/* Times (office + shift) */}
             {type !== 'class' ? (
               <>
                 <View style={styles.twoCol}>
@@ -732,7 +1007,6 @@ function TemplateEditor({
               </>
             )}
 
-            {/* Active */}
             <View style={styles.activeRow}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.activeLabel}>Template active</Text>
@@ -744,17 +1018,17 @@ function TemplateEditor({
               />
             </View>
 
-            {/* Validation */}
             {validationError ? (
               <View style={styles.validation}>
-                <Icon name="alert-circle-outline" size={14} color="#B45309" />
-                <Text style={styles.validationText}>
-                  {validationError}
-                </Text>
+                <Icon
+                  name="alert-circle-outline"
+                  size={14}
+                  color="#B45309"
+                />
+                <Text style={styles.validationText}>{validationError}</Text>
               </View>
             ) : null}
 
-            {/* Actions */}
             <View style={styles.modalActions}>
               <TouchableOpacity onPress={onClose} style={styles.modalBtnGhost}>
                 <Text style={styles.modalBtnGhostText}>Cancel</Text>
@@ -780,6 +1054,43 @@ function TemplateEditor({
         </SafeAreaView>
       </View>
 
+      {/* Location picker */}
+      <PickerSheet
+        visible={locPickerOpen}
+        onClose={() => setLocPickerOpen(false)}
+        title="Pick location"
+        items={locations.map((l) => ({
+          id: l.location_id,
+          primary: l.name,
+          icon: 'map-marker',
+          tone: '#0EA5E9',
+        }))}
+        onSelect={(id) => {
+          setScopeLocationId(id);
+          setLocPickerOpen(false);
+        }}
+      />
+
+      {/* Position picker — uses Position + displayTitle */}
+      <PickerSheet
+        visible={posPickerOpen}
+        onClose={() => setPosPickerOpen(false)}
+        title="Pick position"
+        items={positions.map((p) => ({
+          id: p.position_id,
+          primary: displayTitle(p),
+          secondary: [p.department_name, p.work_center_name]
+            .filter(Boolean)
+            .join(' · ') || undefined,
+          icon: 'badge-account',
+          tone: '#8B5CF6',
+        }))}
+        onSelect={(id) => {
+          setScopePositionId(id);
+          setPosPickerOpen(false);
+        }}
+      />
+
       <Snackbar
         visible={!!snack}
         onDismiss={() => setSnack(null)}
@@ -793,7 +1104,89 @@ function TemplateEditor({
 }
 
 // ============================================================
-// STYLES
+// GENERIC PICKER SHEET
+// ============================================================
+
+function PickerSheet({
+  visible,
+  onClose,
+  title,
+  items,
+  onSelect,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  title: string;
+  items: {
+    id: string;
+    primary: string;
+    secondary?: string;
+    icon: string;
+    tone: string;
+  }[];
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent
+      onRequestClose={onClose}
+    >
+      <View style={styles.modalBackdrop}>
+        <SafeAreaView style={styles.pickerCard} edges={['bottom']}>
+          <View style={styles.modalGrabber} />
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>{title}</Text>
+            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+              <Icon name="close" size={16} color={TEXT_PRIMARY} />
+            </TouchableOpacity>
+          </View>
+          <FlatList
+            data={items}
+            keyExtractor={(i) => i.id}
+            ListEmptyComponent={
+              <View style={styles.center}>
+                <Icon name="inbox-outline" size={28} color="#94A3B8" />
+                <Text style={styles.errMsg}>Nothing to show</Text>
+              </View>
+            }
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={styles.pickerRow}
+                onPress={() => onSelect(item.id)}
+                activeOpacity={0.7}
+              >
+                <View
+                  style={[
+                    styles.pickerIconWrap,
+                    { backgroundColor: `${item.tone}15` },
+                  ]}
+                >
+                  <Icon name={item.icon} size={16} color={item.tone} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pickerRowText} numberOfLines={1}>
+                    {item.primary}
+                  </Text>
+                  {item.secondary ? (
+                    <Text style={styles.pickerRowSub} numberOfLines={1}>
+                      {item.secondary}
+                    </Text>
+                  ) : null}
+                </View>
+                <Icon name="chevron-right" size={18} color="#CBD5E1" />
+              </TouchableOpacity>
+            )}
+          />
+        </SafeAreaView>
+      </View>
+    </Modal>
+  );
+}
+
+// ============================================================
+// STYLES  (unchanged from previous version)
 // ============================================================
 
 const styles = StyleSheet.create({
@@ -831,16 +1224,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  cardName: {
-    color: TEXT_PRIMARY,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  cardType: {
-    color: TEXT_SECONDARY,
-    fontSize: 11,
-    marginTop: 3,
-  },
+  cardName: { color: TEXT_PRIMARY, fontSize: 14, fontWeight: '700' },
+  cardType: { color: TEXT_SECONDARY, fontSize: 11, marginTop: 3 },
   inactivePill: {
     paddingHorizontal: 6,
     paddingVertical: 2,
@@ -854,11 +1239,25 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
 
+  scopePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 4,
+    marginTop: 10,
+    marginLeft: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  scopePillText: { fontSize: 10, fontWeight: '700' },
+
   summaryBar: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginTop: 12,
+    marginTop: 10,
     marginLeft: 6,
     paddingVertical: 8,
     paddingHorizontal: 10,
@@ -878,11 +1277,7 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     backgroundColor: '#FEF3C7',
   },
-  breakChipText: {
-    color: '#92400E',
-    fontSize: 9,
-    fontWeight: '800',
-  },
+  breakChipText: { color: '#92400E', fontSize: 9, fontWeight: '800' },
 
   actions: {
     flexDirection: 'row',
@@ -963,6 +1358,15 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     maxHeight: '92%',
   },
+  pickerCard: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingTop: 8,
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    maxHeight: '70%',
+  },
   modalGrabber: {
     alignSelf: 'center',
     width: 44,
@@ -1010,10 +1414,72 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
 
-  typeGrid: {
-    flexDirection: 'row',
-    gap: 8,
+  scopeGrid: { flexDirection: 'row', gap: 8 },
+  scopeCard: {
+    flex: 1,
+    alignItems: 'center',
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: BORDER_COLOR,
+    gap: 4,
   },
+  scopeIconWrap: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scopeCardLabel: {
+    color: TEXT_PRIMARY,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  scopeCardDesc: {
+    color: TEXT_SECONDARY,
+    fontSize: 9,
+    textAlign: 'center',
+    lineHeight: 12,
+  },
+
+  pickedCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: BORDER_COLOR,
+  },
+  pickedText: {
+    flex: 1,
+    color: TEXT_PRIMARY,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  changeBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 7,
+    backgroundColor: `${PRIMARY_COLOR}12`,
+  },
+  changeBtnText: { color: PRIMARY_COLOR, fontSize: 11, fontWeight: '700' },
+  pickBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: `${PRIMARY_COLOR}40`,
+    backgroundColor: `${PRIMARY_COLOR}08`,
+  },
+  pickBtnText: { color: PRIMARY_COLOR, fontSize: 13, fontWeight: '700' },
+
+  typeGrid: { flexDirection: 'row', gap: 8 },
   typeCard: {
     flex: 1,
     alignItems: 'center',
@@ -1072,11 +1538,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     backgroundColor: `${PRIMARY_COLOR}12`,
   },
-  addPeriodText: {
-    color: PRIMARY_COLOR,
-    fontSize: 10,
-    fontWeight: '700',
-  },
+  addPeriodText: { color: PRIMARY_COLOR, fontSize: 10, fontWeight: '700' },
   emptyPeriods: {
     padding: 14,
     borderRadius: 10,
@@ -1109,10 +1571,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontFamily: 'Courier',
   },
-  periodDash: {
-    color: TEXT_SECONDARY,
-    fontSize: 12,
-  },
+  periodDash: { color: TEXT_SECONDARY, fontSize: 12 },
   removePeriod: {
     width: 26,
     height: 26,
@@ -1153,11 +1612,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
-  modalActions: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 18,
-  },
+  modalActions: { flexDirection: 'row', gap: 10, marginTop: 18 },
   modalBtn: {
     flex: 1,
     paddingVertical: 12,
@@ -1178,5 +1633,32 @@ const styles = StyleSheet.create({
     color: TEXT_PRIMARY,
     fontWeight: '700',
     fontSize: 13,
+  },
+
+  pickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: BORDER_COLOR,
+  },
+  pickerIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerRowText: {
+    color: TEXT_PRIMARY,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  pickerRowSub: {
+    color: TEXT_SECONDARY,
+    fontSize: 11,
+    marginTop: 2,
   },
 });

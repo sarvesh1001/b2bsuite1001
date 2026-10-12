@@ -32,6 +32,7 @@ import type {
 import { useUserAuthStore } from '../../../store/userAuthStore';
 import { UserAvatar } from '../../../components/UserAvatar';
 import { useUserDisplayName } from '../../../hooks/useUserDisplayName';
+import { formatEventClock } from '../../../utils/attendanceTime';
 
 import {
   PRIMARY_COLOR,
@@ -94,19 +95,8 @@ function isOutEvent(t: string): boolean {
   );
 }
 
-function fmtTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return '—';
-  }
-}
-
 // ============================================================
-// ROW COMPONENT (uses hook → must be its own component)
+// ROW COMPONENT
 // ============================================================
 
 function LiveSubjectRow({
@@ -116,9 +106,9 @@ function LiveSubjectRow({
   row: LiveRow;
   onPress: () => void;
 }) {
-    const { data: nameData } = useUserDisplayName(row.subject_id);
-    const name = nameData?.full_name ?? nameData?.username ?? null;
-  
+  const { data: nameData } = useUserDisplayName(row.subject_id);
+  const name = nameData?.full_name ?? nameData?.username ?? null;
+
   const statusTone = row.status === 'in' ? '#10B981' : '#94A3B8';
   const statusLabel = row.status === 'in' ? 'IN' : 'OUT';
 
@@ -139,7 +129,7 @@ function LiveSubjectRow({
           {name || row.subject_id}
         </Text>
         <Text style={styles.rowSub} numberOfLines={1}>
-          Last · {row.last_event.event_type} · {fmtTime(row.last_event.event_time)}
+          Last · {row.last_event.event_type} · {formatEventClock(row.last_event)}
         </Text>
       </View>
       <View style={styles.rowRight}>
@@ -205,7 +195,6 @@ export default function TeamAttendanceDashboardScreen() {
 
         const events: AttendancePunchEvent[] = res?.data?.events ?? [];
 
-        // Group by subject — events are newest-first from backend
         const map = new Map<string, LiveRow>();
         for (const e of events) {
           const existing = map.get(e.subject_id);
@@ -218,7 +207,6 @@ export default function TeamAttendanceDashboardScreen() {
             });
           } else {
             existing.events_today += 1;
-            // Keep newest event_time as the "last" one
             if (new Date(e.event_time) > new Date(existing.last_event.event_time)) {
               existing.last_event = e;
               existing.status = isInEvent(e.event_type) ? 'in' : 'out';
@@ -241,7 +229,6 @@ export default function TeamAttendanceDashboardScreen() {
     [companyId, deviceId, accessToken, locationId, today, subjectType],
   );
 
-  // Reload every time the screen focuses (live board)
   useFocusEffect(
     useCallback(() => {
       fetchAll();
@@ -249,7 +236,6 @@ export default function TeamAttendanceDashboardScreen() {
   );
 
   useEffect(() => {
-    // Auto-refresh every 60s while mounted
     const t = setInterval(() => fetchAll(true), 60000);
     return () => clearInterval(t);
   }, [fetchAll]);
@@ -334,7 +320,6 @@ export default function TeamAttendanceDashboardScreen() {
         </View>
       </LinearGradient>
 
-      {/* Filters */}
       <View style={styles.filterRow}>
         {(['all', 'in', 'out'] as const).map((k) => {
           const active = filter === k;

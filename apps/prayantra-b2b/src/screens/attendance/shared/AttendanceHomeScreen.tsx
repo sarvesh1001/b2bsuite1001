@@ -37,6 +37,7 @@ import { useUserAuthStore } from '../../../store/userAuthStore';
 import { useAttendanceStore } from '../../../store/attendanceSubjectStore';
 import { UserAvatar } from '../../../components/UserAvatar';
 import PunchSheet from '../../../components/attendance/PunchSheet';
+import { formatEventLocalTime } from '../../../utils/attendanceTime';
 
 import {
   PRIMARY_COLOR,
@@ -100,15 +101,6 @@ function ymd(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
-}
-
-function humanTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  } catch {
-    return '—';
-  }
 }
 
 const EVENT_LABEL: Record<string, string> = {
@@ -247,7 +239,7 @@ export default function AttendanceHomeScreen() {
           navigation.navigate('AttendanceDay', {
             subjectType,
             subjectId: item.subject_id,
-            date: item.event_date,
+            date: item.event_date_local,
           })
         }
       >
@@ -262,7 +254,7 @@ export default function AttendanceHomeScreen() {
             {label}
           </Text>
           <Text style={styles.eventMeta} numberOfLines={1}>
-            {item.source_type} · {humanTime(item.event_time)}
+            {item.source_type} · {formatEventLocalTime(item)}
           </Text>
         </View>
         <View style={styles.eventDot} />

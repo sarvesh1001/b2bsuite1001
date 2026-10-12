@@ -28,6 +28,7 @@ import type {
 } from '@b2b/shared-types';
 
 import { useUserAuthStore } from '../../../../store/userAuthStore';
+import { useWorkCenters } from '../../../../hooks/useWorkCenters';
 
 import {
   PRIMARY_COLOR,
@@ -37,6 +38,32 @@ import {
   TEXT_SECONDARY,
   BORDER_COLOR,
 } from '../../../../constants/colors';
+
+// ============================================================
+// RESPONSE UNWRAPPER (local to this screen)
+// ============================================================
+
+function unwrapList<T>(raw: unknown, label: string): T[] {
+  if (Array.isArray(raw)) return raw as T[];
+  if (raw && typeof raw === 'object') {
+    const r = raw as Record<string, unknown>;
+    if (Array.isArray(r.data)) return r.data as T[];
+    if (Array.isArray(r.items)) return r.items as T[];
+  }
+  if (__DEV__) {
+    console.warn(
+      `[${label}] unwrap — no recognised shape, preview:`,
+      (() => {
+        try {
+          return JSON.stringify(raw).slice(0, 300);
+        } catch {
+          return '<unstringifiable>';
+        }
+      })(),
+    );
+  }
+  return [];
+}
 
 // ============================================================
 // HELPERS
@@ -78,11 +105,19 @@ export default function WorkCenterShiftMappingScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const [tplModalOpen, setTplModalOpen] = useState(false);
+  const [wcModalOpen, setWcModalOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [snack, setSnack] = useState<{
     text: string;
     tone: 'ok' | 'err';
   } | null>(null);
+
+  // ── Shared work-center cache (also used by WorkCentersListScreen)
+  const {
+    workCenters,
+    loading: wcLoading,
+    refresh: refreshWorkCenters,
+  } = useWorkCenters();
 
   // Load templates once
   useEffect(() => {
@@ -96,12 +131,11 @@ export default function WorkCenterShiftMappingScreen() {
           locationId ?? undefined,
           { active_only: true },
         );
-        const list: ScheduleTemplate[] = Array.isArray(res?.data)
-          ? res.data
-          : [];
+        const list = unwrapList<ScheduleTemplate>(res, 'wc-templates');
+        if (__DEV__) console.log('[wc-templates] count =', list.length);
         setTemplates(list);
-      } catch {
-        // non-fatal
+      } catch (e) {
+        if (__DEV__) console.warn('[wc-templates] load failed', e);
       }
     })();
   }, [companyId, deviceId, accessToken, locationId]);
@@ -121,12 +155,8 @@ export default function WorkCenterShiftMappingScreen() {
         accessToken,
         { work_center_code: workCenterCode.trim(), date: asOfDate },
       );
-      // Response is a list; take the first (backend returns 0 or 1)
-      const list: WorkCenterShift[] = Array.isArray(res?.data)
-        ? res.data
-        : Array.isArray(res)
-        ? res
-        : [];
+      const list = unwrapList<WorkCenterShift>(res, 'wc-shifts');
+      if (__DEV__) console.log('[wc-shifts] count =', list.length);
       setCurrent(list[0] ?? null);
     } catch (e: any) {
       setError(
@@ -152,7 +182,10 @@ export default function WorkCenterShiftMappingScreen() {
     return t?.name ?? null;
   }, [current, templates]);
 
-  const handleCreateMapping = async (shiftId: string, effectiveFrom: string) => {
+  const handleCreateMapping = async (
+    shiftId: string,
+    effectiveFrom: string,
+  ) => {
     if (!companyId || !deviceId || !accessToken) return;
     setBusy(true);
     try {
@@ -231,13 +264,29 @@ export default function WorkCenterShiftMappingScreen() {
           </View>
 
           {/* Work center code */}
-          <Text style={styles.sectionLabel}>Work center code</Text>
+          <View style={styles.labelRow}>
+            <Text style={styles.sectionLabel}>Work center</Text>
+            <TouchableOpacity
+              onPress={() => setWcModalOpen(true)}
+              activeOpacity={0.85}
+              style={styles.pickLink}
+            >
+              <Icon
+                name="format-list-bulleted"
+                size={13}
+                color={PRIMARY_COLOR}
+              />
+              <Text style={styles.pickLinkText}>
+                {wcLoading ? 'Loading…' : `Browse (${workCenters.length})`}
+              </Text>
+            </TouchableOpacity>
+          </View>
           <View style={styles.row}>
             <TextInput
               style={[styles.input, { flex: 1 }]}
               value={workCenterCode}
               onChangeText={setWorkCenterCode}
-              placeholder="e.g. WC-MUM-01"
+              placeholder="e.g. WC_DEL"
               placeholderTextColor="#94A3B8"
               autoCapitalize="characters"
               autoCorrect={false}
@@ -286,12 +335,17 @@ export default function WorkCenterShiftMappingScreen() {
               ) : current ? (
                 <View style={styles.currentCard}>
                   <View style={styles.currentIcon}>
-                    <Icon name="calendar-clock" size={22} color={PRIMARY_COLOR} />
+                    <Icon
+                      name="calendar-clock"
+                      size={22}
+                      color={PRIMARY_COLOR}
+                    />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.currentLabel}>SHIFT TEMPLATE</Text>
                     <Text style={styles.currentName} numberOfLines={1}>
-                      {currentTemplateName ?? current.shift_id.slice(0, 12) + '…'}
+                      {currentTemplateName ??
+                        current.shift_id.slice(0, 12) + '…'}
                     </Text>
                     <Text style={styles.currentDates}>
                       {fmtDate(current.effective_from)} →{' '}
@@ -357,7 +411,11 @@ export default function WorkCenterShiftMappingScreen() {
                     <ActivityIndicator size="small" color="#EF4444" />
                   ) : (
                     <>
-                      <Icon name="link-variant-off" size={18} color="#EF4444" />
+                      <Icon
+                        name="link-variant-off"
+                        size={18}
+                        color="#EF4444"
+                      />
                       <Text style={styles.dangerActionText}>
                         End mapping today
                       </Text>
@@ -370,11 +428,27 @@ export default function WorkCenterShiftMappingScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
+      {/* Work center picker */}
+      <WorkCenterPicker
+        visible={wcModalOpen}
+        workCenters={workCenters}
+        loading={wcLoading}
+        onClose={() => setWcModalOpen(false)}
+        onRefresh={refreshWorkCenters}
+        onSelect={(wc) => {
+          setWorkCenterCode(wc.work_center_code);
+          setWcModalOpen(false);
+        }}
+      />
+
+      {/* Template picker */}
       <TemplatePicker
         visible={tplModalOpen}
         templates={templates}
         onClose={() => setTplModalOpen(false)}
-        onSelect={(tpl) => handleCreateMapping(tpl.schedule_template_id, ymd(new Date()))}
+        onSelect={(tpl) =>
+          handleCreateMapping(tpl.schedule_template_id, ymd(new Date()))
+        }
       />
 
       <Snackbar
@@ -388,6 +462,133 @@ export default function WorkCenterShiftMappingScreen() {
         <Text style={{ color: '#FFFFFF' }}>{snack?.text ?? ''}</Text>
       </Snackbar>
     </SafeAreaView>
+  );
+}
+
+// ============================================================
+// WORK CENTER PICKER
+// ============================================================
+
+function WorkCenterPicker({
+  visible,
+  workCenters,
+  loading,
+  onClose,
+  onSelect,
+  onRefresh,
+}: {
+  visible: boolean;
+  workCenters: {
+    work_center_code: string;
+    name: string;
+    is_active: boolean;
+    location_name?: string | null;
+    timezone?: string | null;
+  }[];
+  loading: boolean;
+  onClose: () => void;
+  onSelect: (wc: { work_center_code: string; name: string }) => void;
+  onRefresh: () => void;
+}) {
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    if (!visible) setSearch('');
+  }, [visible]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const active = workCenters.filter((wc) => wc.is_active);
+    if (!q) return active;
+    return active.filter(
+      (wc) =>
+        wc.work_center_code.toLowerCase().includes(q) ||
+        wc.name.toLowerCase().includes(q) ||
+        (wc.location_name ?? '').toLowerCase().includes(q),
+    );
+  }, [workCenters, search]);
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent
+      onRequestClose={onClose}
+    >
+      <View style={styles.modalBackdrop}>
+        <SafeAreaView style={styles.modalCard} edges={['bottom']}>
+          <View style={styles.modalGrabber} />
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Pick a work center</Text>
+            <TouchableOpacity onPress={onRefresh} style={styles.refreshIconBtn}>
+              <Icon name="refresh" size={16} color={TEXT_PRIMARY} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+              <Icon name="close" size={16} color={TEXT_PRIMARY} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.searchWrap}>
+            <Icon name="magnify" size={16} color={TEXT_SECONDARY} />
+            <TextInput
+              style={styles.searchInput}
+              value={search}
+              onChangeText={setSearch}
+              placeholder="Search by code, name or location"
+              placeholderTextColor={TEXT_SECONDARY}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </View>
+
+          <ScrollView
+            style={{ maxHeight: 420 }}
+            keyboardShouldPersistTaps="handled"
+          >
+            {loading ? (
+              <View style={styles.emptyModal}>
+                <ActivityIndicator size="small" color={PRIMARY_COLOR} />
+                <Text style={styles.emptyModalText}>
+                  Loading work centers…
+                </Text>
+              </View>
+            ) : filtered.length === 0 ? (
+              <View style={styles.emptyModal}>
+                <Icon name="factory" size={26} color="#94A3B8" />
+                <Text style={styles.emptyModalText}>
+                  {search
+                    ? `No work centers match "${search}".`
+                    : 'No work centers found.'}
+                </Text>
+              </View>
+            ) : (
+              filtered.map((wc) => (
+                <TouchableOpacity
+                  key={wc.work_center_code}
+                  style={styles.modalRow}
+                  activeOpacity={0.85}
+                  onPress={() => onSelect(wc)}
+                >
+                  <View style={styles.modalRowIcon}>
+                    <Icon name="factory" size={18} color={PRIMARY_COLOR} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.modalRowTitle} numberOfLines={1}>
+                      {wc.name}
+                    </Text>
+                    <Text style={styles.modalRowSub} numberOfLines={1}>
+                      {wc.work_center_code}
+                      {wc.location_name ? ` · ${wc.location_name}` : ''}
+                    </Text>
+                  </View>
+                  <Icon name="chevron-right" size={18} color="#CBD5E1" />
+                </TouchableOpacity>
+              ))
+            )}
+          </ScrollView>
+        </SafeAreaView>
+      </View>
+    </Modal>
   );
 }
 
@@ -425,7 +626,11 @@ function TemplatePicker({
           <ScrollView style={{ maxHeight: 400 }}>
             {templates.length === 0 ? (
               <View style={styles.emptyModal}>
-                <Icon name="calendar-clock-outline" size={26} color="#94A3B8" />
+                <Icon
+                  name="calendar-clock-outline"
+                  size={26}
+                  color="#94A3B8"
+                />
                 <Text style={styles.emptyModalText}>
                   No shift templates yet.
                 </Text>
@@ -439,7 +644,11 @@ function TemplatePicker({
                   onPress={() => onSelect(t)}
                 >
                   <View style={styles.modalRowIcon}>
-                    <Icon name="calendar-clock" size={18} color={PRIMARY_COLOR} />
+                    <Icon
+                      name="calendar-clock"
+                      size={18}
+                      color={PRIMARY_COLOR}
+                    />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.modalRowTitle} numberOfLines={1}>
@@ -489,6 +698,28 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     marginBottom: 10,
   },
+
+  labelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  pickLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: `${PRIMARY_COLOR}10`,
+  },
+  pickLinkText: {
+    color: PRIMARY_COLOR,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+
   row: { flexDirection: 'row', gap: 8 },
   input: {
     borderWidth: 1,
@@ -631,6 +862,7 @@ const styles = StyleSheet.create({
   modalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
     marginBottom: 12,
   },
   modalTitle: {
@@ -647,6 +879,32 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#F1F5F9',
   },
+  refreshIconBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F1F5F9',
+  },
+
+  searchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: '#F8FAFC',
+    marginBottom: 8,
+  },
+  searchInput: {
+    flex: 1,
+    color: TEXT_PRIMARY,
+    fontSize: 13,
+    paddingVertical: 0,
+  },
+
   modalRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -669,5 +927,10 @@ const styles = StyleSheet.create({
     textTransform: 'capitalize',
   },
   emptyModal: { alignItems: 'center', paddingVertical: 30 },
-  emptyModalText: { color: TEXT_SECONDARY, fontSize: 12, marginTop: 8 },
+  emptyModalText: {
+    color: TEXT_SECONDARY,
+    fontSize: 12,
+    marginTop: 8,
+    textAlign: 'center',
+  },
 });
